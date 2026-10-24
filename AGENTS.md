@@ -78,3 +78,5 @@ quality; successful optimizations become the default, without extra switches.
 - Prefer `jj` when available (`jj version`); otherwise use Git.
 - Follow the user's remote workflow and preserve unrelated work.
 - Windows performance-port plan and status: [docs/LINUX-PERF-PORT.md](docs/LINUX-PERF-PORT.md).
+  A port with a small measured gain is kept and recorded with its numbers, never
+  reverted unilaterally; report the delta and let the user decide.
