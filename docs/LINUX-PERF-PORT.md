@@ -14,7 +14,7 @@ TheRock ROCm 10.0.0 / clang 23 toolchain used for the Windows build.
 
 - Upstream: <https://github.com/gufo-org/gufo>
 - Review clone: `%TEMP%\opencode\gufo-upstream` (bare clone works; fetch +
-  `git show <sha>`). Last swept upstream `d4eaaad` (2026-10-24) on 2026-10-24,
+  `git show <sha>`). Last swept upstream `1fafd5a` (2026-10-24) on 2026-10-24,
   see "Sweep 2026-10-24"
 - Local base: upstream `fee9d2a` (PR #314 fix)
 - Local Windows HEAD at review: `c85aada`
@@ -1102,14 +1102,18 @@ staging path (28.5 GB resident weights, no stall, valid PNG).
 
 ---
 
-## Sweep 2026-10-24 (upstream `5c8bb39`..`d4eaaad`)
+## Sweep 2026-10-24 (upstream `5c8bb39`..`1fafd5a`)
 
-Next sweep starts from `d4eaaad`. `#741`/`#743`/`#747` are Nix/Cachix
+Next sweep starts from `1fafd5a`. `#741`/`#743`/`#747` are Nix/Cachix
 build-side, not applicable to the Windows toolchain. `#738` (weights through
 the mapped_file leaf) is loader-wide across H3/ASR/TTS/image and the fork
 lacks `core/platform/mapped_file.hpp`; watch item, same family as the Windows
 loading-path gap at the bottom of this file. `#700` (EmbeddingGemma) is a
 feature, not perf. `#733`/`#739` landed in `4bae9f4`.
+
+Seven commits followed the first pass (`d4eaaad`..`1fafd5a`): `#751` (embedding
+GEMM shapes) has no model here, `#757`/`#755` are CI and Nix, `1fafd5a` is a
+release chore, and `#752` is triaged below.
 
 ### [x] #742 - reduce selector spills and improve sampled drafting
 
@@ -1145,6 +1149,29 @@ served multi-session sampled A/B; the pricing matters under concurrency this
 host benches only via the HTTP stack. `projection_ops_test` fails at HEAD
 before this change (exit 0xc0000135, missing DLL in the bench environment) —
 pre-existing, unrelated.
+
+### [-] #752 - per-reader unbuffered weight-read handles
+
+Upstream `407cda2`, tried and reverted 2026-10-24. The fork opened one
+`O_DIRECT` handle per shard (`weight_upload.cpp` `Shard::direct_fd`) shared by
+all 16 readers; upstream moves that handle into each reader slot and reopens it
+through `open("/proc/self/fd/N")` when a reader changes shard, on the theory
+that Windows serializes synchronous I/O per file object. Ported exactly that
+slice (~30 lines: `Slot::direct`/`direct_shard`, `ReopenUnbuffered`, close in
+the slot destructor loop, per-reader reopen in `Transfer`).
+
+Result: no win. Load 31.40 / 32.60 s against 31.77 / 33.12 s baseline in two
+interleaved rounds (~1.4%, inside the baseline's own 31.8-33.1 s spread);
+rounds 3-5 degraded to 39-78 s for *both* binaries as the page cache filled, so
+the machine could not resolve 1-2% after that. Greedy text byte-identical
+(only the `[Model Load]` line differs). Conclusion: NTFS unbuffered reads of a
+mapped shard are not serialized per file object on this host, or the measured
+3.0 GiB/s aggregate is not the read path; the loading gap stays open and this
+is not the fix. Reverted.
+
+Do not take the rest of `407cda2`: the new `src/core/platform/fs*`, `pages*`,
+`page_pin*`, `socket` and the `disk.cpp` rewrite replace the fork's
+`compat/win32` layer wholesale.
 
 ## Sweep 2026-10-23 (upstream `53ebb51`..`5c8bb39`, v0.21.0 + v0.22.0)
 
