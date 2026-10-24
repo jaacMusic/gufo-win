@@ -1150,27 +1150,25 @@ host benches only via the HTTP stack. `projection_ops_test` fails at HEAD
 before this change (exit 0xc0000135, missing DLL in the bench environment) —
 pre-existing, unrelated.
 
-### [x] #752 - per-reader unbuffered weight-read handles
+### [-] #752 - per-reader unbuffered weight-read handles
 
-Upstream `407cda2`, ported 2026-10-24. The fork opened one `O_DIRECT` handle
-per shard (`weight_upload.cpp` `Shard::direct_fd`) shared by all 16 readers;
-upstream moves that handle into each reader slot and reopens it through
-`open("/proc/self/fd/N")` when a reader changes shard, so concurrent readers
-never queue on one synchronous file object. Ported exactly that slice (~30
-lines: `Slot::direct`/`direct_shard`, `ReopenUnbuffered`, close in the slot
-teardown loop, per-reader reopen in `Transfer`).
+Upstream `407cda2`, ported then reverted 2026-10-24. The fork opened one
+`O_DIRECT` handle per shard (`weight_upload.cpp` `Shard::direct_fd`) shared by
+all 16 readers; upstream moves that handle into each reader slot and reopens it
+through `open("/proc/self/fd/N")` when a reader changes shard, so concurrent
+readers never queue on one synchronous file object. Ported exactly that slice
+(~30 lines: `Slot::direct`/`direct_shard`, `ReopenUnbuffered`, close in the
+slot teardown loop, per-reader reopen in `Transfer`).
 
 Load, UD-Q4_K_XL, two interleaved rounds in one sitting: 31.40 / 32.60 s
-against 31.77 / 33.12 s baseline, i.e. **-1.2% and -1.6%**, both pairs in the
-same direction. Small enough that it is not separable from the baseline's own
-31.8-33.1 s spread, so the claim is "consistently no worse", not a proven win;
-kept on that basis. Rounds 3-5 degraded to 39-78 s for *both* binaries as the
-page cache filled, so this host could not resolve 1-2% beyond the first two
-pairs. Greedy text byte-identical (only the `[Model Load]` line differs).
-
-The win is far smaller than the loading gap (local ~31-33 s vs upstream
+against 31.77 / 33.12 s baseline, i.e. -1.2% and -1.6%, both pairs in the same
+direction. Greedy text byte-identical (only the `[Model Load]` line differs).
+Rounds 3-5 degraded to 39-78 s for *both* binaries as the page cache filled, so
+the host could not resolve 1-2% beyond the first two pairs and the effect sits
+inside the baseline's own 31.8-33.1 s spread. Reverted at the user's request:
+too small to carry, and far short of the loading gap (~31-33 s here vs upstream
 16.4 s), so NTFS unbuffered reads of a mapped shard are evidently not the whole
-story; this is a small risk-free step, not the fix for that gap.
+story.
 
 Do not take the rest of `407cda2`: the new `src/core/platform/fs*`, `pages*`,
 `page_pin*`, `socket` and the `disk.cpp` rewrite replace the fork's

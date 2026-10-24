@@ -12,7 +12,6 @@
 #include <cstring>
 #include <deque>
 #include <mutex>
-#include <string>
 #include <system_error>
 #include <thread>
 #include <utility>
@@ -45,28 +44,17 @@ bool ReadFully(int fd, void* buffer, std::uint64_t offset, std::size_t length,
   return true;
 }
 
-// Reopening the retained descriptor creates an independent unbuffered file
-// description without resolving the original, replaceable pathname.
-int ReopenUnbuffered(int fd) {
-  const auto path = "/proc/self/fd/" + std::to_string(fd);
-  return ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_DIRECT);
-}
-
 }  // namespace
 
 struct WeightUpload::State {
   struct Shard {
     int fd{-1};
+    int direct_fd{-1};
     std::uint64_t size{0};
   };
   struct Slot {
     void* buffer{nullptr};
     hipStream_t stream{nullptr};
-    // One unbuffered description per reader, reopened when the reader moves to
-    // another shard: independent file objects keep concurrent readers off one
-    // synchronous handle.
-    int direct{-1};
-    std::uint32_t direct_shard{0xffffffffu};
   };
   struct Task {
     std::uint32_t shard;
@@ -95,9 +83,6 @@ struct WeightUpload::State {
     // caller's destinations can be freed, even on a failed upload.
     readers.clear();
     for (auto& slot : slots) {
-      if (slot.direct >= 0) {
-        ::close(slot.direct);
-      }
       if (slot.stream != nullptr) {
         (void)hipStreamDestroy(slot.stream);
       }
@@ -108,6 +93,9 @@ struct WeightUpload::State {
     for (const auto& shard : shards) {
       if (shard.fd >= 0) {
         ::close(shard.fd);
+      }
+      if (shard.direct_fd >= 0) {
+        ::close(shard.direct_fd);
       }
     }
   }
@@ -133,25 +121,12 @@ struct WeightUpload::State {
     const auto& shard = shards[task.shard];
     const void* payload = slot.buffer;
     bool read = false;
-    // Each reader keeps an unbuffered description of the shard it reads, so
-    // concurrent readers never queue on one synchronous handle: Windows
-    // serializes synchronous I/O per file object, not per process.
-    if (slot.direct_shard != task.shard) {
-      if (slot.direct >= 0) {
-        ::close(slot.direct);
-      }
-      slot.direct = -1;
-      slot.direct_shard = task.shard;
-    }
-    if (slot.direct < 0) {
-      slot.direct = ReopenUnbuffered(shard.fd);
-    }
-    if (slot.direct >= 0) {
+    if (shard.direct_fd >= 0) {
       const auto begin = task.offset & ~(kAlignment - 1);
       const auto skip = static_cast<std::size_t>(task.offset - begin);
       const auto length =
           (skip + task.size + kAlignment - 1) & ~(kAlignment - 1);
-      read = ReadFully(slot.direct, slot.buffer, begin, length,
+      read = ReadFully(shard.direct_fd, slot.buffer, begin, length,
                        skip + task.size);
       payload = static_cast<const char*>(slot.buffer) + skip;
       if (!read && errno != EINVAL && errno != EOPNOTSUPP) {
@@ -223,6 +198,10 @@ std::unique_ptr<WeightUpload> WeightUpload::Create(
       return nullptr;
     }
     shard.size = static_cast<std::uint64_t>(info.st_size);
+    // Reopening the retained descriptor creates an independent O_DIRECT file
+    // description without resolving the original, replaceable pathname.
+    const auto path = "/proc/self/fd/" + std::to_string(shard.fd);
+    shard.direct_fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_DIRECT);
   }
   for (auto& slot : s.slots) {
     if (hipHostMalloc(&slot.buffer, kChunkBytes + kAlignment) != hipSuccess ||
