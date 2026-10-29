@@ -27,6 +27,9 @@ struct SamplingConfig {
   std::size_t repeat_last_n{64};
   float frequency_penalty{0.0F};
   float presence_penalty{0.0F};
+  // OpenAI logit_bias: additive shifts applied to every sampling path.
+  // Sorted by token ID with unique entries; empty keeps the fast paths.
+  std::vector<std::pair<TokenId, float>> logit_bias;
 
   void Validate() const;
 
@@ -122,6 +125,12 @@ public:
   void Accept(TokenId token);
   void Accept(std::span<const TokenId> tokens);
 
+  /// Tokens the request must not select right now; an empty list clears the
+  /// mask. Used to keep a stop token out of an unclosed code fence or math
+  /// span (see core/eog_boundary.hpp). Copies inherit the mask.
+  void Suppress(std::span<const TokenId> ids);
+  [[nodiscard]] bool suppressed(TokenId token) const noexcept;
+
   [[nodiscard]] SamplingDistribution Distribution(
       std::span<const float> logits) const;
   /// Compact logits use token_ids for penalties; returned IDs index logits.
@@ -156,6 +165,9 @@ private:
   void TrimHistory();
   void RebuildPenaltyCounts();
   [[nodiscard]] double AdjustedLogit(TokenId token, float logit) const noexcept;
+  /// Additive logit_bias value for a token; 0.0 outside the request's set.
+  /// Requires config_.logit_bias sorted by token ID.
+  [[nodiscard]] double BiasAt(TokenId token) const noexcept;
   [[nodiscard]] TokenId SampleGreedy(std::span<const float> logits) const;
   [[nodiscard]] SamplingDistribution LinearDistribution(
       std::span<const float> logits) const;
@@ -167,6 +179,7 @@ private:
   SamplingConfig config_;
   std::vector<TokenId> history_;
   std::vector<TokenPenalty> penalty_counts_;
+  std::vector<TokenId> suppressed_;
   std::vector<Probability> candidate_scratch_;
   std::uint64_t rng_state_{0};
   std::optional<TokenId> pending_sample_;

@@ -182,6 +182,12 @@ void SamplingConfig::Validate() const {
   if (seed < -1) {
     throw std::invalid_argument("sampling seed must be -1 or nonnegative");
   }
+  for (const auto& [token, bias] : logit_bias) {
+    (void)token;
+    if (!std::isfinite(bias)) {
+      throw std::invalid_argument("logit bias needs a finite value");
+    }
+  }
   if (!std::isfinite(repeat_penalty) || repeat_penalty <= 0.0F) {
     throw std::invalid_argument(
         "sampling repeat penalty must be finite and positive");
@@ -204,13 +210,14 @@ bool SamplingConfig::uses_random_sampling() const noexcept {
 }
 
 bool SamplingConfig::can_use_unmodified_argmax() const noexcept {
-  return temperature == 0.0F && !penalties_enabled();
+  return temperature == 0.0F && !penalties_enabled() && logit_bias.empty();
 }
 
-bool SamplerState::CanSelectArgmax(TokenId /*token*/,
+bool SamplerState::CanSelectArgmax(TokenId token,
                                    bool penalties_applied) const {
   // shortcut: no grammar constraints in this fork, penalties are the only gate
-  return !pending_sample_ && config_.temperature == 0.0F &&
+  return !pending_sample_ && !suppressed(token) && config_.logit_bias.empty() &&
+         config_.temperature == 0.0F &&
          (penalties_applied || !config_.penalties_enabled());
 }
 
@@ -452,6 +459,7 @@ SamplerState::SamplerState(const SamplerState& other)
     : config_(other.config_),
       history_(other.history_),
       penalty_counts_(other.penalty_counts_),
+      suppressed_(other.suppressed_),
       rng_state_(other.rng_state_),
       pending_sample_(other.pending_sample_) {}
 
@@ -462,6 +470,7 @@ SamplerState& SamplerState::operator=(const SamplerState& other) {
   config_ = other.config_;
   history_ = other.history_;
   penalty_counts_ = other.penalty_counts_;
+  suppressed_ = other.suppressed_;
   candidate_scratch_.clear();
   rng_state_ = other.rng_state_;
   pending_sample_ = other.pending_sample_;
@@ -525,6 +534,17 @@ void SamplerState::Accept(std::span<const TokenId> tokens) {
   RebuildPenaltyCounts();
 }
 
+void SamplerState::Suppress(std::span<const TokenId> ids) {
+  suppressed_.assign(ids.begin(), ids.end());
+  std::ranges::sort(suppressed_);
+  suppressed_.erase(std::unique(suppressed_.begin(), suppressed_.end()),
+                    suppressed_.end());
+}
+
+bool SamplerState::suppressed(TokenId token) const noexcept {
+  return !suppressed_.empty() && std::ranges::binary_search(suppressed_, token);
+}
+
 SamplingDistribution SamplerState::Distribution(
     std::span<const float> logits) const {
   config_.Validate();
@@ -563,7 +583,16 @@ SamplingDistribution SamplerState::Distribution(
       penalties.push_back(penalty);
     }
   }
-  return DistributionWithPenalties(logits, config_, penalties);
+  if (suppressed_.empty() && config_.logit_bias.empty())
+    return DistributionWithPenalties(logits, config_, penalties);
+  std::vector<float> masked(logits.begin(), logits.end());
+  for (std::size_t i = 0; i < token_ids.size(); ++i) {
+    if (suppressed(token_ids[i]))
+      masked[i] = -std::numeric_limits<float>::infinity();
+    else
+      masked[i] += static_cast<float>(BiasAt(token_ids[i]));
+  }
+  return DistributionWithPenalties(masked, config_, penalties);
 }
 
 std::optional<SamplingDistribution> SamplerState::DistributionFromTop(
@@ -572,6 +601,17 @@ std::optional<SamplingDistribution> SamplerState::DistributionFromTop(
   if (values.size() != ids.size() || values.empty() ||
       config_.temperature == 0 || config_.top_k <= 0 ||
       !penalty_counts_.empty()) {
+    return std::nullopt;
+  }
+  // A positive bias could promote a token the list left out of the top-k, so
+  // the compact list is only provably complete without a request bias.
+  if (!config_.logit_bias.empty()) {
+    return std::nullopt;
+  }
+  // A suppressed token in the list breaks the "provably holds the top-k"
+  // guarantee; the caller falls back to the masked full row instead.
+  if (!suppressed_.empty() &&
+      std::ranges::any_of(ids, [&](TokenId id) { return suppressed(id); })) {
     return std::nullopt;
   }
   std::vector<Probability> candidates;
@@ -719,12 +759,25 @@ void SamplerState::RebuildPenaltyCounts() {
   });
 }
 
+double SamplerState::BiasAt(TokenId token) const noexcept {
+  if (config_.logit_bias.empty()) {
+    return 0.0;
+  }
+  const auto found = std::ranges::lower_bound(
+      config_.logit_bias, token, {}, &std::pair<TokenId, float>::first);
+  return found != config_.logit_bias.end() && found->first == token
+             ? static_cast<double>(found->second)
+             : 0.0;
+}
+
 double SamplerState::AdjustedLogit(TokenId token, float logit) const noexcept {
   const auto found = std::ranges::lower_bound(penalty_counts_, token, {},
                                               &TokenPenalty::token);
-  return found == penalty_counts_.end() || found->token != token
-             ? static_cast<double>(logit)
-             : Penalize(logit, config_, *found);
+  const double penalized =
+      found == penalty_counts_.end() || found->token != token
+          ? static_cast<double>(logit)
+          : Penalize(logit, config_, *found);
+  return penalized + BiasAt(token);
 }
 
 constexpr std::size_t kSkipBlock = 64;
@@ -756,8 +809,11 @@ TokenId SamplerState::SampleGreedy(std::span<const float> logits) const {
     TokenId best_token = 0;
     bool found = false;
     for (std::size_t index = 0; index < logits.size(); ++index) {
-      const float logit = logits[index];
-      if (logit > best_logit && std::isfinite(logit)) {
+      const float logit =
+          logits[index] +
+          static_cast<float>(BiasAt(static_cast<TokenId>(index)));
+      if (logit > best_logit && std::isfinite(logit) &&
+          !suppressed(static_cast<TokenId>(index))) {
         best_logit = logit;
         best_token = static_cast<TokenId>(index);
         found = true;
@@ -774,7 +830,8 @@ TokenId SamplerState::SampleGreedy(std::span<const float> logits) const {
   bool found = false;
   auto penalty = penalty_counts_.begin();
   for (std::size_t index = 0; index < logits.size(); ++index) {
-    if (!std::isfinite(logits[index])) {
+    if (!std::isfinite(logits[index]) ||
+        suppressed(static_cast<TokenId>(index))) {
       continue;
     }
     // Both vocab IDs and sparse penalties are sorted. Walk them together
@@ -782,9 +839,10 @@ TokenId SamplerState::SampleGreedy(std::span<const float> logits) const {
     while (penalty != penalty_counts_.end() && penalty->token < index)
       ++penalty;
     const double adjusted =
-        penalty != penalty_counts_.end() && penalty->token == index
-            ? Penalize(logits[index], config_, *penalty)
-            : static_cast<double>(logits[index]);
+        (penalty != penalty_counts_.end() && penalty->token == index
+             ? Penalize(logits[index], config_, *penalty)
+             : static_cast<double>(logits[index])) +
+        BiasAt(static_cast<TokenId>(index));
     if (!std::isfinite(adjusted)) {
       throw std::runtime_error(
           "sampling penalties produced a non-finite logit");
@@ -807,10 +865,10 @@ SamplingDistribution SamplerState::LinearDistribution(
   candidates.reserve(logits.size());
   double maximum = -std::numeric_limits<double>::infinity();
   for (std::size_t i = 0; i < logits.size(); ++i) {
-    if (!std::isfinite(logits[i]))
+    if (!std::isfinite(logits[i]) || suppressed(static_cast<TokenId>(i)))
       continue;
     const double value =
-        penalty_counts_.empty()
+        penalty_counts_.empty() && config_.logit_bias.empty()
             ? static_cast<double>(logits[i])
             : AdjustedLogit(static_cast<TokenId>(i), logits[i]);
     if (!std::isfinite(value))
@@ -845,27 +903,33 @@ void SamplerState::PrepareSelected(std::span<const float> logits) {
     while (penalty != penalty_counts_.end() && penalty->token < index)
       ++penalty;
     if (penalty == penalty_counts_.end() || penalty->token != index)
-      return static_cast<double>(logits[index]);
+      return static_cast<double>(logits[index]) +
+             BiasAt(static_cast<TokenId>(index));
     const double adjusted = Penalize(logits[index], config_, *penalty);
     if (!std::isfinite(adjusted)) {
       throw std::runtime_error(
           "sampling penalties produced a non-finite logit");
     }
-    return adjusted;
+    return adjusted + BiasAt(static_cast<TokenId>(index));
   };
   const auto for_each_adjusted = [&](auto&& visit) {
     auto penalty = penalty_counts_.begin();
     for (std::size_t index = 0; index < logits.size(); ++index) {
-      if (std::isfinite(logits[index]))
+      if (std::isfinite(logits[index]) &&
+          !suppressed(static_cast<TokenId>(index)))
         visit(index, adjusted_at(index, penalty));
     }
   };
+  // A positive bias could promote a token inside a block the maximum-value
+  // skip below would drop, so only skip when no request bias is set.
+  const bool unbiased = config_.logit_bias.empty();
   const auto select_best = [&](std::size_t limit) {
     candidate_scratch_.clear();
     candidate_scratch_.reserve(limit);
     auto penalty = penalty_counts_.begin();
     const auto offer = [&](std::size_t index) {
-      if (!std::isfinite(logits[index])) {
+      if (!std::isfinite(logits[index]) ||
+          suppressed(static_cast<TokenId>(index))) {
         return;
       }
       const Probability candidate{
@@ -892,7 +956,7 @@ void SamplerState::PrepareSelected(std::span<const float> logits) {
       // cannot beat the weakest kept entry. Every kept entry has a lower token
       // ID, so an equal later value loses the tie as well. NaN never raises the
       // block maximum and +inf keeps the block for the exact per-token path.
-      if (candidate_scratch_.size() == limit &&
+      if (unbiased && candidate_scratch_.size() == limit &&
           (penalty == penalty_counts_.end() || penalty->token >= end)) {
         const float maximum = BlockMaximum(logits.subspan(begin, end - begin));
         if (static_cast<double>(maximum) <= candidate_scratch_.front().value)

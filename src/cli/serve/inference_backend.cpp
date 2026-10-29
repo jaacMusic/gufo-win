@@ -23,6 +23,7 @@
 #include "src/cli/serve/logging.hpp"
 #include "src/cli/serve/text_generation_scheduler.hpp"
 #include "src/cli/serve/text_model_runner.hpp"
+#include "src/core/eog_boundary.hpp"
 #include "src/core/gguf_identity.hpp"
 #include "src/core/gguf_reader.hpp"
 #include "src/core/json.hpp"
@@ -361,6 +362,8 @@ public:
       : model_(std::move(model)) {
     resume_tokens_.reserve(kQwenMaxResumeTokens);
     rollback_tokens_.reserve(kQwenMaxResumeTokens);
+    stop_ids_ = {model_->GetTokenizer().GetEosTokenId(),
+                 model_->GetTokenizer().GetEndOfTextTokenId()};
     std::string error;
     executor_ = hip::QwenGpuExecutor::Create(model_, &error, max_context,
                                              execution_policy);
@@ -389,6 +392,18 @@ public:
     executor_->SetCancellationCheck(check);
   }
 
+  /// Stops the request from ending inside an unclosed code fence or math span.
+  /// The mask follows the emitted text, so it is re-evaluated per token.
+  void TrackBoundary(std::string_view piece, sampling::SamplerState& sampler) {
+    eog_.AcceptPiece(piece);
+    const bool open = eog_.SpanOpen();
+    if (open == eog_suppressed_)
+      return;
+    eog_suppressed_ = open;
+    sampler.Suppress(open ? std::span<const sampling::TokenId>(stop_ids_)
+                          : std::span<const sampling::TokenId>());
+  }
+
   void Invalidate() noexcept override {
     if (verifier_ != nullptr) {
       verifier_->Reset();
@@ -403,6 +418,8 @@ public:
     rollback_position_.reset();
     rollback_tokens_.clear();
     rollback_logits_.clear();
+    eog_.Reset();
+    eog_suppressed_ = false;
   }
 
   [[nodiscard]] TextRunnerMeasuredResources MeasuredResources()
@@ -721,14 +738,16 @@ private:
       result.stop = true;
       return false;
     }
+    const std::string_view piece = model_->GetTokenizer().DecodeToken(token);
     result.selections.push_back({
         .stop = false,
         .token = token,
-        .piece = std::string(model_->GetTokenizer().DecodeToken(token)),
+        .piece = std::string(piece),
     });
     sequence_.push_back(token);
     set_pending_token(token);
     sampler.Accept(token);
+    TrackBoundary(piece, sampler);
     return true;
   }
 
@@ -746,6 +765,9 @@ private:
   std::optional<std::size_t> rollback_position_;
   std::vector<TextRunnerToken> rollback_tokens_;
   std::vector<float> rollback_logits_;
+  sampling::EogBoundary eog_;
+  std::vector<sampling::TokenId> stop_ids_;
+  bool eog_suppressed_{false};
 };
 
 class QwenTextRunnerSnapshot final : public TextRunnerSnapshot {
@@ -798,6 +820,29 @@ const QwenTextRunnerState& RequireQwenState(const TextRunnerState& state) {
   }
   return *qwen;
 }
+
+namespace {
+// Resolves an OpenAI logit_bias key to one vocabulary token: a piece that
+// encodes to exactly one token, or a decimal token ID within the vocabulary.
+[[nodiscard]] std::optional<sampling::TokenId> ResolveLiteralToken(
+    const tokenization::QwenTokenizer& tokenizer, std::string_view text) {
+  if (text.empty()) {
+    return std::nullopt;
+  }
+  const auto ids = tokenizer.Encode(text);
+  if (ids.size() == 1) {
+    return ids[0];
+  }
+  if (text.size() <= 10 &&
+      std::ranges::all_of(text, [](char c) { return c >= '0' && c <= '9'; })) {
+    const std::int64_t id = std::stoll(std::string(text));
+    if (id >= 0 && static_cast<std::size_t>(id) < tokenizer.GetVocabSize()) {
+      return static_cast<sampling::TokenId>(id);
+    }
+  }
+  return std::nullopt;
+}
+}  // namespace
 
 class QwenTextRunner final : public TextModelRunner {
 public:
@@ -898,6 +943,11 @@ public:
   [[nodiscard]] std::vector<TextRunnerToken> Tokenize(
       std::string_view text) const override {
     return model_->GetTokenizer().Encode(text);
+  }
+
+  [[nodiscard]] std::optional<sampling::TokenId> ResolveLiteral(
+      std::string_view text) const override {
+    return ResolveLiteralToken(model_->GetTokenizer(), text);
   }
 
   [[nodiscard]] std::optional<std::vector<TextRunnerToken>> RenderAndTokenize(
@@ -1024,10 +1074,12 @@ public:
     // Keep the selected token separate from the argmax frontier: sampled
     // cancellation and prompt snapshot restore must not replace that argmax.
     qwen.set_pending_token(token);
+    const std::string_view piece = model_->GetTokenizer().DecodeToken(token);
+    qwen.TrackBoundary(piece, sampler);
     return {
         .stop = false,
         .token = token,
-        .piece = std::string(model_->GetTokenizer().DecodeToken(token)),
+        .piece = std::string(piece),
     };
   }
 
@@ -2370,6 +2422,11 @@ public:
     return model_->tokenizer().Encode(text);
   }
 
+  [[nodiscard]] std::optional<sampling::TokenId> ResolveLiteral(
+      std::string_view text) const override {
+    return ResolveLiteralToken(model_->tokenizer(), text);
+  }
+
   [[nodiscard]] std::optional<std::vector<TextRunnerToken>> RenderAndTokenize(
       const ChatRequest& request) const override {
     return tokenization::QwenChatTemplate::RenderAndTokenize(
@@ -2981,26 +3038,28 @@ bool InferenceBackend::load(const std::string& model_path, std::string* error,
       return false;
     }
     // The model owns prefill geometry for both bulk and scheduled requests.
+    auto flash_options = models::qwen38_flash_next::ModelOptions{
+        .max_context = max_context,
+        .mtp_model_path =
+            speculative_config.backend == TextSpeculativeBackend::kMtp
+                ? speculative_config.draft_model_path
+                : std::string{},
+        .max_draft_tokens = speculative_config.max_draft_tokens,
+        .vision_model_path = vision_model_path,
+        .decode_concurrency = static_cast<std::uint32_t>(
+            std::clamp<std::size_t>(session_count, 1, 8)),
+        .mtp_survival = speculative_config.mtp_survival,
+        .prompt_lookup = speculative_config.prompt_lookup,
+        .draft_vocabulary =
+            speculative_config.mtp_latin_draft_vocabulary
+                ? models::qwen38_flash_next::DraftVocabulary::kLatinText
+                : models::qwen38_flash_next::DraftVocabulary::kFull,
+    };
+    if (prefill_policy.prefill_chunk_tokens != 0) {
+      flash_options.prefill_chunk_tokens = prefill_policy.prefill_chunk_tokens;
+    }
     auto model = models::qwen38_flash_next::Model::Load(
-        model_path,
-        models::qwen38_flash_next::ModelOptions{
-            .max_context = max_context,
-            .mtp_model_path =
-                speculative_config.backend == TextSpeculativeBackend::kMtp
-                    ? speculative_config.draft_model_path
-                    : std::string{},
-            .max_draft_tokens = speculative_config.max_draft_tokens,
-            .vision_model_path = vision_model_path,
-            .decode_concurrency = static_cast<std::uint32_t>(
-                std::clamp<std::size_t>(session_count, 1, 8)),
-            .mtp_survival = speculative_config.mtp_survival,
-            .prompt_lookup = speculative_config.prompt_lookup,
-            .draft_vocabulary =
-                speculative_config.mtp_latin_draft_vocabulary
-                    ? models::qwen38_flash_next::DraftVocabulary::kLatinText
-                    : models::qwen38_flash_next::DraftVocabulary::kFull,
-        },
-        &load_error);
+        model_path, flash_options, &load_error);
     if (model == nullptr) {
       SetError(error,
                "Failed to create Qwen3.8-Flash-Next model: " + load_error);
@@ -3712,6 +3771,20 @@ InferenceBackend::Result InferenceBackend::chat(
     std::size_t max_tokens, const sampling::SamplingConfig& sampling_config,
     const CancellationCheck& is_cancelled) {
   return chat(ChatRequest{messages}, max_tokens, sampling_config, is_cancelled);
+}
+
+std::optional<sampling::TokenId> InferenceBackend::token_for_literal(
+    std::string_view text) const {
+#if defined(ENGINE_ENABLE_HIP)
+  const auto state = impl_->Snapshot();
+  if (state == nullptr) {
+    return std::nullopt;
+  }
+  return state->scheduler->runner().ResolveLiteral(text);
+#else
+  (void)text;
+  return std::nullopt;
+#endif
 }
 
 std::size_t InferenceBackend::count_tokens(std::string_view text) const {

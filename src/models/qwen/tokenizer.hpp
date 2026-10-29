@@ -75,6 +75,9 @@ public:
   }
 
   [[nodiscard]] TokenId GetEosTokenId() const noexcept { return eos_token_id_; }
+  [[nodiscard]] TokenId GetEndOfTextTokenId() const noexcept {
+    return endoftext_token_id_;
+  }
   [[nodiscard]] TokenId GetBosTokenId() const noexcept { return bos_token_id_; }
   [[nodiscard]] TokenId GetPadTokenId() const noexcept { return pad_token_id_; }
   [[nodiscard]] bool IsStopToken(TokenId token) const noexcept {

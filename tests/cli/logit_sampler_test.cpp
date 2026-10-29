@@ -10,6 +10,7 @@
 #include <string_view>
 #include <vector>
 
+#include "src/core/eog_boundary.hpp"
 #include "src/core/sampling.hpp"
 #include "tests/models/qwen27b/sampling_cases.hpp"
 
@@ -616,6 +617,149 @@ void TestResponsePenaltyScope() {
          "new request resets generated counts");
 }
 
+void TestEogBoundaryTracksOpenSpans() {
+  using gufo::sampling::EogBoundary;
+  EogBoundary boundary;
+  Expect(!boundary.SpanOpen(), "an empty answer can end");
+  boundary.AcceptPiece("Some prose. ");
+  Expect(!boundary.SpanOpen(), "plain prose can end");
+  boundary.AcceptPiece("```cpp\nint main() {}");
+  Expect(boundary.SpanOpen(), "an unclosed fence blocks the stop");
+  boundary.AcceptPiece("\n```");
+  Expect(!boundary.SpanOpen(), "a closing fence restores the boundary");
+  boundary.AcceptPiece("`inline");
+  Expect(boundary.SpanOpen(), "an unclosed inline span blocks the stop");
+  boundary.AcceptPiece("` done. ");
+  Expect(!boundary.SpanOpen(), "a closing backtick restores the boundary");
+  boundary.AcceptPiece("$$x");
+  Expect(boundary.SpanOpen(), "an unclosed display span blocks the stop");
+  boundary.AcceptPiece("$$");
+  Expect(!boundary.SpanOpen(), "closing double dollars restore the boundary");
+  boundary.AcceptPiece("$x");
+  Expect(boundary.SpanOpen(), "an unclosed inline math span blocks the stop");
+  boundary.AcceptPiece("$");
+  Expect(!boundary.SpanOpen(), "a closing dollar restores the boundary");
+  boundary.AcceptPiece("\\(");
+  Expect(boundary.SpanOpen(), "an unclosed \\( span blocks the stop");
+  boundary.AcceptPiece("\\)");
+  boundary.AcceptPiece("\\[");
+  Expect(boundary.SpanOpen(), "an unclosed \\[ span blocks the stop");
+  boundary.AcceptPiece("\\]");
+  Expect(!boundary.SpanOpen(), "closed LaTeX spans restore the boundary");
+  // Delimiters at the end of a piece are flushed, so they take effect at once.
+  boundary.AcceptPiece("``");
+  Expect(boundary.SpanOpen(), "a trailing delimiter keeps the boundary open");
+  boundary.AcceptPiece("`");
+  Expect(!boundary.SpanOpen(), "a trailing delimiter closes the run it opened");
+  // A fence's content is text: delimiters inside it do not open new spans.
+  boundary.AcceptPiece("```\n`$\\[\n```");
+  Expect(!boundary.SpanOpen(), "span delimiters inside a fence are literal");
+  boundary.AcceptPiece("\\\\[");
+  Expect(!boundary.SpanOpen(), "an escaped backslash does not open \\[");
+  boundary.Reset();
+  boundary.AcceptPiece("```py");
+  Expect(boundary.SpanOpen(), "the boundary tracks a fresh answer");
+  boundary.Reset();
+  Expect(!boundary.SpanOpen(), "reset clears the tracked spans");
+}
+
+void TestSuppressedTokensLeaveTheDistribution() {
+  using gufo::sampling::SamplerState;
+  using gufo::sampling::TokenId;
+  const std::array<float, 3> logits{5.0F, 4.0F, 3.0F};
+  const std::array<TokenId, 1> stop{0};
+  const std::span<const TokenId> none;
+
+  SamplerState greedy;
+  greedy.Suppress(stop);
+  Expect(greedy.Sample(logits) == 1,
+         "a suppressed argmax loses to the runner-up");
+  Expect(!greedy.CanSelectArgmax(0),
+         "a suppressed token cannot bypass sampling as an external argmax");
+  Expect(greedy.CanSelectArgmax(1),
+         "an unsuppressed argmax still bypasses sampling");
+  auto copied = greedy;
+  Expect(copied.Sample(logits) == 1, "suppression survives a sampler copy");
+  greedy.Suppress(none);
+  Expect(greedy.Sample(logits) == 0,
+         "clearing suppression restores the argmax");
+
+  SamplerState sampled({.temperature = 1.0F, .seed = 3});
+  const std::array<TokenId, 2> pair{0, 2};
+  sampled.Suppress(pair);
+  for (int draw = 0; draw < 64; ++draw)
+    Expect(sampled.Sample(logits) == 1,
+           "temperature sampling never draws a suppressed token");
+
+  // Compact rows carry token ids: the mask follows the ids, not the index.
+  const std::array<TokenId, 3> ids{0, 1, 2};
+  SamplerState compact({.temperature = 1.0F, .seed = 3});
+  compact.Suppress(std::array<TokenId, 1>{1});
+  const auto compact_distribution = compact.Distribution(logits, ids);
+  Expect(compact_distribution.probability(1) == 0.0 &&
+             compact_distribution.probability(0) > 0.0,
+         "compact-row suppression masks the matching token id");
+
+  // A caller-supplied candidate list cannot hide a suppressed token.
+  const std::array<float, 3> values{5.0F, 4.0F, 1.0F};
+  const std::array<TokenId, 3> candidates{0, 1, 2};
+  SamplerState top({.temperature = 1.0F, .top_k = 2, .seed = 5});
+  Expect(top.DistributionFromTop(values, candidates, 3).has_value() &&
+             top.SampleFromTop(values, candidates, 3).has_value(),
+         "an unmasked candidate list is usable");
+  top.Suppress(stop);
+  Expect(
+      !top.DistributionFromTop(values, candidates, 3).has_value() &&
+          !top.SampleFromTop(values, candidates, 3).has_value(),
+      "a candidate list that hides a suppressed token falls back to the row");
+}
+
+void TestLogitBiasAppliesToAllPaths() {
+  using gufo::sampling::SamplerState;
+  using gufo::sampling::SamplingConfig;
+  using gufo::sampling::TokenId;
+  const std::array<float, 3> logits{5.0F, 4.0F, 3.0F};
+
+  SamplingConfig config;
+  config.logit_bias = {{TokenId{1}, 10.0F}};
+  SamplerState greedy(config, {});
+  Expect(greedy.Sample(logits) == 1,
+         "a bias lifts the runner-up past the argmax");
+  Expect(!greedy.CanSelectArgmax(0),
+         "a biased request cannot use the raw argmax");
+
+  SamplingConfig ban;
+  ban.logit_bias = {{TokenId{0}, -100.0F}};
+  SamplerState banned(ban, {});
+  Expect(banned.Sample(logits) == 1, "a -100 bias bans the argmax");
+
+  SamplingConfig sampled_config;
+  sampled_config.temperature = 1.0F;
+  sampled_config.seed = 3;
+  sampled_config.logit_bias = {{TokenId{2}, 20.0F}};
+  SamplerState sampled(sampled_config, {});
+  for (int draw = 0; draw < 64; ++draw)
+    Expect(sampled.Sample(logits) == 2,
+           "a large bias dominates temperature draws");
+
+  const std::array<TokenId, 3> ids{0, 1, 2};
+  const auto distribution = sampled.Distribution(logits, ids);
+  Expect(distribution.probability(2) > distribution.probability(0),
+         "compact rows apply the bias to the matching token id");
+
+  const std::array<float, 2> values{5.0F, 4.0F};
+  const std::array<TokenId, 2> candidates{0, 1};
+  SamplingConfig top_config;
+  top_config.temperature = 1.0F;
+  top_config.top_k = 2;
+  top_config.seed = 5;
+  top_config.logit_bias = {{TokenId{1}, 1.0F}};
+  SamplerState top(top_config, {});
+  Expect(!top.DistributionFromTop(values, candidates, 3).has_value() &&
+             !top.SampleFromTop(values, candidates, 3).has_value(),
+         "a biased request falls back from candidate lists to the full row");
+}
+
 }  // namespace
 
 int main() {
@@ -659,6 +803,9 @@ int main() {
   TestFilteredDistributionAgainstFullSort();
   TestBlockSkippedTopKAgainstFullSort();
   TestDeferredResidualReplay();
+  TestEogBoundaryTracksOpenSpans();
+  TestSuppressedTokensLeaveTheDistribution();
+  TestLogitBiasAppliesToAllPaths();
   std::cout << "All logit sampler tests passed.\n";
   return 0;
 }
