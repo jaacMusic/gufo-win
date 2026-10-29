@@ -130,6 +130,20 @@ public:
     return text.size();
   }
 
+  [[nodiscard]] std::optional<gufo::sampling::TokenId> token_for_literal(
+      std::string_view text) const override {
+    if (text == "ban") {
+      return gufo::sampling::TokenId{3};
+    }
+    if (!text.empty() && std::all_of(text.begin(), text.end(), [](char c) {
+          return c >= '0' && c <= '9';
+        })) {
+      return gufo::sampling::TokenId{
+          static_cast<unsigned>(std::stoi(std::string(text)))};
+    }
+    return std::nullopt;
+  }
+
   bool WaitForFirstPiece() {
     std::unique_lock<std::mutex> lock(mutex);
     return condition.wait_for(lock, 2s, [&] { return first_piece_emitted; });
@@ -467,6 +481,53 @@ void TestToolCallsAreStructured() {
   Expect(backend.last_request.tool_choice ==
              gufo::server::ChatRequest::ToolChoice::kRequired,
          "Required tool choice reaches the model backend");
+}
+
+void TestToolCallLiteralsInCodeStayText() {
+  const char* tools = R"([
+      {"type":"function","function":{"name":"get_weather",
+       "description":"Get weather","parameters":{"type":"object",
+       "properties":{"city":{"type":"string"}},"required":["city"]}}}])";
+
+  // A documented call inside a fence is prose, even under a tool-enabled
+  // request; the fence must not flip the reply into tool-call mode.
+  FakeBackend documenter;
+  documenter.pieces = {
+      "Example:\n```python\n<tool_call>\n<function=get_weather>\n"
+      "<parameter=city>\nRome\n</parameter>\n</function>\n</tool_call>\n"
+      "```\nThat is all.",
+  };
+  const auto documented = gufo::server::HandleOpenAiChat(
+      Request(std::string(R"({"model":"test-model",)"
+                          R"("messages":[{"role":"user",)"
+                          R"("content":"document the tool"}],)"
+                          R"("tools":)") +
+              tools + R"(,"tool_choice":"auto","stream":false})"),
+      documenter);
+  Expect(documented.status == 200, "Documenting reply is accepted");
+  Expect(documented.body.find(R"("finish_reason":"tool_calls")") ==
+             std::string::npos,
+         "a tool call inside a code fence stays text");
+  Expect(documented.body.find("get_weather") != std::string::npos &&
+             documented.body.find("That is all.") != std::string::npos,
+         "the fenced documentation survives in the content");
+
+  // The same literal after the fence is a real call again.
+  FakeBackend caller;
+  caller.pieces = {
+      "Use:\n```\nx\n```\n<tool_call>\n<function=get_weather>\n"
+      "<parameter=city>\nRome\n</parameter>\n</function>\n</tool_call>",
+  };
+  const auto called = gufo::server::HandleOpenAiChat(
+      Request(std::string(R"({"model":"test-model",)"
+                          R"("messages":[{"role":"user",)"
+                          R"("content":"use the tool after the example"}],)"
+                          R"("tools":)") +
+              tools + R"(,"tool_choice":"auto","stream":false})"),
+      caller);
+  Expect(
+      called.body.find(R"("finish_reason":"tool_calls")") != std::string::npos,
+      "a tool call after the closing fence is still structured");
 }
 
 void TestParallelCallSeparatorIsNotContent() {
@@ -1143,7 +1204,7 @@ void TestUnsupportedSamplingControlsAreRejected() {
                             "xtc_threshold",      "dry_multiplier",
                             "dry_base",           "dry_allowed_length",
                             "dry_penalty_last_n", "dry_sequence_breakers",
-                            "top_n_sigma",        "logit_bias"}) {
+                            "top_n_sigma"}) {
     auto request = Request(
         R"({"model":"test-model","messages":[{"role":"user","content":"hello"}]})");
     auto body = gufo::json::parse(request.body);
@@ -1164,6 +1225,29 @@ void TestUnsupportedSamplingControlsAreRejected() {
     Expect(response.status == 400 &&
                response.body.find("unsupported_sampling") != std::string::npos,
            "unsupported sampling must not be silently ignored");
+  }
+  // logit_bias is applied, not rejected: keys resolve through the backend
+  // tokenizer and reach the sampler config.
+  {
+    auto request = Request(R"({"model":"test-model",
+        "messages":[{"role":"user","content":"hello"}],
+        "logit_bias":{"ban":-100,"5":2.5}})");
+    const auto response = gufo::server::HandleOpenAiChat(request, backend);
+    Expect(response.status == 200 &&
+               backend.last_sampling.logit_bias.size() == 2 &&
+               backend.last_sampling.logit_bias[0].first == 3 &&
+               backend.last_sampling.logit_bias[0].second == -100.0F &&
+               backend.last_sampling.logit_bias[1].first == 5,
+           "logit_bias reaches the sampler with resolved token ids");
+    auto body = gufo::json::parse(request.body);
+    body["logit_bias"] = gufo::json::parse(R"({"nope":1})");
+    request.body = body.dump();
+    Expect(gufo::server::HandleOpenAiChat(request, backend).status == 400,
+           "an unknown logit_bias key is rejected");
+    body["logit_bias"] = 0.8;
+    request.body = body.dump();
+    Expect(gufo::server::HandleOpenAiChat(request, backend).status == 400,
+           "a non-object logit_bias is rejected");
   }
   // Disabled values, as OpenAI SDKs and llama.cpp front ends send them, leave
   // the output unchanged and are accepted.
@@ -1822,6 +1906,7 @@ int main() {
   TestStreamingPromptOpenedReasoning();
   TestConflictingReasoningControlsAreRejected();
   TestToolCallsAreStructured();
+  TestToolCallLiteralsInCodeStayText();
   TestParallelCallSeparatorIsNotContent();
   TestToolParameterCompatibility();
   TestInvalidToolsFailBeforeGeneration();

@@ -700,8 +700,10 @@ std::optional<HttpResponse> ParseRequest(const HttpRequest& request,
   }
 
   sampling::SamplingConfig parsed_sampling;
-  if (const auto sampling_error =
-          ParseSamplingConfig(body, output->sampling, &parsed_sampling)) {
+  if (const auto sampling_error = ParseSamplingConfig(
+          body, output->sampling, &parsed_sampling, [&](std::string_view key) {
+            return backend.token_for_literal(key);
+          })) {
     return Error(400, "Bad Request", sampling_error->message,
                  sampling_error->code.c_str());
   }
@@ -812,16 +814,82 @@ std::optional<json::Value> TryParseJson(std::string_view value) noexcept {
   }
 }
 
+// True when pos falls inside a code span of text: a ``` fence opened at a
+// line start, or an inline backtick run whose matching run closes on the
+// same line (CommonMark). A tool marker inside such a span is documentation,
+// not a call, so it must not switch the reply to tool-call mode.
+// shortcut: tilde fences and marker literals split across streamed pieces
+// are not recognized; upgrade only if models hit them.
+bool InCodeSpan(std::string_view text, std::size_t pos) {
+  bool fence = false;
+  bool at_line_start = true;
+  std::size_t i = 0;
+  while (i < pos) {
+    if (text[i] != '`') {
+      at_line_start = text[i] == '\n';
+      ++i;
+      continue;
+    }
+    std::size_t run = 0;
+    while (i + run < text.size() && text[i + run] == '`') {
+      ++run;
+    }
+    if (at_line_start && run >= 3) {
+      fence = !fence;
+      const std::size_t eol = text.find('\n', i + run);
+      i = eol == std::string_view::npos ? text.size() : eol + 1;
+      at_line_start = true;
+      continue;
+    }
+    if (!fence) {
+      std::size_t close = std::string_view::npos;
+      for (std::size_t j = i + run; j < text.size() && text[j] != '\n';) {
+        if (text[j] != '`') {
+          ++j;
+          continue;
+        }
+        std::size_t run2 = 0;
+        while (j + run2 < text.size() && text[j + run2] == '`') {
+          ++run2;
+        }
+        if (run2 == run) {
+          close = j;
+          break;
+        }
+        j += run2;
+      }
+      if (close != std::string_view::npos) {
+        if (pos < close + run) {
+          return true;
+        }
+        i = close + run;
+        at_line_start = false;
+        continue;
+      }
+    }
+    i += run;
+    at_line_start = false;
+  }
+  return fence;
+}
+
 std::size_t EarliestMarker(std::string_view text,
                            std::string_view* marker = nullptr) {
   std::size_t earliest = std::string_view::npos;
   for (const auto candidate : kToolMarkers) {
-    const std::size_t position = text.find(candidate);
-    if (position < earliest) {
-      earliest = position;
-      if (marker != nullptr) {
-        *marker = candidate;
+    for (std::size_t position = text.find(candidate);
+         position != std::string_view::npos;
+         position = text.find(candidate, position + 1)) {
+      if (InCodeSpan(text, position)) {
+        continue;
       }
+      if (position < earliest) {
+        earliest = position;
+        if (marker != nullptr) {
+          *marker = candidate;
+        }
+      }
+      break;
     }
   }
   return earliest;

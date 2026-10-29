@@ -251,6 +251,13 @@ public:
 
   [[nodiscard]] virtual std::vector<TextRunnerToken> Tokenize(
       std::string_view text) const = 0;
+  /// Single-vocabulary-token resolution of an OpenAI logit_bias key.
+  /// Runners without a tokenizer leave the request-level field unsupported.
+  [[nodiscard]] virtual std::optional<sampling::TokenId> ResolveLiteral(
+      std::string_view text) const {
+    (void)text;
+    return std::nullopt;
+  }
   [[nodiscard]] virtual std::optional<std::vector<TextRunnerToken>>
   RenderAndTokenize(const ChatRequest& request) const = 0;
   [[nodiscard]] virtual std::optional<TextPreparedPrompt> PreparePrompt(

@@ -290,6 +290,14 @@ public:
 
   [[nodiscard]] virtual std::size_t count_tokens(
       std::string_view text) const = 0;
+
+  /// Maps an OpenAI logit_bias key to a single vocabulary token; nullopt
+  /// when the backend has no tokenizer or the key is not one single token.
+  [[nodiscard]] virtual std::optional<sampling::TokenId> token_for_literal(
+      std::string_view text) const {
+    (void)text;
+    return std::nullopt;
+  }
 };
 
 inline std::shared_ptr<TextGenerationBackend::GenerationRequest>

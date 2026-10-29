@@ -1,9 +1,11 @@
 #ifndef GUFO_SERVER_SAMPLING_REQUEST_HPP_
 #define GUFO_SERVER_SAMPLING_REQUEST_HPP_
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <optional>
 #include <string>
@@ -86,7 +88,9 @@ inline std::optional<SamplingRequestError> ReadSamplingInteger(
 /// Reads all shared sampling controls, using defaults for omitted fields.
 inline std::optional<SamplingRequestError> ParseSamplingConfig(
     const json::Value& body, const sampling::SamplingConfig& defaults,
-    sampling::SamplingConfig* output) {
+    sampling::SamplingConfig* output,
+    const std::function<std::optional<sampling::TokenId>(std::string_view)>&
+        resolve_token = {}) {
   if (output == nullptr) {
     return SamplingRequestError{
         .message = "sampling output must not be null",
@@ -150,8 +154,7 @@ inline std::optional<SamplingRequestError> ParseSamplingConfig(
         field == "tfs_z" || field == "mirostat" || field == "mirostat_eta" ||
         field == "mirostat_tau" || field == "dynatemp_range" ||
         field == "dynatemp_exponent" || field.starts_with("xtc_") ||
-        field.starts_with("dry_") || field == "top_n_sigma" ||
-        field == "logit_bias") {
+        field.starts_with("dry_") || field == "top_n_sigma") {
       return SamplingRequestError{
           .message = "request field '" + field + "' is not supported",
           .code = "unsupported_sampling",
@@ -201,6 +204,49 @@ inline std::optional<SamplingRequestError> ParseSamplingConfig(
   if (auto error = detail::ReadSamplingFloat(body, "presence_penalty",
                                              &output->presence_penalty, true)) {
     return error;
+  }
+
+  // OpenAI logit_bias: token key -> additive logit shift. Keys resolve
+  // through the request tokenizer (single-token pieces or decimal IDs).
+  if (const json::Value* bias = body.find("logit_bias");
+      bias != nullptr && !bias->is_null() &&
+      (bias->is_object() || bias->is_array() ? !bias->empty() : true)) {
+    if (!bias->is_object()) {
+      return SamplingRequestError{
+          .message = "'logit_bias' must be an object of token to bias",
+          .code = "invalid_logit_bias",
+      };
+    }
+    output->logit_bias.clear();
+    for (const auto& [key, value] : bias->members()) {
+      if (!value.is_number() || !std::isfinite(value.as_double())) {
+        return SamplingRequestError{
+            .message = "'logit_bias' values must be finite numbers",
+            .code = "invalid_logit_bias",
+        };
+      }
+      const auto id = resolve_token ? resolve_token(key) : std::nullopt;
+      if (!id) {
+        return SamplingRequestError{
+            .message = "'logit_bias' key '" + key +
+                       "' is not a single vocabulary token",
+            .code = "invalid_logit_bias",
+        };
+      }
+      output->logit_bias.emplace_back(*id,
+                                      static_cast<float>(value.as_double()));
+    }
+    std::ranges::sort(output->logit_bias);
+    // Two spellings can name one token ("12" and its piece): merge by sum.
+    auto write = output->logit_bias.begin();
+    for (auto read = write + 1; read != output->logit_bias.end(); ++read) {
+      if (read->first == write->first) {
+        write->second += read->second;
+      } else {
+        *++write = *read;
+      }
+    }
+    output->logit_bias.erase(write + 1, output->logit_bias.end());
   }
 
   // Check the original JSON number, not the narrowed float: 1.00000001 must
