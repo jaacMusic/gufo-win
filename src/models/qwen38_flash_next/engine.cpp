@@ -30,10 +30,10 @@
 
 #include "src/cli/serve/logging.hpp"
 #include "src/core/experimental_authorization.hpp"
-#include "src/models/qwen38_flash_next/npu/server_prefill.hpp"
-#include "src/models/qwen38_flash_next/npu/staging.hpp"
 #include "src/models/qwen38_flash_next/npu/chunk_retry.hpp"
 #include "src/models/qwen38_flash_next/npu/request_stats.hpp"
+#include "src/models/qwen38_flash_next/npu/server_prefill.hpp"
+#include "src/models/qwen38_flash_next/npu/staging.hpp"
 #endif
 
 namespace gufo::models::qwen38_flash_next {
@@ -245,12 +245,11 @@ std::shared_ptr<Model> Model::Load(const std::string& model_path,
       const auto authorization = core::ExperimentalAuthorization::Granted(
           core::ExperimentalFeature::Prefill, "GUFO_NPU_PREFILL=1");
       std::map<std::string, std::string> values;
-      for (const char* name : {"GUFO_NPU_DIR", "GUFO_NPU_SLICES",
-                               "GUFO_NPU_GATE_SLICES", "GUFO_NPU_SHEXP",
-                               "GUFO_NPU_TIMEOUT_MS", "GUFO_NPU_KEEPALIVE",
-                               "GUFO_NPU_KEEPALIVE_MS", "GUFO_NPU_GUARD",
-                               "GUFO_NPU_HAL_MONITOR", "GUFO_NPU_CHIP_POWER",
-                               "GUFO_NPU_MEM_TRACE"}) {
+      for (const char* name :
+           {"GUFO_NPU_DIR", "GUFO_NPU_SLICES", "GUFO_NPU_GATE_SLICES",
+            "GUFO_NPU_SHEXP", "GUFO_NPU_TIMEOUT_MS", "GUFO_NPU_KEEPALIVE",
+            "GUFO_NPU_KEEPALIVE_MS", "GUFO_NPU_GUARD", "GUFO_NPU_HAL_MONITOR",
+            "GUFO_NPU_CHIP_POWER", "GUFO_NPU_MEM_TRACE"}) {
         if (const char* value = std::getenv(name))
           values.emplace(name, value);
       }
@@ -843,9 +842,9 @@ bool Session::Feed(std::span<const std::int32_t> tokens, std::string* error_msg,
       backed_up = exec.SaveNpuRetryBackup(*session_, &backup_error);
       static std::atomic<bool> unavailable_logged{false};
       if (!backed_up && !unavailable_logged.exchange(true)) {
-        server::Logger::Warn("npu",
-                             "GPU retry of a faulted NPU chunk is unavailable: " +
-                                 backup_error);
+        server::Logger::Warn(
+            "npu",
+            "GPU retry of a faulted NPU chunk is unavailable: " + backup_error);
       }
     }
     const bool failed_before = npu::ProcessFailed();
@@ -859,23 +858,21 @@ bool Session::Feed(std::span<const std::int32_t> tokens, std::string* error_msg,
       double copy_ms = -1;
       if (!exec.NpuRetryBackupMs(&copy_ms))
         copy_ms = -1;
-      const bool used = npu::ChunkUsedThisAttempt(serial_before,
-                                                  pref->chunk_serial(),
-                                                  pref->ChunkUsed());
+      const bool used = npu::ChunkUsedThisAttempt(
+          serial_before, pref->chunk_serial(), pref->ChunkUsed());
       if (used &&
           npu::BackupBelongsToChunk(noted_before, npu::RequestChunksNoted()))
         npu::NoteChunkBackup(copy_ms);
-      if (!forwarded &&
-          npu::ShouldRetryChunk(failed_before, npu::ProcessFailed(), used,
-                                true)) {
+      if (!forwarded && npu::ShouldRetryChunk(
+                            failed_before, npu::ProcessFailed(), used, true)) {
         const auto chunk_number =
             npu::Stats().chunks.load(std::memory_order_relaxed);
         const auto started = std::chrono::steady_clock::now();
         std::string retry_error;
         forwarded = exec.RestoreNpuRetryBackup(*session_, &retry_error);
         forwarded =
-            forwarded && exec.Forward(*session_, chunk, 1, logits_.data(),
-                                      mode, &retry_error,
+            forwarded && exec.Forward(*session_, chunk, 1, logits_.data(), mode,
+                                      &retry_error,
                                       /*verify_candidates=*/false, next);
         if (forwarded) {
           npu::Faults().gpu_retries.fetch_add(1, std::memory_order_relaxed);

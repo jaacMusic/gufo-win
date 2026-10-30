@@ -1451,7 +1451,8 @@ void TestCacheRamBudgetOverride() {
 
 void TestRamSharedPrefixIsLearnedAndRestoredAcrossConversations() {
   auto stats = std::make_shared<FakeStats>();
-  auto runner = std::make_shared<GrowingSnapshotRunner>(stats, 64, 256, 1 << 20);
+  auto runner =
+      std::make_shared<GrowingSnapshotRunner>(stats, 64, 256, 1 << 20);
   TextRunnerPool pool(runner, 1);
   // Two sibling conversations of one agent: a shared system prompt, then a
   // divergent turn. 256 tokens clears the 128-token learning floor.
@@ -1506,7 +1507,8 @@ void TestRamSharedPrefixIsLearnedAndRestoredAcrossConversations() {
 
 void TestRequestedSharedBoundaryStopsPrefillForAQueuedPeer() {
   auto stats = std::make_shared<FakeStats>();
-  auto runner = std::make_shared<GrowingSnapshotRunner>(stats, 64, 256, 1 << 20);
+  auto runner =
+      std::make_shared<GrowingSnapshotRunner>(stats, 64, 256, 1 << 20);
   TextRunnerPool pool(runner, 1);
   // A follower arrives while the leader is still prefilling and shares 575
   // tokens with it, as subagents started from one system prompt do.

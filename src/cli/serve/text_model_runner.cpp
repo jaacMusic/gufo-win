@@ -871,8 +871,7 @@ struct TextRunnerPool::Request::Impl {
         std::ostringstream line;
         line << "event=shared_checkpoint tokens=" << position
              << " bytes=" << bytes << " tier=" << (save_ram ? "ram" : "")
-             << (save_ram && save_disk ? "," : "")
-             << (save_disk ? "disk" : "");
+             << (save_ram && save_disk ? "," : "") << (save_disk ? "disk" : "");
         Logger::Info("cache", line.str());
       }
     } catch (...) {

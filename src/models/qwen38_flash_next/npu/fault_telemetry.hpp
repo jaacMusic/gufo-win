@@ -60,8 +60,8 @@ struct ChunkStart {
   CounterSnapshot counters;
   std::uint64_t hal_seq = 0;
   unsigned tokens = 0;
-  double cpu_ms = 0;  // process CPU time at chunk start
-  MemTraceSample trace;  // G0b: process memory + sampled buffer pages
+  double cpu_ms = 0;               // process CPU time at chunk start
+  MemTraceSample trace;            // G0b: process memory + sampled buffer pages
   bool first_after_rearm = false;  // first NPU chunk after a guard re-arm
 };
 struct ChunkEnd {

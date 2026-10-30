@@ -2483,8 +2483,9 @@ bool Executor::Moe(const DeviceLayer& l, const float* x, float* out,
     }
     if (shexp_half_ready_) {
       shexp_half_ready_ = false;
-      if (!DenseF16Gemm(l.shexp_down.data, s_.shexp_half, s_.shexp_out, n_tokens,
-                        l.shexp_down.rows, l.shexp_down.cols, stream_)) {
+      if (!DenseF16Gemm(l.shexp_down.data, s_.shexp_half, s_.shexp_out,
+                        n_tokens, l.shexp_down.rows, l.shexp_down.cols,
+                        stream_)) {
         AssignError(error_msg, "shared expert F16 GEMM failed");
         return false;
       }
@@ -3094,7 +3095,7 @@ bool Executor::ForwardBody(Session& session, std::uint32_t n,
                            ,
                            WidePrefill(n), static_cast<int>(il)
 #endif
-                           )) {
+                               )) {
         return false;
       }
     } else if (!Attention(l, session.attention_[il], s_.mixed, s_.block_out, n,
@@ -3137,7 +3138,7 @@ bool Executor::ForwardBody(Session& session, std::uint32_t n,
                ,
                /*last_only=*/false, WidePrefill(rows), static_cast<int>(il)
 #endif
-               ))
+                   ))
         return false;
       Combine(s_.res, next_norm, rows, next_inject);
       return true;

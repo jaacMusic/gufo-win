@@ -1,5 +1,9 @@
+// delayimp.h needs windows.h's declarations first, which Regroup sorting
+// would reverse.
+// clang-format off
 #include <windows.h>
 #include <delayimp.h>
+// clang-format on
 #include <xrt/experimental/xrt_version.h>
 
 #include <iostream>
@@ -20,12 +24,14 @@ int main() {
     try {
       (void)__pfnDliFailureHook2(dliFailGetProc, &missing_export);
     } catch (const std::runtime_error& error) {
-      import_rejected = std::string_view(error.what()).find(
-                            "delayed import unavailable") != std::string_view::npos;
+      import_rejected =
+          std::string_view(error.what()).find("delayed import unavailable") !=
+          std::string_view::npos;
     }
   }
   if (!import_rejected || GetModuleHandleW(L"xrt_coreutil.dll")) {
-    std::cerr << "FAIL: missing delayed export did not produce a C++ exception\n";
+    std::cerr
+        << "FAIL: missing delayed export did not produce a C++ exception\n";
     return 1;
   }
   try {

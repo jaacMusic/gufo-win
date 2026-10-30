@@ -506,11 +506,11 @@ std::vector<std::size_t> ContinuationCache::SharedPrefixBoundaries(
     const auto inspect = [&](std::span<const ContinuationToken> tokens) {
       if (tokens.size() < min_tokens)
         return;
-      const auto common = static_cast<std::size_t>(
-          std::mismatch(tokens.begin(), tokens.end(), prompt.begin(),
-                        prompt.end())
-              .first -
-          tokens.begin());
+      const auto common =
+          static_cast<std::size_t>(std::mismatch(tokens.begin(), tokens.end(),
+                                                 prompt.begin(), prompt.end())
+                                       .first -
+                                   tokens.begin());
       // A retained state that is a complete prefix of this prompt is already
       // a restorable hit, not a divergence point.
       if (common >= min_tokens && common < prompt.size() &&

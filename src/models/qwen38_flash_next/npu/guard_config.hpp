@@ -2,10 +2,6 @@
 #ifndef GUFO_NPU_GUARD_CONFIG_HPP_
 #define GUFO_NPU_GUARD_CONFIG_HPP_
 
-
-
-
-
 namespace gufo::npu::guard {
 // Power rule: the mean RAPL package power of POWER_CHUNKS consecutive NPU
 // chunks above POWER_W trips it.

@@ -8,10 +8,10 @@
 #include <optional>
 #include <string>
 
-#include "src/models/qwen38_flash_next/npu_retry.hpp"
 #include "src/models/qwen38_flash_next/npu/fault_state.hpp"
 #include "src/models/qwen38_flash_next/npu/fault_telemetry.hpp"
 #include "src/models/qwen38_flash_next/npu/runtime_status.hpp"
+#include "src/models/qwen38_flash_next/npu_retry.hpp"
 
 using namespace gufo::npu;
 namespace qfn = gufo::models::qwen38_flash_next;

@@ -23,8 +23,6 @@
 
 namespace gufo::npu {
 
-
-
 struct PowerSample {
   std::int64_t ts_ns = 0;
   double energy_pwh = 0;

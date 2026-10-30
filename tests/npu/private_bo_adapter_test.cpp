@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 #include "src/models/qwen38_flash_next/npu/private_bo_adapter.hpp"
 
-#include <cassert>
 #include <crtdbg.h>
+
+#include <cassert>
 #include <cstdlib>
 #include <iostream>
 #include <map>

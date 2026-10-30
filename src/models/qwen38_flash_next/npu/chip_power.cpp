@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: MIT
 #include "chip_power.hpp"
-#include "fault_telemetry.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -9,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "fault_telemetry.hpp"
 #include "src/cli/serve/logging.hpp"
 
 #ifdef _WIN32

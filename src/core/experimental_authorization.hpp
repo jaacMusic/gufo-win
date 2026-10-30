@@ -48,10 +48,11 @@ private:
 
 // The startup and CPU counter share this creation boundary. The callback is
 // never evaluated for a denied capability.
-template <class Factory>
+template<class Factory>
 bool CreateAuthorizedPrefill(const ExperimentalAuthorization& authorization,
                              Factory&& factory) {
-  if (!authorization.Allows(ExperimentalFeature::Prefill)) return false;
+  if (!authorization.Allows(ExperimentalFeature::Prefill))
+    return false;
   std::forward<Factory>(factory)(authorization);
   return true;
 }

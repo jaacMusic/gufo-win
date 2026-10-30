@@ -39,8 +39,7 @@ void FailProcess(std::string_view message) noexcept {
     for (auto& c : error)
       if (c == '\n' || c == '\r' || c == '\t')
         c = ' ';
-    server::Logger::Warn(
-        "npu", error + "; NPU disabled for process; GPU path");
+    server::Logger::Warn("npu", error + "; NPU disabled for process; GPU path");
   } catch (...) {
   }
   NoteNpuFaulted();  // status: faulted, reason "fault" (no-op before start-up)
@@ -160,7 +159,8 @@ NpuResult NpuSession::Start() {
     if (s.healthy) {
       try {
         const auto platform = json::parse(s.adapter->PowerMode());
-        server::Logger::Info("npu", "power mode (read-only)=" + platform.dump());
+        server::Logger::Info("npu",
+                             "power mode (read-only)=" + platform.dump());
       } catch (...) {
         // Optional platform information must not disable a working session.
       }

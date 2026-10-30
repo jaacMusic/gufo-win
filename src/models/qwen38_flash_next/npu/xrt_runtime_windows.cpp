@@ -143,4 +143,5 @@ void EnsureXrtRuntime() {
 // Object inclusion (rather than archive extraction) makes the hook mandatory.
 extern "C" const PfnDliHook __pfnDliNotifyHook2 = gufo::npu::VerifiedDelayHook;
 
-extern "C" const PfnDliHook __pfnDliFailureHook2 = gufo::npu::VerifiedDelayFailure;
+extern "C" const PfnDliHook __pfnDliFailureHook2 =
+    gufo::npu::VerifiedDelayFailure;

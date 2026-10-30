@@ -79,12 +79,13 @@ Knobs ParseKnobs(const core::ExperimentalAuthorization& authorization,
     throw std::invalid_argument("GUFO_NPU_DIR: invalid artifact path");
   if (directory.empty()) {
     std::array<wchar_t, 32768> executable{};
-    const DWORD length = GetModuleFileNameW(nullptr, executable.data(),
-                                            static_cast<DWORD>(executable.size()));
+    const DWORD length = GetModuleFileNameW(
+        nullptr, executable.data(), static_cast<DWORD>(executable.size()));
     if (!length || length >= executable.size())
       throw std::invalid_argument("NPU executable directory unavailable");
     knobs.artifacts = (std::filesystem::path(executable.data()).parent_path() /
-                       ".." / "tools" / "npu").lexically_normal();
+                       ".." / "tools" / "npu")
+                          .lexically_normal();
   } else {
     std::u8string utf8;
     for (const auto byte : directory)

@@ -439,10 +439,9 @@ struct TextGenerationScheduler::Impl {
     }
     const auto position = resident->runner_request.prefill_position();
     const auto waiting = QueuedSnapshot();
-    if (waiting.empty() ||
-        (resident->id == shared_probe_request_id &&
-         position == shared_probe_position &&
-         waiting.size() == shared_probe_waiting)) {
+    if (waiting.empty() || (resident->id == shared_probe_request_id &&
+                            position == shared_probe_position &&
+                            waiting.size() == shared_probe_waiting)) {
       return;
     }
     shared_probe_request_id = resident->id;
@@ -450,9 +449,9 @@ struct TextGenerationScheduler::Impl {
     shared_probe_waiting = waiting.size();
     const auto prompt = resident->runner_request.prompt_span();
     for (const auto& waiter : waiting) {
-      const auto common = std::mismatch(prompt.begin(), prompt.end(),
-                                        waiter->prompt.begin(),
-                                        waiter->prompt.end());
+      const auto common =
+          std::mismatch(prompt.begin(), prompt.end(), waiter->prompt.begin(),
+                        waiter->prompt.end());
       const auto shared =
           static_cast<std::size_t>(common.first - prompt.begin());
       if (shared >= kSharedPrefixMinTokens) {

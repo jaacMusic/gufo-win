@@ -29,7 +29,7 @@ struct Knobs {
   // disables a winning lane, and the sampler reads whole-chip power, which a
   // GPU-only prefill already exceeds on a desk host.
   GuardMode guard = GuardMode::kLog;
-  GuardOverrides guard_test;         // GUFO_NPU_GUARD_TEST (internal)
+  GuardOverrides guard_test;  // GUFO_NPU_GUARD_TEST (internal)
   // GUFO_NPU_TEST_FAIL_CHUNK (internal): NPU chunk of a request to report as
   // invalid, counted from 0.
   std::optional<std::uint64_t> test_fail_chunk;

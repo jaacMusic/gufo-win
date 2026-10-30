@@ -2,14 +2,6 @@
 #ifndef GUFO_NPU_MEM_TRACE_HPP_
 #define GUFO_NPU_MEM_TRACE_HPP_
 
-
-
-
-
-
-
-
-
 #include <cstdint>
 #include <functional>
 #include <memory>

@@ -641,7 +641,7 @@ void TestSharedPrefixBoundariesComeFromRetainedStates() {
     return std::make_unique<FakeState>(next_id++, &invalidations);
   });
 
-  const std::vector<ContinuationToken> retained{1, 2, 3,  4,  5,  6,
+  const std::vector<ContinuationToken> retained{1, 2, 3, 4,  5,  6,
                                                 7, 8, 9, 10, 11, 12};
   {
     auto lease = cache.Acquire(retained);
@@ -656,7 +656,7 @@ void TestSharedPrefixBoundariesComeFromRetainedStates() {
          "a divergence below the minimum length is not learned");
   Expect(cache.SharedPrefixBoundaries(divergent, 4, 0).empty(),
          "no boundaries are reported when learning is disabled");
-  const std::vector<ContinuationToken> extension{1, 2, 3,  4,  5,  6,  7,
+  const std::vector<ContinuationToken> extension{1, 2, 3,  4,  5,  6, 7,
                                                  8, 9, 10, 11, 12, 13};
   Expect(cache.SharedPrefixBoundaries(extension, 4, 4).empty(),
          "a complete retained prefix is a hit, not a divergence point");

@@ -29,9 +29,7 @@ public:
   }
   bool Start();
   NpuSession& session() noexcept { return session_; }
-  bool ready() const noexcept {
-    return ready_.load() && session_.Healthy();
-  }
+  bool ready() const noexcept { return ready_.load() && session_.Healthy(); }
   // What the NPU lanes check. ready() plus the guard hold, LATCHED once per
   // chunk in BeginChunk (a hold that starts mid-chunk waits for the next
   // chunk, so a chunk never mixes NPU and GPU layers and the transfer

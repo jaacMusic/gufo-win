@@ -207,7 +207,8 @@ bool HipLinearZTransfer::WaitOnStream(std::shared_future<LinearZResult> result,
             stats.finish_not_ready.fetch_add(1, std::memory_order_relaxed);
             const auto waited = NowNs() - t0;
             stats.finish_wait_ns.fetch_add(waited, std::memory_order_relaxed);
-            stats.lane_wait_ns[w->lane].fetch_add(waited, std::memory_order_relaxed);
+            stats.lane_wait_ns[w->lane].fetch_add(waited,
+                                                  std::memory_order_relaxed);
             stats.lane_blocked[w->lane].fetch_add(1, std::memory_order_relaxed);
             if (!ready)
               throw std::runtime_error("NPU stream result timeout");

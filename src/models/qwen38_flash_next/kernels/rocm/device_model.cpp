@@ -474,11 +474,10 @@ std::unique_ptr<DeviceModel> DeviceModel::Upload(
   // failure disables the NPU lane only: the GPU path still loads the model.
   // Only the linear-z and shared-expert lanes have call sites; the query/gate
   // plan would be staged and made resident without ever being dispatched.
-  const bool npu_shapes = w.config.num_layers == 48 &&
-                          w.config.full_attention_interval == 4 &&
-                          w.config.hidden_size == 2560 &&
-                          w.config.SsmConvChannels() == 10240 &&
-                          w.config.SsmValueDim() == 6144;
+  const bool npu_shapes =
+      w.config.num_layers == 48 && w.config.full_attention_interval == 4 &&
+      w.config.hidden_size == 2560 && w.config.SsmConvChannels() == 10240 &&
+      w.config.SsmValueDim() == 6144;
   std::vector<std::shared_ptr<const npu::LinearZWeights>> z;
   std::vector<std::shared_ptr<const npu::ProjectionWeights>> shared;
   if (prefill && prefill->ready() && npu_shapes) {
@@ -521,9 +520,9 @@ std::unique_ptr<DeviceModel> DeviceModel::Upload(
             l.shexp_down.type == core::GgmlType::kQ8_0 &&
             l.shexp_down.rows == 2560 &&
             l.shexp_down.cols == w.config.shared_expert_ff)
-          shared[i] = npu::PrepareSharedExpert(
-              matrix(l.shexp_gate), matrix(l.shexp_up),
-              prefill->knobs().shared_expert);
+          shared[i] =
+              npu::PrepareSharedExpert(matrix(l.shexp_gate), matrix(l.shexp_up),
+                                       prefill->knobs().shared_expert);
       }
       for (const auto& weights : z)
         if (weights)
@@ -534,29 +533,31 @@ std::unique_ptr<DeviceModel> DeviceModel::Upload(
           for (const auto& b : weights->b)
             prefill->session().PrepareWeight(std::as_bytes(std::span(b)));
       server::Logger::Info(
-          "npu", "linear-z qualified layers=" +
-                     std::to_string(std::count_if(
-                         z.begin(), z.end(),
-                         [](const auto& p) { return bool(p); })) +
-                     "; slices=" + std::to_string(prefill->knobs().slices) +
-                     "; shared gate/up qualified layers=" +
-                     std::to_string(std::count_if(
-                         shared.begin(), shared.end(),
-                         [](const auto& p) { return bool(p); })) +
-                     "; other weight shapes and non-full prefill use GPU "
-                     "fallback");
+          "npu",
+          "linear-z qualified layers=" +
+              std::to_string(std::count_if(
+                  z.begin(), z.end(), [](const auto& p) { return bool(p); })) +
+              "; slices=" + std::to_string(prefill->knobs().slices) +
+              "; shared gate/up qualified layers=" +
+              std::to_string(
+                  std::count_if(shared.begin(), shared.end(),
+                                [](const auto& p) { return bool(p); })) +
+              "; other weight shapes and non-full prefill use GPU "
+              "fallback");
       m->npu_prefill_ = std::move(prefill);
     } catch (const std::exception& e) {
       z.clear();
       shared.clear();
       prefill->Reject(e.what());
       server::Logger::Warn("npu", std::string("linear-z staging failed (") +
-                                      e.what() + "); falling back to the GPU "
+                                      e.what() +
+                                      "); falling back to the GPU "
                                       "path");
     }
   } else if (prefill && prefill->ready()) {
-    server::Logger::Warn("npu", "model shape not qualified for linear-z; "
-                                "falling back to the GPU path");
+    server::Logger::Warn("npu",
+                         "model shape not qualified for linear-z; "
+                         "falling back to the GPU path");
   }
 #endif
   const auto regions = reader.GetMappedRegions();
@@ -636,7 +637,8 @@ std::unique_ptr<DeviceModel> DeviceModel::Upload(
   m->output_bytes_ = w.output.SizeBytes();
   for (const auto& c : conversions) {
     if (c.expand_q8) {
-      ExpandQ8_0(c.source, static_cast<float*>(c.destination), c.count, nullptr);
+      ExpandQ8_0(c.source, static_cast<float*>(c.destination), c.count,
+                 nullptr);
     } else {
       NarrowActivations(static_cast<const float*>(c.source), c.destination,
                         false, c.count, nullptr);
