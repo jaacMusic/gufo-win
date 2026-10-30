@@ -289,4 +289,15 @@ Per-layer prefill marks (`w255`) at pp2048 d0 on the warm APU close the open
   tier (vendor `mmq/`) at wide shapes, i.e. upstream items #708 and #779, and
   carries the same gate as every prior prefill-kernel proposal: bit-identical
   outputs plus greedy-replay pricing before vendor code moves.
+- Correction (2026-10-30, `tools/bench/routed_stream_probe.hip`): the 124 GB/s
+  "in-model streaming ceiling" used above is stale. A replay of the exact
+  RoutedF16GEMM Q4_K fetch pattern sustains 198 GB/s (213 GB/s at 64 B/lane,
+  so fetch width caps the gain at +8%). The routed experts move ~73 GB in a
+  traced 388 ms = 188 GB/s, i.e. ~95% of what the pattern can sustain:
+  RoutedF16GEMM does not need fixing. The gap to upstream instead lives in
+  the ~676 ms non-routed tier (dense F16 GEMMs, HC combines, DeltaNet, W8A8,
+  attention; ~38 GB moved = ~56 GB/s equivalent, 3.5x off stream rate), which
+  needs a fresh per-kernel trace (rocprofv3, Linux host) before any next move.
+  The 71%-of-ceiling and 88 GB/s figures above should be read with this in
+  mind.
 

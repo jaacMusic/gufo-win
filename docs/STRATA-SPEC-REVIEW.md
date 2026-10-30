@@ -103,6 +103,30 @@ Not ported: an `ldx` on ~10 kernels, every producer of `x_half` and the
 hipBLASLt descriptors, for a sub-1% ceiling. This also says where the pp2048
 gap is *not*: a stride-camping fix would have to be worth 10%+ to close it.
 
+## Fifth pass (2026-10-30): remaining strata switches priced
+
+- `STRATA_PREFILL_STREAM_MIN=128` (fused expert path from 128 tokens): already
+  beaten here — `WidePrefill` gates on `rows > kVecBatch` = 8
+  (executor.cpp:110,130), so 512-2048-token agent turns already take the wide
+  fused route. Nothing to port.
+- `STRATA_CVEC_FUSE` (fused HC chain): equivalent already shipped. The wide
+  route runs RmsNormRows -> `HcDownF16Gemm` -> `HcMixF16Gemm` (up + inject +
+  F16/Q8 emission in one kernel), and every per-layer combine that can be
+  `half_only` already is (executor.cpp:3083-3138, batch.cpp:1069). The
+  attention layers' F16/Q8 copies are consumed by the following QKV
+  projections, so they are not dead writes.
+- `STRATA_PF_SWITCH_MIN_T=4096`: a policy gate with nothing to front today
+  (PF_F16/PF_GEMM/HC_UPMIX banked; its only unlock, WMMA prefill attention,
+  needs the 32K+ quadratic term first). Costs length-dependent numerics and
+  breaks sha256 regression gating. Not built.
+- Routed experts: `tools/bench/routed_stream_probe.hip` shows the production
+  Q4_K fetch pattern sustains 198 GB/s and we run ~188 GB/s of it (388 ms for
+  ~73 GB) — `RoutedF16GEMM` is at ~95% of its own ceiling. The open ground is
+  the ~676 ms non-routed tier (dense F16 GEMMs, HC, DeltaNet, W8A8, attention
+  at ~56 GB/s equivalent), which needs a fresh rocprofv3 trace on the Linux
+  host before the GDN family or further fusion can be priced honestly.
+
+
 ## Strata findings worth remembering
 
 - Overlapping drafter and verify on separate streams (`--spec-split`)
