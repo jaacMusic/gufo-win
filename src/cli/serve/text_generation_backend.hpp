@@ -141,7 +141,8 @@ public:
     /// Bytes admitted to background persistence; completion is logged by cache.
     std::size_t cache_disk_queued_bytes{0};
     std::size_t cache_shared_bytes{0};
-    /// Shared-prefix snapshots queued while prefilling this request.
+    /// Shared-prefix snapshots retained (RAM) or queued (disk) while
+    /// prefilling this request.
     std::size_t cache_shared_prefix_snapshots{0};
     std::size_t cache_shared_prefix_bytes{0};
     std::size_t completion_tokens{0};

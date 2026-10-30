@@ -633,6 +633,35 @@ void TestAppendedImagesReuseOnlyCompatiblePrefixes() {
          "image mismatch diagnostics retain the actual token agreement");
 }
 
+void TestSharedPrefixBoundariesComeFromRetainedStates() {
+  using namespace gufo::server;
+  std::vector<std::size_t> invalidations(1);
+  std::size_t next_id = 0;
+  ContinuationCache cache(1, [&] {
+    return std::make_unique<FakeState>(next_id++, &invalidations);
+  });
+
+  const std::vector<ContinuationToken> retained{1, 2, 3,  4,  5,  6,
+                                                7, 8, 9, 10, 11, 12};
+  {
+    auto lease = cache.Acquire(retained);
+    lease.Commit(retained);
+  }
+
+  const std::vector<ContinuationToken> divergent{1, 2, 3, 4, 5, 6, 90, 91};
+  Expect(cache.SharedPrefixBoundaries(divergent, 4, 4) ==
+             std::vector<std::size_t>{6},
+         "a retained state reports where it diverges from this prompt");
+  Expect(cache.SharedPrefixBoundaries(divergent, 7, 4).empty(),
+         "a divergence below the minimum length is not learned");
+  Expect(cache.SharedPrefixBoundaries(divergent, 4, 0).empty(),
+         "no boundaries are reported when learning is disabled");
+  const std::vector<ContinuationToken> extension{1, 2, 3,  4,  5,  6,  7,
+                                                 8, 9, 10, 11, 12, 13};
+  Expect(cache.SharedPrefixBoundaries(extension, 4, 4).empty(),
+         "a complete retained prefix is a hit, not a divergence point");
+}
+
 int main() {
   TestAppendedImagesReuseOnlyCompatiblePrefixes();
   TestImageIdentityIsolation();
@@ -649,6 +678,7 @@ int main() {
   TestAbandonedReservationIsReleased();
   TestReservationMismatchSkipsRetentionWithoutFailingCommit();
   TestEntryReplacementLogsRemovedSnapshot();
+  TestSharedPrefixBoundariesComeFromRetainedStates();
   std::cout << "All continuation cache tests passed\n";
   return 0;
 }

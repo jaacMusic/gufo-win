@@ -495,6 +495,46 @@ std::size_t ContinuationCache::reserved_snapshot_bytes() const noexcept {
   return impl_->reserved_snapshot_bytes;
 }
 
+std::vector<std::size_t> ContinuationCache::SharedPrefixBoundaries(
+    std::span<const ContinuationToken> prompt, std::size_t min_tokens,
+    std::size_t max_boundaries) const {
+  std::vector<std::size_t> boundaries;
+  if (max_boundaries == 0 || prompt.size() <= min_tokens)
+    return boundaries;
+  {
+    const std::lock_guard<std::mutex> lock(impl_->mutex);
+    const auto inspect = [&](std::span<const ContinuationToken> tokens) {
+      if (tokens.size() < min_tokens)
+        return;
+      const auto common = static_cast<std::size_t>(
+          std::mismatch(tokens.begin(), tokens.end(), prompt.begin(),
+                        prompt.end())
+              .first -
+          tokens.begin());
+      // A retained state that is a complete prefix of this prompt is already
+      // a restorable hit, not a divergence point.
+      if (common >= min_tokens && common < prompt.size() &&
+          common < tokens.size())
+        boundaries.push_back(common);
+    };
+    for (const auto& entry : impl_->entries) {
+      if (entry->valid)
+        inspect(entry->tokens);
+      inspect(entry->live_tokens);
+    }
+  }
+  std::ranges::sort(boundaries);
+  boundaries.erase(std::unique(boundaries.begin(), boundaries.end()),
+                   boundaries.end());
+  // Keep the longest ones: they save the most prefill when they hit.
+  if (boundaries.size() > max_boundaries) {
+    boundaries.erase(
+        boundaries.begin(),
+        boundaries.end() - static_cast<std::ptrdiff_t>(max_boundaries));
+  }
+  return boundaries;
+}
+
 ContinuationState& ContinuationCache::StateAt(std::size_t index) {
   return *impl_->entries.at(index)->state;
 }

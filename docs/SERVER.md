@@ -144,8 +144,10 @@ correction; greedy verification follows target argmax. Draft and verification
 work can batch across ready requests. See the
 [Flash-Next benchmark and quality contract](models/qwen3.8-flash-next/BENCHMARKS.md).
 
-Each model chooses its prefill chunk. `--prefill-chunk` limits prompt work
-between active decode rounds without changing a lone request's kernel policy.
+Each model chooses its prefill chunk; `--prefill-batch` overrides the
+Flash-Next chunk of 8192 prompt tokens per prefill pass. `--prefill-chunk`
+limits prompt work between active decode rounds without changing a lone
+request's kernel policy.
 
 Qwen image requests reuse decoded and resized RGB pixels using a fast lookup
 hash and exact encoded-byte comparison under the preprocessing version. Each
@@ -204,10 +206,19 @@ the environment, and either is capped at 7 GiB and by that available memory.
 When the stable boundary cannot fit, prefill retains one intermediate checkpoint
 at the largest prefix below 90% of the budget, so a long session moves its reuse
 point forward instead of pinning the oldest checkpoint.
-Boundaries larger than the budget are skipped without evicting the retained
-prefix. The automatic staging limit still derives from the budget but stays
+Snapshot boundaries larger than the budget are skipped without evicting the
+retained prefix. The automatic staging limit still derives from the budget but stays
 capped at 1 GiB; set `--cache-disk-staging-bytes` explicitly to stage a larger
 checkpoint.
+
+Sibling conversations that share a prefix learn it in RAM with no flag: when the
+incoming prompt diverges from a retained conversation after 128 or more tokens,
+prefill stops once at that divergence point and retains a checkpoint there
+(`event=shared_checkpoint tier=ram`), so the third conversation with the same
+system prompt restores it instead of prefilling it again. At most the four
+longest divergence points are captured per request, and the disk tier persists
+the same positions when `--cache-disk` is enabled. Each captured checkpoint
+follows the snapshot accounting above, so refusals leave the request unaffected.
 
 Snapshots that exceed either limit are skipped with their required size and
 available budget logged; live conversation reuse remains available. Existing

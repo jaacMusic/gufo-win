@@ -1449,6 +1449,61 @@ void TestCacheRamBudgetOverride() {
 
 }  // namespace
 
+void TestRamSharedPrefixIsLearnedAndRestoredAcrossConversations() {
+  auto stats = std::make_shared<FakeStats>();
+  auto runner = std::make_shared<GrowingSnapshotRunner>(stats, 64, 256, 1 << 20);
+  TextRunnerPool pool(runner, 1);
+  // Two sibling conversations of one agent: a shared system prompt, then a
+  // divergent turn. 256 tokens clears the 128-token learning floor.
+  std::vector<TextRunnerToken> system(256);
+  for (std::size_t index = 0; index < system.size(); ++index)
+    system[index] = static_cast<TextRunnerToken>(index);
+  const auto conversation = [&](TextRunnerToken turn) {
+    auto prompt = system;
+    for (TextRunnerToken suffix = 0; suffix < 5; ++suffix)
+      prompt.push_back(turn + suffix);
+    return prompt;
+  };
+
+  {
+    auto request = pool.Acquire(conversation(1000));
+    Expect(!request.cache_hit(), "first conversation is cold");
+    Expect(request.Prefill(4096).consumed_tokens == 261,
+           "nothing is shared yet, so prefill runs uninterrupted");
+    Expect(request.Commit().shared_prefix_snapshots == 0,
+           "no divergence point exists after one conversation");
+  }
+
+  // The second conversation stops at the shared prefix so the RAM cache can
+  // retain a checkpoint there.
+  {
+    auto request = pool.Acquire(conversation(2000));
+    Expect(!request.cache_hit(), "second conversation has no checkpoint");
+    const auto first = request.Prefill(4096);
+    Expect(first.consumed_tokens == 256 && !first.decode_ready,
+           "prefill stops at the learned divergence point");
+    const auto second = request.Prefill(4096);
+    Expect(second.consumed_tokens == 5 && second.decode_ready,
+           "prefill resumes after the boundary");
+    Expect(request.Commit().shared_prefix_snapshots == 1,
+           "the divergence point is retained in RAM without a disk tier");
+  }
+
+  // The third conversation restores the shared prefix and prefills only its
+  // own turn.
+  {
+    auto request = pool.Acquire(conversation(3000));
+    Expect(request.cache_hit() && request.cached_prompt_tokens() == 256,
+           "third conversation restores the learned prefix from RAM");
+    const auto step = request.Prefill(4096);
+    Expect(step.consumed_tokens == 5 && step.decode_ready,
+           "only the conversation's own turn is prefilled");
+    const auto commit = request.Commit();
+    Expect(commit.shared_prefix_snapshots == 0,
+           "a restored prefix is not learned again");
+  }
+}
+
 int main() {
   TestNewImageGetsAStableCheckpoint();
   TestGeneratedFrontierForksBeforeMutation();
@@ -1476,6 +1531,7 @@ int main() {
   Expect(normal_log.str().empty(), "routine cache replacement stays quiet");
   TestPersistentSnapshotRestoresAcrossPools();
   TestSharedPrefixIsLearnedAndRestoredAcrossConversations();
+  TestRamSharedPrefixIsLearnedAndRestoredAcrossConversations();
   TestMeasuredStateIsReconciledWithClaim();
   TestCacheRamBudgetOverride();
   TestSnapshotBudgetRefusalDoesNotFailCompletedRequest();

@@ -549,8 +549,10 @@ struct TextRunnerPool::Impl {
   // older prompt snapshot. Decode/prefill work never holds this mutex.
   std::timed_mutex admission_mutex;
   std::shared_ptr<ContinuationDiskStore> disk_store;
-  std::size_t shared_prefix_min_tokens{0};
-  std::size_t shared_prefix_max_boundaries{0};
+  // Learn up to four divergence points per pass; each captured checkpoint can
+  // serve every later conversation that shares that prefix.
+  std::size_t shared_prefix_min_tokens{128};
+  std::size_t shared_prefix_max_boundaries{4};
 };
 
 void TextModelRunner::StreamPersistentSnapshot(
@@ -775,14 +777,14 @@ struct TextRunnerPool::Request::Impl {
       prompt_snapshot.reset();
   }
 
-  /// Persists the continuation at a shared-prefix boundary reached by prefill.
+  /// Captures the continuation at a shared-prefix boundary reached by prefill.
   ///
-  /// The boundary was learned from stored entries that agree with this prompt
-  /// up to `position`, so the next conversation sharing that prefix restores
-  /// it instead of prefilling it again. The bounded worker persists the
-  /// immutable snapshot without blocking other requests on disk I/O.
+  /// The boundary was learned from retained states that agree with this prompt
+  /// up to `position`, so the next conversation sharing that prefix restores it
+  /// instead of prefilling it again. The snapshot is retained in RAM, and an
+  /// optional disk tier persists it without blocking other requests.
   void CaptureSharedPrefix(std::size_t position) noexcept {
-    if (disk_store == nullptr || position == 0 || position >= prompt.size()) {
+    if (position == 0 || position >= prompt.size()) {
       return;
     }
     const auto start = std::chrono::steady_clock::now();
@@ -800,24 +802,52 @@ struct TextRunnerPool::Request::Impl {
       const auto prefix =
           std::span<const TextRunnerToken>(prompt).first(position);
       const auto identity = InputIdentity(position);
+      const auto bytes = runner->SnapshotPayloadBytes(state);
       // Another request may have stored this prefix meanwhile.
-      if (disk_store->Touch(*runner, prefix, identity)) {
+      const bool save_disk =
+          disk_store != nullptr &&
+          !disk_store->Touch(*runner, prefix, identity) &&
+          disk_store->CanSave(*runner, position, bytes, identity);
+      const bool save_ram = lease.TryReserveSnapshot(bytes, position);
+      if (!save_disk && !save_ram) {
         return;
       }
-      if (!disk_store->CanSave(*runner, position,
-                               runner->SnapshotPayloadBytes(state), identity))
-        return;
       std::shared_ptr<const TextRunnerSnapshot> snapshot =
           runner->Snapshot(state);
       if (snapshot == nullptr) {
+        if (save_ram) {
+          lease.SkipSnapshot(SnapshotEventReason::kCaptureFailure, bytes,
+                             position);
+        }
         return;
       }
-      const auto saved = disk_store->SaveAsync(
-          runner, {prefix.begin(), prefix.end()}, std::move(snapshot),
-          {identity.begin(), identity.end()}, {}, /*shared_prefix=*/true);
-      if (saved != 0) {
-        ++snapshot_metrics.shared_prefix_snapshots;
-        snapshot_metrics.shared_prefix_bytes += saved;
+      bool captured = false;
+      if (save_ram) {
+        const auto retained =
+            lease.PublishSnapshot({prefix.begin(), prefix.end()}, snapshot);
+        if (retained != 0) {
+          ++snapshot_metrics.shared_prefix_snapshots;
+          snapshot_metrics.shared_prefix_bytes += retained;
+          captured = true;
+        }
+      }
+      if (save_disk) {
+        const auto saved = disk_store->SaveAsync(
+            runner, {prefix.begin(), prefix.end()}, std::move(snapshot),
+            {identity.begin(), identity.end()}, {}, /*shared_prefix=*/true);
+        if (saved != 0) {
+          ++snapshot_metrics.shared_prefix_snapshots;
+          snapshot_metrics.shared_prefix_bytes += saved;
+          captured = true;
+        }
+      }
+      if (captured) {
+        std::ostringstream line;
+        line << "event=shared_checkpoint tokens=" << position
+             << " bytes=" << bytes << " tier=" << (save_ram ? "ram" : "")
+             << (save_ram && save_disk ? "," : "")
+             << (save_disk ? "disk" : "");
+        Logger::Info("cache", line.str());
       }
     } catch (...) {
       // Best effort: the request itself is unaffected.
@@ -1688,6 +1718,29 @@ TextRunnerPool::Request TextRunnerPool::Acquire(
     } catch (...) {
       boundaries.clear();
     }
+  }
+  // Learn divergence points without the disk tier: a retained state that
+  // agrees with this prompt up to `boundary` becomes restorable once this
+  // pass captures a checkpoint there.
+  if (reuse_prompt && impl_->shared_prefix_max_boundaries != 0 &&
+      !(is_cancelled && is_cancelled())) {
+    const auto capabilities = impl_->validated.descriptor.capabilities;
+    if (capabilities.prefix_reuse && capabilities.snapshot &&
+        capabilities.fork) {
+      try {
+        auto learned = impl_->cache.SharedPrefixBoundaries(
+            prompt, impl_->shared_prefix_min_tokens,
+            impl_->shared_prefix_max_boundaries);
+        boundaries.insert(boundaries.end(), learned.begin(), learned.end());
+      } catch (...) {
+        // Learning is best effort; the request prefills in full.
+      }
+    }
+  }
+  if (!boundaries.empty()) {
+    std::ranges::sort(boundaries);
+    boundaries.erase(std::unique(boundaries.begin(), boundaries.end()),
+                     boundaries.end());
     std::erase_if(boundaries, [&lease](std::size_t boundary) {
       return boundary <= lease.cached_tokens();
     });

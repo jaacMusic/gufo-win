@@ -232,6 +232,16 @@ public:
   [[nodiscard]] std::size_t retained_snapshot_bytes() const noexcept;
   [[nodiscard]] std::size_t reserved_snapshot_bytes() const noexcept;
 
+  /// Token counts below `prompt.size()` where a retained continuation agrees
+  /// with this prompt only up to a shared prefix.
+  ///
+  /// A checkpoint captured at one of these positions lets the next request
+  /// that shares the prefix restore it instead of prefilling it again. The
+  /// longest `max_boundaries` positions are returned in ascending order.
+  [[nodiscard]] std::vector<std::size_t> SharedPrefixBoundaries(
+      std::span<const ContinuationToken> prompt, std::size_t min_tokens,
+      std::size_t max_boundaries) const;
+
 private:
   struct Entry;
 

@@ -93,7 +93,7 @@ Path names are shared, so each row is a diff in our tree, not a missing file.
 | --- | --- | --- |
 | Retained checkpoint records | 128 (`kSnapshotRecordCapacity`), independent of `--sessions`, which now bounds only active requests | 128 records, independent of `--sessions` |
 | Positions retained per request | stable boundary before assistant framing + complete prompt in RAM, on a cold request and again on a warm hit; the disk tier adds shared-prefix boundaries (≥128 tokens apart, at most four per request, 2,048-token minimum step) | same two in RAM, plus up to four intermediate checkpoints on a 2,048-token grid (skips grid points within 2,048 of a warm frontier and 128 of the end) |
-| Divergence points | a stored disk boundary is reused only if it happens to sit inside the shared part (`continuation_disk_store.cpp` keeps a token trie; `continuation_cache.cpp` has no shared-prefix logic) | learns the point where two conversations of one input identity diverge, keeps it once the gain exceeds 512 tokens, restores it from the third conversation; RAM does this without disk |
+| Divergence points | learned in RAM from any retained state: prefill stops at the longest shared prefixes (≥128 tokens, at most four per request) and retains a checkpoint there, so the third sibling conversation restores it; the disk tier persists the same positions. No 512-token gain gate, no purpose-ranked eviction | learns the point where two conversations of one input identity diverge, keeps it once the gain exceeds 512 tokens, restores it from the third conversation; RAM does this without disk |
 | Concurrent requests sharing a prefix | no waiting mechanism: a later request takes the nearest retained checkpoint or re-prefills the shared tokens itself | the later request parks with no session; the resident one publishes a checkpoint at the shared position (≥512 tokens ahead of what the waiter could restore) and the waiter restores it. Measured 13.4 s → 4.6 s for four 3.8k shared-prefix requests |
 | Stable boundary capture | prefill stops at the boundary, then a separate pass | captured inside the final prefill pass when it lands within 8 tokens of the batch end; the batch may carry up to 128 tokens past a 4,096 chunk |
 | Tool-turn replay | arguments parsed from JSON and re-rendered by the template | typed argument values rendered the way the reference templates' `tojson` does (and Responses namespaces flattened) so a replayed call reproduces the generated tokens and its checkpoint still matches |
@@ -162,15 +162,24 @@ records only make sense behind a byte budget, which their defaults do
    a 3 GiB budget the 126K boundary needs 3.58 GB and is refused; the fitted
    101,227-token checkpoint (2.70 GiB) let the next turn re-read 24,820 instead
    of 126,047 tokens and reach its first token in 18.1 s instead of 85.7 s.
-   **Learned divergence points** remain: they make a shared
-   system prompt reusable across separate conversations and subagents. Take
-   Bubo's tested policy rather than re-deriving it
-   ([survey](LINUX-PERF-PORT.md)); upstream's narrower grid (`1b8ad798`, #773)
-   was reverted the same day, so keep the fake-runner test and a GPU replay
-   check with any change here.
+   **Learned divergence points** are implemented for the RAM tier: when an
+   incoming prompt diverges from a retained conversation after 128 or more
+   tokens, prefill stops once at that position and retains a checkpoint there
+   (`continuation_cache.cpp::SharedPrefixBoundaries` feeds the existing
+   `CaptureSharedPrefix` path, which no longer needs a disk store), so a shared
+   system prompt is restored from the third conversation onward.
+   `tests/cli/text_model_runner_test.cpp` covers the learn/restore loop with the
+   fake runner and `tests/cli/continuation_cache_test.cpp` the boundary query;
+   both run on CPU. Still open: a GPU replay of two sibling
+   `tools/serving/agent-session.py` runs to quantify the saved re-read, and
+   Bubo's 512-token gain gate plus purpose-ranked eviction, which this keeps
+   simpler by using the byte budget alone. Upstream's narrower grid
+   (`1b8ad798`, #773) was reverted the same day, so keep the fake-runner test
+   with any change here.
 6. **Leader/follower waiting** for fan-out: subagents started from one system
    prompt currently each prefill the shared prefix, and prefill is serial, so
-   the copies cost their sum.
+   the copies cost their sum. Concurrent requests still re-prefill the shared
+   part; only the sequential sibling case above is served by RAM checkpoints.
 7. **In-pass boundary capture** last: it is a runner change (per-model state
    borrowing) for roughly one prefill chunk per turn, not a scheduling win.
 
