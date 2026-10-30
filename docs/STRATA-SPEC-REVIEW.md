@@ -72,6 +72,37 @@ first-token KL across 12 prompts of 1.5K–24K tokens with top-1 match 12/12 —
 the right shape for pricing any future "rounds differently" kernel if the
 bit-identical rule is ever relaxed for prefill experts.
 
+## Fourth pass (2026-10-30): `STRATA_PF_PAD` measured, not ported
+
+Their gfx11 default `STRATA_PF_PAD` (`src/core/arch_defaults.cpp:67`, paired
+with `STRATA_PF_GEMM`) pads a prefill GEMM's activation row stride (`ldx`)
+because a 1 KB-multiple stride camps the LPDDR channels and the L2 slices on
+gfx11. `tools/bench/stride_alias_bench.hip` replays both production access
+patterns (the dense GEMM's B plane and the routed gather) at six strides:
+
+| k (halves) | stride | dense B plane | routed gather |
+| --- | --- | --- | --- |
+| 2560 | 5120 B | 166 -> 240 GB/s (+45%) | 1017 -> 2245 (+121%) |
+| 2048 | 4096 B | 118 -> 206 (+75%) | 849 -> 1928 (+127%) |
+| 1024 | 2048 B | 68 -> 123 (+81%) | 661 -> 1152 (+74%) |
+| 10240 | 20480 B | 85 -> 283 (+231%) | 582 -> 2162 (+271%) |
+
+(+16 halves of pad, gfx1151, idle APU, 7 reps, best of run.)
+
+The effect is real and large. It is also worth under 1% here: our activation
+strides are hidden 2560 halves (5120 B, %4K 1024), expert_ff 640 (1280 B) and
+hc_low_rank 320 (640 B), and no buffer in the model has a 4 KB-multiple stride
+(the HC down's `k = 10240` is an output width, not a stride). Per pass the
+dense X plane is ~3 GB of DRAM and the routed gather ~5 GB of L2-resident
+reads against 111 GB of weights, so removing the penalty outright is ~11 ms of
+~1264 ms — less in practice, since the weight stream already saturates DRAM
+and the X reads hide behind it. Weight rows are GGUF-packed (1440 B Q4_K, 34 B
+Q8_0 blocks) and unaffected.
+
+Not ported: an `ldx` on ~10 kernels, every producer of `x_half` and the
+hipBLASLt descriptors, for a sub-1% ceiling. This also says where the pp2048
+gap is *not*: a stride-camping fix would have to be worth 10%+ to close it.
+
 ## Strata findings worth remembering
 
 - Overlapping drafter and verify on separate streams (`--spec-split`)
