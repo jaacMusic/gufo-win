@@ -263,3 +263,30 @@ gufo bench -m <shard1> --speculative mtp --mtp-model <shared Q8_0> `
   layer-local target of ≥1 ms/row exists, so a width-batched or merged-row
   attack across the shared layer path is the only lever that can pay.
 
+## Prefill step-2 pass (2026-10-30, Windows, GUFO_TRACE_LAYERS)
+
+Per-layer prefill marks (`w255`) at pp2048 d0 on the warm APU close the open
+"pp2048 gap needs Step 2 profiling" item:
+
+- Baseline pp2048 d0: 1613-1631 tok/s plain, 1620 traced; GPU busy 99.8% with
+  0.063 ms inter-pass idle. Dispatch and synchronization keep the GPU fed.
+- All 47 layer buckets land flat at 24.5-27.2 ms/pass. Outliers: layer01
+  37.8 ms (also 1.3 vs 0.5 ms at decode, so structural) and layer43 32.4 ms,
+  together ~1.3% of the pass; the head bucket is 68.7 ms (last layer + LM
+  head + logits download).
+- Body ~= wall: 47 x ~26 ms + head ~= 1.29 s against the 1.264 s bench wall.
+  At 111 GB of touched weights that is ~88 GB/s effective, 71% of the
+  124 GB/s in-model streaming figure; upstream 1,801 tok/s is ~98 GB/s (79%).
+- A tempting "350 ms host-side prefill overhead" reading of the trace is a
+  counting artifact: the `verify-body w16` average mixes the slower warm pass
+  with the 16-token prefix pass. Wall time equals GPU time; there is no
+  host-side prefill stall to fix.
+- hipBLASLt plan-cache tuning is a non-lever for this model: the plan cache is
+  off here and hipBLASLt only serves the unquantized projections, not the
+  MoE-bound mass (STRATA review row); attention, KV
+  initialization and launch overhead have no measurable share at 2K.
+- What is left of the pp2048 gap therefore lives inside the MoE/quantized GEMM
+  tier (vendor `mmq/`) at wide shapes, i.e. upstream items #708 and #779, and
+  carries the same gate as every prior prefill-kernel proposal: bit-identical
+  outputs plus greedy-replay pricing before vendor code moves.
+
