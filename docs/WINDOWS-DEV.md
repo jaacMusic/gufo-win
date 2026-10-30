@@ -80,3 +80,30 @@ gufo bench --model '<hf-cache>\models--unsloth--Qwen3.8-Flash-Next-GGUF\
   args). `-Draft off` = AR baseline, `-Greedy` = `--temperature 0`.
 - Running two binaries against each other: run them sequentially, never
   concurrently, and unset `GUFO_NPU*` environment for AR comparisons.
+
+## Runtime DLL roots (test and serve binaries)
+
+Built executables resolve shared libraries at launch. Exit code
+`0xC0000135` (DLL not found) means a root below is missing from `PATH`; the
+build itself is fine. Find any binary's full list with
+`dumpbin /DEPENDENTS <exe>` and check it against these roots:
+
+- `C:\dev\TheRock\build\bin` — `amdhip64_7.dll`, `hipblas`, `rocblas`,
+  `libhipblaslt`, `MIOpen`, `hiprtc0715` and friends.
+- `C:\dev\vcpkg\installed\x64-windows\bin` — `libcurl-d`, `libcrypto-3-x64`,
+  `libpng16`, `jpeg62`, `icuuc78`/`icuin78`.
+- The XRT runtime providing `xrt_coreutil.dll` — linked by everything that
+  pulls in NPU staging: `gufo.exe` and the `qwen27b` test binaries at current
+  HEAD. A host without an XRT install cannot start those binaries at all;
+  the `npu-xrt` build directory only carries `xrt_coreutil.lib`.
+
+CPU/core tests (`logit_sampler_test`, `openai_chat_test`, `http_server_test`,
+`qwen_chat_template_test`) run with only the first two roots. The launcher
+scripts prepend the build output and the HIP bin directory; add the vcpkg and
+XRT roots the same way when running test executables straight from a shell:
+
+```
+$env:PATH = '<repo>\build\gpu-test;C:\dev\TheRock\build\bin;' +
+            'C:\dev\vcpkg\installed\x64-windows\bin;' +
+            '<xrt-runtime-dir>;' + $env:PATH
+```
