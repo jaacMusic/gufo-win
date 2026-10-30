@@ -676,7 +676,8 @@ std::unique_ptr<Executor> Executor::Create(const DeviceModel& model,
     s.mtp_eproj = s.qkvz;
     s.mtp_res = s.res;
     s.mtp_argmax = Alloc<ArgmaxCandidate>(a, kArgmaxParts, error_msg);
-    s.mtp_token = Alloc<std::int32_t>(a, 1, error_msg);
+    // The draft token and its confidence (float bits), one host transfer.
+    s.mtp_token = Alloc<std::int32_t>(a, 2, error_msg);
     const auto candidate_ids = std::max<std::size_t>(
         MtpCandidateWorkspaceSize(c.vocab_size),
         e->options_.max_speculative * kArgmaxParts *
@@ -734,7 +735,7 @@ std::unique_ptr<Executor> Executor::Create(const DeviceModel& model,
                    ids.size(), out.rows,
                    static_cast<double>(ids.size() * row_bytes) / 1e6);
     }
-    if (!Check(hipHostMalloc(&e->mtp_token_host_, sizeof(std::int32_t),
+    if (!Check(hipHostMalloc(&e->mtp_token_host_, 2 * sizeof(std::int32_t),
                              ResultHostFlags()),
                "pinned draft token", error_msg) ||
         !Check(hipHostMalloc(&e->mtp_candidates_host_,
@@ -2718,6 +2719,7 @@ bool Executor::MtpHead(const DeviceMixer& head, const float* res, bool token,
   }
   if (token) {
     Argmax(s_.logits, s_.mtp_argmax, s_.mtp_token, 1, rows, stream_);
+    ArgmaxConfidence(s_.logits, s_.mtp_token, rows, stream_);
     if (draft != nullptr) {
       RemapDraftIds(reinterpret_cast<std::uint32_t*>(s_.mtp_token), 1, prefix,
                     draft->mtp_.draft_ids, kMtpDraftExtraRows, stream_);
@@ -2725,7 +2727,7 @@ bool Executor::MtpHead(const DeviceMixer& head, const float* res, bool token,
       RemapIds(reinterpret_cast<std::uint32_t*>(s_.mtp_token), 1, draft_ids_,
                stream_);
     }
-    if (!CopyPinned(s_.mtp_token, mtp_token_host_, sizeof(std::int32_t),
+    if (!CopyPinned(s_.mtp_token, mtp_token_host_, 2 * sizeof(std::int32_t),
                     hipMemcpyDeviceToHost, stream_, "draft token download",
                     error_msg)) {
       return false;
@@ -3896,7 +3898,9 @@ bool Executor::MtpForward(Session& session,
     Tl().Host(Timeline::kSynced);
   }
   if (output.token != nullptr) {
-    *output.token = *mtp_token_host_;
+    *output.token = mtp_token_host_[0];
+    if (output.confidence != nullptr)
+      *output.confidence = std::bit_cast<float>(mtp_token_host_[1]);
   }
   if (output.candidates != nullptr) {
     *output.candidates = *mtp_candidates_host_;

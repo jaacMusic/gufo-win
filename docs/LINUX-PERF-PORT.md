@@ -1841,3 +1841,35 @@ Swept `1fc829ea..4ab04ab8` (11 commits). No immediate-performance port landed.
   GEMM, #810 Windows model-bench, #758 item 3 (side-stream overlap).
 
 Next sweep from `4ab04ab8`.
+
+## Port 2026-10-30: confidence-gated MTP chains (`5d66de8c` #882)
+
+Ported upstream `5d66de8c` "perf(qwen38-flash-next): end MTP chains at the
+first unconfident draft" (committed 2026-10-30 14:17 +0100, after the sweep
+above). Upstream measured +0.5 greedy / +1.8 repetitive tok/s on a 5-prompt
+decode bench; it directly targets the fork's #1 limiter (MTP acceptance,
+see AGENT-SESSION.md Bubo comparison).
+
+Mechanics: greedy chains stop at the first draft below
+`kMtpGateProbability` (0.85, the head's softmax confidence read back per
+draft token by the new `ArgmaxConfidence` kernel); sampled chains stop at
+`kMtpSampledGateProbability` (0.95, host-side q). Jointly planned greedy
+batches also drop a stopped peer's last draft below
+`kMtpBatchDropProbability` (0.6) so the anchor decodes as an ordinary step.
+
+Fork divergences kept: `gpu_verification = gpu_greedy` (no
+`CanCompactMtpVerification` port), the `fast_sampling` compact-sampled
+pricing, the `sampled_subset_cost` re-pricing (width is non-const for it),
+the `mtp_survival` width branch plus the new `max_draft_tokens` clamp, and
+prompt-lookup gating. The batch loop's GateStops block drops upstream's
+`stop_at_eos`/`AppendLookup` lines (the fork handles both in
+`PrepareDecode`).
+
+Validated without the engine (it hosts this session): full cpu-test build,
+109/109 ctest pass, `gufo_qwen38_flash_next` compiles in the gpu-test HIP
+preset, changed regions clang-format clean (the repo-wide check-format
+failure predates this port: 319 violations in engine.cpp at HEAD).
+**Still needs engine validation** per docs/AGENT-HANDOFF-20261030.md:
+byte-identical greedy gate, decode bench, agent-session replay.
+
+Next sweep from `5d66de8c`.
