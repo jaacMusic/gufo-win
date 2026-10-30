@@ -38,6 +38,9 @@ public:
     kCandEnd,
     kRollBegin,
     kRollEnd,
+    // Diagnostic interleaved mark (GUFO_TRACE_LAYERS=1): one per body layer,
+    // arg = (layer << 8) | min(rows, 255). Not part of the phase pairing.
+    kLayerMark,
     kSynced,
     kLabels
   };
@@ -46,6 +49,10 @@ public:
     return timeline;
   }
   [[nodiscard]] bool Enabled() const noexcept { return enabled_; }
+  /// Per-layer body stamps: forces eager (non-graph) execution of the traced
+  /// forwards, because stamps captured into a replayed graph outlive the
+  /// Report() slot reset and would corrupt the reused slots.
+  [[nodiscard]] bool Layers() const noexcept { return enabled_ && layers_; }
   void Gpu(hipStream_t stream, Label label, std::uint32_t arg = 0) {
     if (!enabled_ || next_slot_ >= kSlots) {
       return;
@@ -130,6 +137,8 @@ private:
     if (!enabled_) {
       return;
     }
+    const char* layers = std::getenv("GUFO_TRACE_LAYERS");
+    layers_ = layers != nullptr && layers[0] != '\0' && layers[0] != '0';
     void* stamps = nullptr;
     int device = 0;
     int khz = 0;
@@ -199,6 +208,25 @@ private:
     std::int64_t sync_host = -1;
     Label end_label = kVerifyEnd;
     double busy_total = 0;
+    std::uint64_t layer_prev_tick = 0;
+    std::uint32_t layer_prev_il = 0;
+    std::uint32_t layer_w = 0;
+    bool have_layer_prev = false;
+    const auto add_layer = [&](const char* what, std::uint64_t tick) {
+      if (!have_layer_prev || tick <= layer_prev_tick) {
+        return;
+      }
+      char key[48];
+      if (what[0] == 'h') {
+        std::snprintf(key, sizeof(key), "head w%u", layer_w);
+      } else {
+        std::snprintf(key, sizeof(key), "%s%02u w%u", what, layer_prev_il,
+                      layer_w);
+      }
+      auto& a = busy[key];
+      a.ms += static_cast<double>(tick - layer_prev_tick) * ns_per_tick_ * 1e-6;
+      ++a.n;
+    };
     for (const Event& e : events_) {
       if (e.slot < 0) {
         sync_host = e.host_ns;
@@ -228,8 +256,19 @@ private:
                    ? static_cast<double>(tick - from) * ns_per_tick_ * 1e-6
                    : 0.0;
       };
+      if (e.label == kLayerMark) {
+        add_layer("layer", tick);
+        layer_prev_tick = tick;
+        layer_prev_il = e.arg >> 8;
+        layer_w = e.arg & 0xff;
+        have_layer_prev = true;
+        continue;
+      }
       if (IsBegin(e.label)) {
         cycles += e.label == kVerifyBegin;
+        if (e.label == kVerifyBegin) {
+          have_layer_prev = false;
+        }
         if (have_end) {
           const std::int64_t from = sync_host > end_host ? sync_host : end_host;
           auto& a = idle[std::string(Name(end_label)) + "->" + Name(e.label)];
@@ -242,6 +281,9 @@ private:
         continue;
       }
       const double phase = ms(begin_tick[BeginOf(e.label)]);
+      if (e.label == kVerifyEnd) {
+        add_layer("head", tick);
+      }
       const std::uint32_t w = std::min<std::uint32_t>(e.arg, 16);
       char key[48];
       switch (e.label) {
@@ -318,6 +360,7 @@ private:
   }
 
   bool enabled_{false};
+  bool layers_{false};
   std::uint64_t* stamps_{nullptr};
   std::size_t next_slot_{0};
   double ns_per_tick_{10.0};

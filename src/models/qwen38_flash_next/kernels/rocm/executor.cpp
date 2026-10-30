@@ -2926,9 +2926,10 @@ bool Executor::Forward(Session& session, std::span<const std::int32_t> tokens,
   // Decode-sized batches replay as graphs; a pooling backlog (the first
   // batch past the budget) needs the wider eager grid.
   const std::uint32_t graph_pool_grid = n / std::max(c.compress_ratio, 1u) + 1;
-  const bool graph = !prefill_phase && n <= kVecBatch &&
-                     pool_grid <= graph_pool_grid &&
-                     session.position_ >= session.VisionLayout().PrefixLength();
+  const bool graph =
+      !prefill_phase && n <= kVecBatch && pool_grid <= graph_pool_grid &&
+      session.position_ >= session.VisionLayout().PrefixLength() &&
+      !Tl().Layers();
   // Tuning::verify_graph_candidates: a verify pass whose rows stay on the
   // GPU (null logits) also selects every row's candidate list inside its
   // own graph, saving VerifyCandidates' separate launch and wait.
@@ -2947,7 +2948,7 @@ bool Executor::Forward(Session& session, std::span<const std::int32_t> tokens,
   // Both pieces use the same stream and arithmetic as the unsplit graph.
   const std::uint32_t first_layer =
       graph && c.ple_layer > 0 ? static_cast<std::uint32_t>(c.ple_layer) : 0;
-  const bool traced = Tl().Enabled() && graph;
+  const bool traced = Tl().Enabled() && (graph || Tl().Layers());
   if (traced) {
     Tl().Gpu(stream_, Timeline::kVerifyBegin, n);
   }
@@ -3067,6 +3068,9 @@ bool Executor::ForwardBody(Session& session, std::uint32_t n,
   const auto& layers = model_->layers();
   bool normed = false;  ///< xn holds the next mixer's grouped norm of res
   for (std::uint32_t il = first_layer; il < end_layer; ++il) {
+    if (Tl().Layers()) {
+      Tl().Gpu(stream_, Timeline::kLayerMark, (il << 8) | std::min(n, 255u));
+    }
     if (!session.CheckCancellation(error_msg))
       return false;
     const DeviceLayer& l = layers[il];
