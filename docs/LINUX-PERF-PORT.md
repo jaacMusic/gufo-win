@@ -1869,7 +1869,25 @@ Validated without the engine (it hosts this session): full cpu-test build,
 109/109 ctest pass, `gufo_qwen38_flash_next` compiles in the gpu-test HIP
 preset, changed regions clang-format clean (the repo-wide check-format
 failure predates this port: 319 violations in engine.cpp at HEAD).
-**Still needs engine validation** per docs/AGENT-HANDOFF-20261030.md:
-byte-identical greedy gate, decode bench, agent-session replay.
+
+Engine validation 2026-10-30 (idle engine, alternating A/B, baseline =
+worktree `gufo-base-5ffd` at `5ffd6c84` built with the documented HIP
+flags; model UD-Q4_K_XL + shared-Q8_0 MTP sidecar, snapshot `38bb39ee`):
+
+- Greedy byte-identical: PASS. `gufo prompt -n 64` haiku, MTP+prompt-lookup,
+  t=0: outputs identical (only model-load wall time differed).
+- Decode bench, 3 alternating rounds `-p 2048 -n 128 -d 0 -r 1` greedy:
+  tg median 62.75 (base) vs 62.60 (cand) tok/s — parity, delta inside
+  round-to-round spread. pp2048 median 1597 vs 1621 (+1.5%, base's own
+  spread is 1597–1615; treat as neutral-to-slightly-positive). Greedy
+  acceptance identical (88/127, 40 cycles) both binaries — expected: greedy
+  bench anchor chains stay above the 0.85 gate.
+- Sampled smoke `-t 0.8 -s 7`, 80 tok: clean, coherent.
+- agent-session.py replay (serve t=1.0 top-p 0.95, 10 turns): median decode
+  **43.6 → 44.5 tok/s (+2.1%)**; warm-turn behavior identical (re-read
+  12.6% both, ttft ~0.47 s); gains concentrate in late turns (7–10:
+  38.1→43.5, 31.8→35.6, 36.2→41.7 tok/s) where sampled drafts dip below
+  the 0.95 gate — consistent with the mechanism, not noise pattern.
+- No batch-drop anomaly: per-request acceptance in bench trace unchanged.
 
 Next sweep from `5d66de8c`.
