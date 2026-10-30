@@ -110,6 +110,10 @@ namespace {
 // retained-snapshot byte budget bounds them, so the count stays fixed.
 constexpr std::size_t kSnapshotRecordCapacity = 128;
 
+// Bounds the prefill stops a queued peer can request, on top of the boundary
+// the prompt itself asks for and the learned divergence points.
+constexpr std::size_t kMaxSharedBoundaries = 8;
+
 struct ValidatedRunner {
   std::shared_ptr<TextModelRunner> runner;
   TextRunnerDescriptor descriptor;
@@ -783,6 +787,28 @@ struct TextRunnerPool::Request::Impl {
   /// up to `position`, so the next conversation sharing that prefix restores it
   /// instead of prefilling it again. The snapshot is retained in RAM, and an
   /// optional disk tier persists it without blocking other requests.
+  /// A queued peer shares this request's prefix: stop the prefill at that
+  /// position and retain a checkpoint the peer can restore.
+  void RequestSharedBoundary(std::size_t position) noexcept {
+    try {
+      if (decode_ready || position <= prefill_offset ||
+          position >= prompt.size()) {
+        return;
+      }
+      if (boundaries.size() >= kMaxSharedBoundaries) {
+        return;
+      }
+      const auto at =
+          std::lower_bound(boundaries.begin(), boundaries.end(), position);
+      if (at != boundaries.end() && *at == position) {
+        return;
+      }
+      boundaries.insert(at, position);
+    } catch (...) {
+      // Best effort: a missing boundary only costs the peer a re-prefill.
+    }
+  }
+
   void CaptureSharedPrefix(std::size_t position) noexcept {
     if (position == 0 || position >= prompt.size()) {
       return;
@@ -1081,6 +1107,20 @@ bool TextRunnerPool::Request::cache_disk_hit() const noexcept {
 
 std::size_t TextRunnerPool::Request::prompt_tokens() const noexcept {
   return impl_ != nullptr ? impl_->prompt.size() : 0;
+}
+
+std::span<const TextRunnerToken> TextRunnerPool::Request::prompt_span()
+    const noexcept {
+  if (impl_ == nullptr)
+    return {};
+  return impl_->prompt;
+}
+
+void TextRunnerPool::Request::RequestSharedBoundary(
+    std::size_t position) noexcept {
+  if (impl_ == nullptr)
+    return;
+  impl_->RequestSharedBoundary(position);
 }
 
 bool TextRunnerPool::Request::prefill_complete() const noexcept {

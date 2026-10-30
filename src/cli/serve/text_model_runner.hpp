@@ -412,8 +412,15 @@ public:
     [[nodiscard]] double cache_restore_ms() const noexcept;
     [[nodiscard]] bool cache_disk_hit() const noexcept;
     [[nodiscard]] std::size_t prompt_tokens() const noexcept;
+    /// The request's prompt, for finding a prefix shared with a waiting peer.
+    [[nodiscard]] std::span<const TextRunnerToken> prompt_span() const noexcept;
     /// Prompt tokens already in model state, restored or prefilled.
     [[nodiscard]] std::size_t prefill_position() const noexcept;
+    /// Asks a running prefill to stop at `position` and publish a shared
+    /// checkpoint there, so a queued request sharing that prefix restores it.
+    /// Ignored once the prefill is past `position`. The scheduler thread calls
+    /// this between prefill steps, never concurrently with `Prefill`.
+    void RequestSharedBoundary(std::size_t position) noexcept;
     /// N-gram rows read for this request, minus any restored baseline.
     [[nodiscard]] TextRunnerNgramRows ngram_rows() const noexcept;
     [[nodiscard]] bool prefill_complete() const noexcept;

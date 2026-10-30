@@ -53,6 +53,11 @@ struct OutputBudget {
   std::atomic<std::size_t> max_buffered_bytes{0};
 };
 
+/// A waiting request must share at least this much with the running prefill
+/// before that prefill is asked to stop and retain a checkpoint there: below
+/// it, the copy costs more than the tokens the waiter would re-read.
+constexpr std::size_t kSharedPrefixMinTokens = 512;
+
 struct ScheduledRequest {
   std::uint64_t id{0};
   std::string client_id{"anonymous"};
@@ -415,6 +420,43 @@ struct TextGenerationScheduler::Impl {
         if (RemoveQueued(request)) {
           CompleteFailure(request, std::current_exception());
         }
+      }
+    }
+  }
+
+  /// Subagents started from one system prompt arrive while the parent (or a
+  /// sibling) is still prefilling. Prefill is serial, so the copies would cost
+  /// their sum; instead ask the running prefill to stop at the shared prefix
+  /// and retain a checkpoint there, which the waiter then restores.
+  void ShareQueuedPrefixes(
+      const std::deque<std::shared_ptr<ScheduledRequest>>& prefilling) {
+    if (prefilling.empty()) {
+      return;
+    }
+    const auto& resident = prefilling.front();
+    if (resident->runner_request.prefill_complete()) {
+      return;
+    }
+    const auto position = resident->runner_request.prefill_position();
+    const auto waiting = QueuedSnapshot();
+    if (waiting.empty() ||
+        (resident->id == shared_probe_request_id &&
+         position == shared_probe_position &&
+         waiting.size() == shared_probe_waiting)) {
+      return;
+    }
+    shared_probe_request_id = resident->id;
+    shared_probe_position = position;
+    shared_probe_waiting = waiting.size();
+    const auto prompt = resident->runner_request.prompt_span();
+    for (const auto& waiter : waiting) {
+      const auto common = std::mismatch(prompt.begin(), prompt.end(),
+                                        waiter->prompt.begin(),
+                                        waiter->prompt.end());
+      const auto shared =
+          static_cast<std::size_t>(common.first - prompt.begin());
+      if (shared >= kSharedPrefixMinTokens) {
+        resident->runner_request.RequestSharedBoundary(shared);
       }
     }
   }
@@ -1090,6 +1132,7 @@ struct TextGenerationScheduler::Impl {
         }
       }
       Admit(prefilling, decoding, capturing.size(), stop_token);
+      ShareQueuedPrefixes(prefilling);
       if (prefilling.empty() && decoding.empty()) {
         std::unique_lock<std::mutex> lock(queue_mutex);
         const auto wake = [&] {
@@ -1222,6 +1265,11 @@ struct TextGenerationScheduler::Impl {
   bool stopping{false};
   std::size_t consecutive_active_prefill_chunks{0};
   std::uint64_t last_prefill_request_id{0};
+  // Last prefill position and waiter count the shared-prefix probe saw, so the
+  // prefix comparison runs once per change instead of every scheduling turn.
+  std::size_t shared_probe_position{0};
+  std::size_t shared_probe_waiting{0};
+  std::uint64_t shared_probe_request_id{0};
   std::atomic<std::uint64_t> next_request_id{1};
   std::jthread worker;
 };

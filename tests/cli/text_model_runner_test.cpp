@@ -1504,6 +1504,44 @@ void TestRamSharedPrefixIsLearnedAndRestoredAcrossConversations() {
   }
 }
 
+void TestRequestedSharedBoundaryStopsPrefillForAQueuedPeer() {
+  auto stats = std::make_shared<FakeStats>();
+  auto runner = std::make_shared<GrowingSnapshotRunner>(stats, 64, 256, 1 << 20);
+  TextRunnerPool pool(runner, 1);
+  // A follower arrives while the leader is still prefilling and shares 575
+  // tokens with it, as subagents started from one system prompt do.
+  std::vector<TextRunnerToken> system(575);
+  for (std::size_t index = 0; index < system.size(); ++index)
+    system[index] = static_cast<TextRunnerToken>(index);
+  const auto conversation = [&](TextRunnerToken turn) {
+    auto prompt = system;
+    for (TextRunnerToken suffix = 0; suffix < 5; ++suffix)
+      prompt.push_back(turn + suffix);
+    return prompt;
+  };
+
+  {
+    auto leader = pool.Acquire(conversation(1000));
+    Expect(leader.Prefill(128).consumed_tokens == 128,
+           "the leader prefills before the follower is known");
+    leader.RequestSharedBoundary(575);
+    Expect(leader.Prefill(4096).consumed_tokens == 447,
+           "prefill stops at the boundary a follower asked for");
+    const auto tail = leader.Prefill(4096);
+    Expect(tail.consumed_tokens == 5 && tail.decode_ready,
+           "the leader resumes after the boundary");
+    Expect(leader.Commit().shared_prefix_snapshots == 1,
+           "the requested boundary is retained");
+  }
+
+  auto follower = pool.Acquire(conversation(2000));
+  Expect(follower.cache_hit() && follower.cached_prompt_tokens() == 575,
+         "the follower restores the boundary instead of re-reading it");
+  const auto step = follower.Prefill(4096);
+  Expect(step.consumed_tokens == 5 && step.decode_ready,
+         "the follower prefills only its own turn");
+}
+
 int main() {
   TestNewImageGetsAStableCheckpoint();
   TestGeneratedFrontierForksBeforeMutation();
@@ -1532,6 +1570,7 @@ int main() {
   TestPersistentSnapshotRestoresAcrossPools();
   TestSharedPrefixIsLearnedAndRestoredAcrossConversations();
   TestRamSharedPrefixIsLearnedAndRestoredAcrossConversations();
+  TestRequestedSharedBoundaryStopsPrefillForAQueuedPeer();
   TestMeasuredStateIsReconciledWithClaim();
   TestCacheRamBudgetOverride();
   TestSnapshotBudgetRefusalDoesNotFailCompletedRequest();
