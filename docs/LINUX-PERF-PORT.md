@@ -1788,3 +1788,19 @@ with upstream, so no patch applies):
   model-bench, #758 item 3 (side-stream overlap).
 
 Next sweep from `1fc829ea`.
+
+## Sibling-fork triage 2026-10-29 (`gufo-win-mix` backlog)
+
+- `[-]` **F1 split-bf16 router GEMM** (mix `3446b6ea`, from mikealanni's
+  `RouterSplitWeights`/`LaunchRouterSplit*`). No-op here: this fork's router
+  weights are F32 in the GGUF, narrowed once to F16 at load
+  (`device_model.cpp` `Stack` -> `kF16` router+`shexp_gate_inp`, the accuracy
+  ladder is documented there), and `DenseF16GEMMKernel`'s `kHalfWeights` tier
+  already accumulates in FP32 over two independent K16 chains summed at the
+  end, with K order fixed per row and chunk. Split-bf16 exists upstream to
+  recover fp32 weight accuracy from bf16 rows; F16 rows carry three more
+  mantissa bits, and the chunk-independent order the fix also wanted is
+  already enforced (`blaslt.cpp` `Gemm`). Revisit only if the router moves to
+  BF16 rows.
+- `[x]` Vision encoder weights in managed memory (port603 `f527f094`) landed
+  as `2e195967`; its runtime check still needs a host with XRT installed.
