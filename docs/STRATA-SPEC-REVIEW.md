@@ -45,6 +45,33 @@ mismatches the running quant/domain. Production value, not benchmark value.
 | Long-context indexer select (`STRATA_SELECT_LONG`, `b434a8aa`): one CTA per 2048 blocks of top-k capacity, shuffle-free per-head block scorer | Our `SelectScoreKernel` already builds the head sum in registers with an in-block butterfly and the score sweep is already spread over CTAs; the multi-CTA top-k only pays off at 135K-300K score cells, while our select chunk caps at 512 keys x 32-block rows (32768 cells). Measured per call: ~15 us at 32K context, ~25 us at 128K; 12 select layers make select ~1% of a decode step and their change only touches the top-k half, so the ceiling is 0.4-0.6% for a bit-exact two-level rewrite. |
 | Head at 8 columns per weight pass (`e4328457`) | Already satisfied: `MMVQ_MAX_BATCH_SIZE = 8` gives Q8_0 heads one weight read for up to 8 columns, K-quant heads go through the 64-row `get_mmq_y_host` MMA tile, and the verify head is a single `Dense(..., n_tokens)` call; only the drafter's per-step 1-row head is left, which has no rows to batch. |
 
+## Third pass (2026-10-30): the borrow direction flipped
+
+Checked `origin/main` up to `v0.2.8` (4,730 commits past `4b9e05a`).
+`src/spec/` and `src/ngram/` have **zero** commits since v0.2.7 — nothing new
+in their speculative stack, and our `df097b30` + #882 already cover it. The
+v0.2.8 work is SYCL/Arc, Metal, CUDA-5090 and app-level: not portable to the
+gfx1151 flash-next path.
+
+Their `STRATA_PF_F16` prompt-expert path (`src/prefill/moe_f16_kq.cu`)
+carries the header "Adapted from gufo 97b8645f … `RoutedF16GEMMKernel`" — it
+is a re-import of our `RoutedF16Gemm`, which our prefill already runs by
+default (`executor.cpp` `wmma_experts`: `RoutedGatedF16Gemm` + 64-token down
+tiles, landed `f36da345` at pp2048 1040 → 1298 tok/s). Their 85.3 → 53.5
+ms/layer at 16K tokens is the f16-vs-*their-int8* delta; against our tree the
+win is already banked. The `WmmaExperts` predicate leaves the narrower
+`mmq/` `dp4a` MoE paths to decode, verify and prompt widths below its floor. Their `--prefill-chunk 8192` Windows default matches ours,
+and their shared-expert second stream measures 6.9% *slower* on this GPU,
+independently confirming the #758 rejection. The pp2048 gap (1,613–1,631 vs
+upstream 1,801) therefore lives in our own `RoutedF16Gemm` wide-shape
+efficiency (~71% of the 124 GB/s in-model ceiling), i.e. upstream #708/#779
+territory, not in anything strata has.
+
+Borrowable method, not code: their rounding-change acceptance gate is
+first-token KL across 12 prompts of 1.5K–24K tokens with top-1 match 12/12 —
+the right shape for pricing any future "rounds differently" kernel if the
+bit-identical rule is ever relaxed for prefill experts.
+
 ## Strata findings worth remembering
 
 - Overlapping drafter and verify on separate streams (`--spec-split`)
