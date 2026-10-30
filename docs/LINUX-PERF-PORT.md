@@ -1891,3 +1891,32 @@ flags; model UD-Q4_K_XL + shared-Q8_0 MTP sidecar, snapshot `38bb39ee`):
 - No batch-drop anomaly: per-request acceptance in bench trace unchanged.
 
 Next sweep from `5d66de8c`.
+
+## Upstream sweep 2026-10-30 (second): 192b75a (#875) ported
+
+One commit since `5d66de8c`: `192b75a` "fix(qwen38-flash-next): keep
+prefill rows independent of the pass route" — numerics pinning, not a
+speed change: pinned `__fmul_rn`/`__fmaf_rn` dot chains and `__fadd_rn`
+column sums in the HC mix epilogue, inject and both combines,
+`SsmConv4Value` moved above and shared with `SsmConv4Kernel`, a
+`kPinnedOrder` template flag on the A8 WMMA GEMM in
+`prefill_quant_gemm.hpp` (enabled for the wave64 W8A8 instantiation),
+and `blaslt.cpp` `OwnF16` keyed on `(type, k)` so every F16 `k == 2560`
+projection runs on `UnquantizedF16Gemm` at any token count.
+
+Fork divergences at merge time: the fork's `RoutedGatedF16Gemm` takes an
+explicit `tile_rows` (the new test helper passes 128); the fork dropped
+`PrepareW8A8GemmWave64` and `CheckW8A8Tail` and kept its own
+`AssignError`/`Prepare` in `blaslt.cpp` (updated there for the new
+two-argument `OwnF16`); two `std::size_t{t}` list inits in the upstream
+test needed explicit casts for this clang.
+
+Validated: gpu-test build and, on gfx1151, `hc_route_ops` (new),
+`blaslt_ops`, `gdn_ops`, `hc_mix_ops`, `projection_ops` and
+`routed_wmma_ops` all pass — bit-identical rows across pass widths
+("0 of 10,361,600 values differ", "pass widths … exact"). They are
+bit-comparison tests with no timing content, so they ran with the
+serving engine up; the no-op-for-speed claim itself is upstream's and
+gets checked in the next idle-engine pp/tg run.
+
+Next sweep from `192b75a`.
