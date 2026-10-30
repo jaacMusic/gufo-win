@@ -44,7 +44,7 @@ them is a target. Where we have re-measured on UD-Q4_K_XL (gfx1151, `-c 8192`,
 | --- | --- | --- | --- |
 | 10-turn first-token wait | 9.2 s | 5.0 s | ahead, on shorter prompts |
 | First token, turn 10 | 1.7 s | 0.50 s | ahead, on shorter prompts |
-| Median session decode | 64.0 tok/s | 35.1 (45.7 with MTP) | behind |
+| Median session decode | 64.0 tok/s | 35.1; 50.7 with MTP latin + survival | behind 21 % |
 | Slowest turn | 49.0 tok/s | 34.6 (not a slow turn: flat) | behind |
 | Re-read share of prompt tokens | 13 % (6,761 of 52,186) | 14.4 % (1,651 of 11,432) | close, smaller session |
 | 2K-token prompt read | 1,269 tok/s | 1,221–1,243 | behind 2–4 % (image value) |
@@ -60,6 +60,16 @@ re-running this table on a transcript long enough for Bubo's advantage to
 show — the re-read share then drives the wait, which is what the 52k vs 6,761
 row is about. The single-turn cells (prose, edits, 2K read) have not been
 re-measured since the cache fix and still hold their pre-fix image values.
+
+**MTP acceptance sets session decode; no flag moved it.** A four-turn
+`tools/serving/agent-session.py` replay (16k context, `--speculative mtp
+--mtp-draft-vocab latin`, 64 tokens per turn) reached a median 50.7 tok/s with
+accepted/proposed counts of 53/62, 30/51, 38/71 and 11/26 — 85 % on the cold
+turn, 54 % mid-session. Repeating the run without `--mtp-policy survival` gave
+the *same* four counts, and proposals per step stay at `accepted + 1` because
+the chain stops at the first rejection by design, so tokens per step is
+`1 + accepted` and acceptance is the only lever. Beating Bubo's 64 tok/s needs a
+draft tree or a wider draft model, not a switch.
 
 ## What the numbers say
 
