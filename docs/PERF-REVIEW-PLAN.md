@@ -252,4 +252,14 @@ gufo bench -m <shard1> --speculative mtp --mtp-model <shared Q8_0> `
   cycle), which needs per-kernel timing — the Linux host or new gated
   instrumentation, a separate proposal. The 96–97% busy loop leaves nothing
   for the Windows dispatch path.
+- Follow-up 2026-10-30, `GUFO_TRACE_LAYERS=1` (commit `f2919f39`) answered
+  the verify-row item on the Windows host with per-layer GPU stamps: the
+  w2→w8 marginal 28.18 ms splits as 27.58 ms spread uniformly across all 47
+  layers (~0.10 ms/row/layer; dense layers 00–02 highest at 0.81–1.29 ms per
+  6 rows) and only 0.60 ms in the head (norm + LM head + logits). No single
+  hot kernel exists: the marginal row cost is the whole per-layer body (mixer
+  state update + GEMM tier) scaling with verify width. Per-kernel rocprofv3
+  work on Linux would refine inside one layer (~0.10 ms/row), but no
+  layer-local target of ≥1 ms/row exists, so a width-batched or merged-row
+  attack across the shared layer path is the only lever that can pay.
 
