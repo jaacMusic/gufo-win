@@ -15,14 +15,17 @@ that is not in section 1 was not confirmed.
   `QualifiedChunk` extraction.
 - NPU prefill is strictly opt-in: `GUFO_NPU_PREFILL=1` (`engine.cpp:242-270`).
   Upstream serves it by default. Knob defaults match upstream (`SLICES=6`,
-  `GATE=0`, `SHEXP=1`, `TIMEOUT=8000`, keepalive 1 s).
+  `GATE=0`, `TIMEOUT=8000`, keepalive 1 s) except the shared-expert lane, which
+  is off here because it costs 7 % prefill on this host (section 3).
 - Executor overlap is preserved: `BeginLinearZ` (`executor.cpp:2095`) → GPU
   prefix `DenseF16SsmGemm` (2113) → `FinishLinearZ` (2164); the MoE
   shared-expert wait lands after routed prep.
 - Guard (`guard_config.hpp`, `guard.cpp`, `staging.cpp`) is ours only. It is an
   *envelope* guard: 82 W whole-chip RAPL mean over 3 consecutive chunks (or 98 %
   memory commit) trips a 600 s NPU hold; held chunks simply run on the GPU. It
-  never throttles the GPU. `GUFO_NPU_GUARD=on|off|log`, default `on`.
+  never throttles the GPU. `GUFO_NPU_GUARD=on|off|log`, default `log`: the
+  sampler reads whole-chip power, which a GPU-only prefill already exceeds on a
+  desk host, so a hold can only ever switch off a lane that now wins.
 - Whole-chip RAPL cannot attribute power to the NPU. That is documented and
   benign on this host (see section 3); proving anything better needs a
   power-capped host.
@@ -43,22 +46,38 @@ Each of these was checked and is wrong:
 
 ## 3. Measurements
 
-pp8192, UD-Q4_K_XL, 32 GB BOSGAME host (`-d 0 -n 8 -r 1`, 2026-10-28, after
-`1018b08f` moved prefill to 8192-token chunks):
+pp8192, UD-Q4_K_XL, 32 GB BOSGAME host (`-d 0 -n 128 -r 2`, 2026-10-28, current
+defaults: 8192-token chunks, `SLICES=6`, shared-expert lane off, guard off):
 
-| build                        | tok/s   |
-| ---------------------------- | ------- |
-| GPU only                     | 1667.40 |
-| NPU + guard                  | 1566.91 |
-| NPU, guard off               | 1532.60 |
+| build                                   | tok/s        |
+| --------------------------------------- | ------------ |
+| GPU only                                | 1655.49      |
+| NPU                                     | 1689.96      |
+| NPU, slices 12                          | 1426.85      |
+| NPU, shared-expert lane on              | 1566.54      |
+| NPU, guard on (holds after 3 chunks)    | 1658.92      |
 
-The NPU path is 6-8 % slower than the GPU here, so it stays opt-in. The guard
-trips as designed on this host (`chunk_means_w=[107.3, 106.0, 85.4] > 82.0`) and
-the run then lands on the GPU, which is why guard-on beats guard-off by 2.2 %:
-on an uncapped host the envelope guard is itself the fastest place to fail.
+The NPU path is +2.1 % here. The earlier "6-8 % slower" verdict came from two
+defects, both fixed on 2026-10-28: the shared-expert lane was on by default (it
+dispatches GEMMs of at most 1024 rows, so one dispatch costs more than the GPU
+work it removes, and the stream waits on it 47 times per chunk: -7 %), and the
+engine capped prefill chunks at 4096 tokens whenever the NPU was on, giving up
+the 8192-token batching the GPU path gets (+2 %). Slice count is a flat plateau
+at 5-6 and a cliff at 12, where the NPU becomes the critical path
+(`stall_ms[linear]` 616-851 ms per chunk).
+
+The guard trips as designed on this host (`chunk_means_w=[112.0, 85.9, 83.6] >
+82.0`, hold 600 s, the rest of the process on the GPU), which is why it now
+defaults to `log`: with the lane winning, a hold only costs the 2.1 %.
+
+The ceiling is arithmetic, not tuning: the lane computes 4.64 TFLOP per
+4096-token chunk (6 slices x 36 layers x 4096x2560x1024) in about 2.4 s, i.e.
+about 1.9 TFLOP/s effective, against roughly 100 TFLOP/s for the GPU's prefill
+on this model. Per chunk it issues 216 XRT runs of 1-3 ms dispatch each; larger
+runs (n > 1024) need a rebuilt xclbin, and the AIE sources are not in this tree.
 
 Older numbers (1608.09 / 1563.61 / 1527.68, 4096-token chunks) in
-`docs/LINUX-PERF-PORT.md` are ~3.7 % stale but keep the same ordering.
+`docs/LINUX-PERF-PORT.md` are superseded.
 
 Two runtime traps on this host:
 
@@ -75,8 +94,17 @@ GPU chunk, so there is no overlap win to collect on an uncapped host.
 
 ## 4. Work list
 
-1. NPU recalibration on this host, after any prefill-chunk change, to refresh
-   the guard numbers in section 3.
+1. Closed 2026-10-28: recalibration after the chunk change, the shared-expert
+   default and the guard default (section 3).
+2. Open, needs the AIE toolchain: rebuild `final_4096x2560x1024_128x64x128`
+   with a wider `n` than 1024 (or fewer, larger runs) to cut the 216 dispatches
+   per chunk. `tools/npu` has only the xclbin and its instruction stream; bubo
+   names `mm_bfp_mixed.cc` and `n32_core_placed.py` but neither ships in our
+   tree, and bubo records no compiler version for the pinned binary.
+3. Open, unverified: Windows XRT host-pointer BOs. The adapter always bounce-
+   copies A (11.25 MiB) and C (6 x 4.5 MiB per chunk group) with `host_only`
+   BOs. bubo's fork imports userptrs on Linux; whether the Windows runtime
+   allows it is untested, and a copy is worth at most a few ms per layer.
 
 Closed as false leads: the PLE gather (see section 2) and the MTP verify-row
 marginal. Width is not saturated with depth, and the default already runs at

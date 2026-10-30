@@ -70,14 +70,6 @@ std::size_t MtpTopBin(const MtpProposal& proposal) {
   return bin;
 }
 
-// gfx1151, served repository prompts: 4096-token chunks prefill 24K-102K
-// tokens 6-11% faster than 2048 (pp4096 +5% at d0, +6% at d32K); 8192 against
-// 4096 at d0 is +2.2% at pp8192 and +2.6% at pp32768 for -1.6% at pp4096,
-// decode unchanged. Each chunk's n-gram gather doubles; next-chunk prefetch
-// overlaps that read. Prefill logits do not depend on the chunk size
-// (pre-budget queries always take the dense attention tiles).
-constexpr std::uint32_t kPrefillChunkTokens = 8192;
-
 void AssignError(std::string* error_msg, std::string_view message) {
   if (error_msg != nullptr) {
     *error_msg = message;
@@ -182,6 +174,10 @@ std::shared_ptr<Model> Model::Load(const std::string& model_path,
   }
   if (options.max_draft_tokens == 0) {
     AssignError(error_msg, "draft token limit must be positive");
+    return nullptr;
+  }
+  if (options.prefill_chunk_tokens == 0) {
+    AssignError(error_msg, "prefill chunk must be positive");
     return nullptr;
   }
   if (!options.mtp_model_path.empty() &&
@@ -371,7 +367,7 @@ std::uint32_t Model::VocabSize() const noexcept {
 }
 
 std::uint32_t Model::PrefillCapacity() const noexcept {
-  return std::min(kPrefillChunkTokens, options_.max_context);
+  return std::min(options_.prefill_chunk_tokens, options_.max_context);
 }
 
 bool Model::HasMtp() const noexcept {
@@ -813,8 +809,10 @@ bool Session::Feed(std::span<const std::int32_t> tokens, std::string* error_msg,
     const auto npu_prefill = model_->device_->npu_prefill();
     npu_on = prefill && npu_prefill && npu_prefill->ready();
 #endif
-    const std::size_t n = npu_on ? std::min<std::size_t>(4096, remaining)
-                                 : std::min<std::size_t>(capacity, remaining);
+    // A lane takes whole 4096-token groups, so a chunk keeps the wider GPU
+    // batching and the lane takes every group in it (up to four).
+    const std::size_t room = std::min<std::size_t>(capacity, remaining);
+    const std::size_t n = npu_on && room > 4096 ? room - room % 4096 : room;
     const auto chunk = tokens.subspan(off, n);
     if (MtpEnabled() && !tokens_.empty() &&
         !DraftCatchUp(chunk[0], false, error_msg)) {

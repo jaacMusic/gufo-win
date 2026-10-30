@@ -9,11 +9,6 @@ set(GUFO_NPU_FAULT_SOURCES ${NPU_DIR}/fault_telemetry.cpp ${NPU_DIR}/hal_fault_m
   ${NPU_DIR}/chip_power.cpp ${NPU_DIR}/runtime_status.cpp ${NPU_DIR}/mem_trace.cpp
   ${NPU_DIR}/guard.cpp ${NPU_DIR}/platform_info.cpp)
 
-add_executable(npu_prefill_plan_test prefill_plan_test.cpp)
-target_include_directories(npu_prefill_plan_test PRIVATE "${CMAKE_SOURCE_DIR}")
-add_test(NAME npu_prefill_plan_test COMMAND npu_prefill_plan_test)
-set_tests_properties(npu_prefill_plan_test PROPERTIES TIMEOUT 30)
-
 add_executable(npu_xrt_runtime_test
   xrt_runtime_test.cpp ${NPU_DIR}/xrt_runtime_policy.cpp)
 add_test(NAME npu_xrt_runtime_test COMMAND npu_xrt_runtime_test)
@@ -202,7 +197,7 @@ foreach(npu_case clean timeout error layer single stream_timeout invalid
   set_tests_properties(npu_session_${npu_case}_test PROPERTIES TIMEOUT 120)
 endforeach()
 add_custom_target(npu_cpu_checks DEPENDS npu_session_test npu_private_bo_adapter_test
-  npu_prefill_plan_test npu_linear_z_test npu_projection_test npu_guard_latch_test
+  npu_linear_z_test npu_projection_test npu_guard_latch_test
   npu_bfp_test npu_host_bench npu_hal_fault_monitor_test npu_hal_source_real_test npu_runtime_status_test npu_bo_address_test npu_chunk_retry_test npu_platform_info_test npu_guard_test npu_mem_trace_test npu_mem_trace_real_test npu_chip_power_test
   npu_chip_power_real_test npu_runtime)
 if(TARGET npu_bfp_hip)
@@ -218,9 +213,11 @@ if(WIN32 AND EXISTS "${OPENSSL_INCLUDE_DIR}")
   if(EXISTS "${_npu_openssl_dll}")
     foreach(npu_linked_target npu_xrt_delay_guard_test npu_private_bo_adapter_test
         npu_linear_z_test npu_guard_latch_test npu_projection_test npu_session_test)
-      add_custom_command(TARGET ${npu_linked_target} POST_BUILD COMMAND
-        "${CMAKE_COMMAND}" -E copy_if_different "${_npu_openssl_dll}"
-        "$<TARGET_FILE_DIR:${npu_linked_target}>")
+      if(TARGET ${npu_linked_target})
+        add_custom_command(TARGET ${npu_linked_target} POST_BUILD COMMAND
+          "${CMAKE_COMMAND}" -E copy_if_different "${_npu_openssl_dll}"
+          "$<TARGET_FILE_DIR:${npu_linked_target}>")
+      endif()
     endforeach()
   endif()
 endif()

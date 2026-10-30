@@ -462,6 +462,7 @@ void PrintServeHelp(std::string_view program_name,
     bool prompt_lookup = true;
     std::size_t prefill_chunk_tokens =
         server::kDefaultDecodeActivePrefillTokens;
+    std::uint32_t prefill_batch_tokens = 0;
     std::size_t max_pending_requests = 16;
     std::size_t max_pending_requests_per_client = 4;
     std::uint64_t request_timeout_ms = 0;
@@ -561,6 +562,10 @@ void PrintServeHelp(std::string_view program_name,
         "", "--prefill-chunk", "N",
         "Maximum prompt tokens between active decode rounds (default: 512)",
         "Scheduling", &prefill_chunk_tokens);
+    parser.AddOption(
+        "", "--prefill-batch", "N",
+        "Prompt tokens per Flash-Next prefill pass (default: 8192)", "Model",
+        &prefill_batch_tokens);
     parser.AddOption("", "--max-pending", "N",
                      "Maximum queued generation requests (default: 16)",
                      "Scheduling", &max_pending_requests);
@@ -937,6 +942,7 @@ int RunServe(std::span<const char* const> args) {
     bool prompt_lookup = true;
     std::size_t prefill_chunk_tokens =
         server::kDefaultDecodeActivePrefillTokens;
+    std::uint32_t prefill_batch_tokens = 0;
     std::size_t max_pending_requests = 16;
     std::size_t max_pending_requests_per_client = 4;
     std::uint64_t request_timeout_ms = 0;
@@ -1030,6 +1036,10 @@ int RunServe(std::span<const char* const> args) {
         "", "--prefill-chunk", "N",
         "Maximum prompt tokens between active decode rounds (default: 512)",
         "Scheduling", &prefill_chunk_tokens);
+    llm_parser.AddOption(
+        "", "--prefill-batch", "N",
+        "Prompt tokens per Flash-Next prefill pass (default: 8192)", "Model",
+        &prefill_batch_tokens);
     llm_parser.AddOption("", "--max-pending", "N",
                          "Maximum queued generation requests (default: 16)",
                          "Scheduling", &max_pending_requests);
@@ -1181,6 +1191,7 @@ int RunServe(std::span<const char* const> args) {
     if (!backend->load(model, &err, max_context, session_count,
                        server::TextPrefillPolicy{
                            .decode_active_tokens = prefill_chunk_tokens,
+                           .prefill_chunk_tokens = prefill_batch_tokens,
                        },
                        server::TextSchedulerPolicy{
                            .max_pending_requests = max_pending_requests,

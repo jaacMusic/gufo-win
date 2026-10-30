@@ -44,6 +44,9 @@ param(
   # Max prompt tokens between active decode rounds (gufo --prefill-chunk).
   # 0 = the engine default (512). Larger = faster prefill, coarser decode slots.
   [int]$PrefillChunk = 0,
+  # Prompt tokens per model prefill pass (gufo --prefill-batch).
+  # 0 = the engine default (8192); clamped to the context size.
+  [int]$PrefillBatch = 0,
   [int]$Port = 8888,
   [string]$BindHost = "0.0.0.0",
   [string]$Snapshot = "",
@@ -135,6 +138,7 @@ if ($Mode -eq "serve") {
     "--think", $Think) + $sampling + $speculative
   if ($ReasoningEffort -ne "auto") { $arguments += @("--reasoning-effort", $ReasoningEffort) }
   if ($PrefillChunk -gt 0) { $arguments += @("--prefill-chunk", "$PrefillChunk") }
+  if ($PrefillBatch -gt 0) { $arguments += @("--prefill-batch", "$PrefillBatch") }
   if ($Mmproj) { $arguments += @("--mmproj", $Mmproj) }
 } else {
   # Same shape as upstream's single-user table: pp2048/tg128 per depth.

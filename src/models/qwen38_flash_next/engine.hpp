@@ -49,6 +49,15 @@ enum class DraftVocabulary {
 
 struct ModelOptions {
   std::uint32_t max_context = 4096;
+  /// Prompt tokens per prefill pass, capped by max_context.
+  /// gfx1151, served repository prompts: 4096-token chunks prefill 24K-102K
+  /// tokens 6-11% faster than 2048 (pp4096 +5% at d0, +6% at d32K); 8192
+  /// against 4096 at d0 is +2.2% at pp8192 and +2.6% at pp32768 for -1.6% at
+  /// pp4096, decode unchanged. Each chunk's n-gram gather doubles; next-chunk
+  /// prefetch overlaps that read. Prefill logits do not depend on the chunk
+  /// size (pre-budget queries always take the dense attention tiles).
+  static constexpr std::uint32_t kDefaultPrefillChunkTokens = 8192;
+  std::uint32_t prefill_chunk_tokens = kDefaultPrefillChunkTokens;
   /// Optional MTP draft sidecar (`mtp-...-shared-*.gguf`). Empty leaves
   /// speculative decoding off.
   std::string mtp_model_path;

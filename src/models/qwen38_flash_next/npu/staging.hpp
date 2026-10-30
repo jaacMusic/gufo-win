@@ -19,11 +19,16 @@ namespace gufo::npu {
 struct Knobs {
   std::filesystem::path artifacts;
   unsigned slices = 6, gate_slices = 0;
-  bool shared_expert = true;
+  // GUFO_NPU_SHEXP. Off: one dispatch costs more than the <=1024-row GEMM the
+  // lane replaces, and the stream waits on it at every layer.
+  bool shared_expert = false;
   bool hal_monitor = true;  // GUFO_NPU_HAL_MONITOR, detection only
   bool chip_power = true;   // GUFO_NPU_CHIP_POWER, logging only
   bool mem_trace = true;    // GUFO_NPU_MEM_TRACE, logging only
-  GuardMode guard = GuardMode::kOn;  // GUFO_NPU_GUARD on|off|log
+  // GUFO_NPU_GUARD: log reports a hold and keeps the lane. A hold only ever
+  // disables a winning lane, and the sampler reads whole-chip power, which a
+  // GPU-only prefill already exceeds on a desk host.
+  GuardMode guard = GuardMode::kLog;
   GuardOverrides guard_test;         // GUFO_NPU_GUARD_TEST (internal)
   // GUFO_NPU_TEST_FAIL_CHUNK (internal): NPU chunk of a request to report as
   // invalid, counted from 0.

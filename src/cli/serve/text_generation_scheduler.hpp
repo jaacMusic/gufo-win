@@ -34,6 +34,8 @@ inline constexpr std::size_t kDefaultMaxBufferedOutputBytesTotal =
 
 struct TextPrefillPolicy {
   std::size_t decode_active_tokens{kDefaultDecodeActivePrefillTokens};
+  /// Prompt tokens per model prefill pass; 0 keeps the model's own default.
+  std::uint32_t prefill_chunk_tokens{0};
 };
 
 struct TextSchedulerPolicy {

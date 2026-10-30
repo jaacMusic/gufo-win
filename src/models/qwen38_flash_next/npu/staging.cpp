@@ -93,7 +93,7 @@ Knobs ParseKnobs(const core::ExperimentalAuthorization& authorization,
   }
   knobs.slices = Number(values, "GUFO_NPU_SLICES", 6, 1, 12);
   knobs.gate_slices = Number(values, "GUFO_NPU_GATE_SLICES", 0, 0, 12);
-  knobs.shared_expert = Switch(values, "GUFO_NPU_SHEXP", true);
+  knobs.shared_expert = Switch(values, "GUFO_NPU_SHEXP", false);
   knobs.hal_monitor = Switch(values, "GUFO_NPU_HAL_MONITOR", true);
   knobs.chip_power = Switch(values, "GUFO_NPU_CHIP_POWER", true);
   knobs.mem_trace = Switch(values, "GUFO_NPU_MEM_TRACE", true);

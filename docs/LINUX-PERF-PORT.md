@@ -14,8 +14,8 @@ TheRock ROCm 10.0.0 / clang 23 toolchain used for the Windows build.
 
 - Upstream: <https://github.com/gufo-org/gufo>
 - Review clone: `%TEMP%\opencode\gufo-upstream` (bare clone works; fetch +
-  `git show <sha>`). Last swept upstream `9974cb4c` (2026-10-27) on 2026-10-27,
-  see "Upstream sweep 2026-10-27"
+  `git show <sha>`). Last swept upstream `4ab04ab8` (2026-10-30) on 2026-10-30,
+  see "Upstream sweep 2026-10-30"
 - Local base: upstream `fee9d2a` (PR #314 fix)
 - Local Windows HEAD at review: `c85aada`
 - Local fork already has Windows-specific work in
@@ -1553,30 +1553,56 @@ Checked 2026-10-26, deprioritized to near-zero:
   solutions generally want tens of MB of workspace, which changes K-reduction
   order and breaks the bit-identical acceptance rule.
 
-### [x] Bubo NPU prefill offload (big-ticket) - DONE 2026-10-27
+### [x] Bubo NPU prefill offload (big-ticket) - DONE 2026-10-27, made a gain 2026-10-28
 
 `bubo src/npu/` (~30 files, adapted from the MIT fork `mikealanni/gufo`):
 offloads eligible Q8_0 projections in complete 4096-token prefill groups to
 XDNA2 through a persistent XRT context (BFP codec, pinned xclbin artifacts,
 `GUFO_NPU_*` environment). Synced to bubo tip `51d14955` in one pass (commit
 `83dd5da3`): module, L-REL-2 GPU chunk retry, fault/guard stack, tests and
-docs — see `docs/npu.md` and `docs/WINDOWS-DEV.md`.
+docs — see `docs/npu.md` and `docs/WINDOWS-DEV.md`. The port itself has no
+drift from bubo; the two defects below are bubo's defaults meeting this host.
 
-Calibrated 2026-10-27 on the 32 GB BOSGAME host (UD-Q4_K_XL, `-p 8192 -n 1
--r 1 --temperature 0 --speculative off`, AR, one process at a time):
-GPU-only 1608.09 tok/s, NPU guard-on 1563.61 (Default pmode) and 1558.65
+Calibrated 2026-10-27 on the 32 GB BOSGAME host (`-p 8192 -n 1 -r 1
+--temperature 0 --speculative off`, AR, one process at a time): GPU-only
+1608.09 tok/s, NPU guard-on 1563.61 (Default pmode) and 1558.65
 (`xrt-smi configure --pmode performance`), NPU guard-off 1527.68, and the
-installed bubo 0.1.0 package 1520.89 on the same file and arguments. The
-offload is a net loss on this host in every configuration, so there is no
-NPU gap to close against bubo: the NPU is slower than the GPU for its own
-slices (about 2.6 s per 4096-token chunk, `hostfunc_lat_ms` 3.4 s, package
-power 85–113 W while the GPU draws the rest) and competes for the same
-package budget. The guard's 82 W x3 envelope trips after three chunks
-because it reads whole-chip RAPL, which prefill exceeds with the NPU idle;
-holds therefore limit the loss rather than the gain. PMODE makes no
-difference. The engine forwarded only 7 of the module's `GUFO_NPU_*`
-knobs; `GUFO_NPU_GUARD`, `HAL_MONITOR`, `CHIP_POWER` and `MEM_TRACE` are
-now read too, matching bubo's serve wiring.
+installed bubo 0.1.0 package 1520.89 on the same file and arguments. That
+reading — a net loss in every configuration — was a configuration artifact,
+not the lane: 7 % of it was the shared-expert lane and about 3 % the chunk cap.
+
+Both fixed 2026-10-28 (`pp8192`, `-n 128 -r 2`, guard off, 8192-token chunks):
+
+| configuration                          | tok/s   |
+| -------------------------------------- | ------- |
+| GPU only                               | 1655.49 |
+| NPU, current defaults                  | 1689.96 |
+| NPU, shared-expert lane on (`SHEXP=1`) | 1566.54 |
+| NPU, slices 12                         | 1426.85 |
+| NPU, guard on                          | 1658.92 |
+
+- `SHEXP` now defaults off (`staging.cpp`, `staging.hpp`). The lane's gate/up
+  GEMMs are at most 1024 rows; one dispatch costs more than the GPU work it
+  removes and the stream waits on it 47 times per chunk (`stall_ms[shared]`
+  249-325 ms per 8192-token chunk).
+- `engine.cpp` no longer caps a chunk at 4096 tokens when the NPU is on. A lane
+  takes every whole 4096-token group in the chunk (`QualifiedChunk` and
+  `HipLinearZTransfer` already held up to four), so the GPU keeps its 8192-token
+  batching. `prefill_plan.hpp`, which encoded the old cap and had no caller
+  outside its own test, is gone.
+- `GUFO_NPU_GUARD` now defaults to `log` instead of `on`. The sampler reads
+  whole-chip RAPL, which this host exceeds with the NPU idle
+  (`chunk_means_w=[112.0, 85.9, 83.6] > 82.0`), so a hold can only switch off a
+  lane that now wins: 1658.92 held against 1689.96 un-held.
+
+Slice count is a flat plateau at 5-6 and a cliff at 12, where the NPU is the
+critical path (`stall_ms[linear]` 616-851 ms per chunk). Default slices 5 and 6
+measure 1691.64 and 1689.96, so 6 stays (the upstream value). The remaining
+ceiling is arithmetic: 4.64 TFLOP per 4096-token chunk in about 2.4 s is about
+1.9 TFLOP/s effective against roughly 100 TFLOP/s for the GPU's prefill here,
+and the lane issues 216 XRT runs of 1-3 ms dispatch each per chunk. A wider `n`
+in the kernel would cut that; it needs the AIE sources, which are not in this
+tree. PMODE still makes no difference.
 
 ### Already covered or not applicable
 
@@ -1787,20 +1813,31 @@ with upstream, so no patch applies):
   device-resident weights, #779 masked 16-row prefill GEMM, #810 Windows
   model-bench, #758 item 3 (side-stream overlap).
 
-Next sweep from `1fc829ea`.
+## Upstream sweep 2026-10-30
 
-## Sibling-fork triage 2026-10-29 (`gufo-win-mix` backlog)
+Swept `1fc829ea..4ab04ab8` (11 commits). No immediate-performance port landed.
 
-- `[-]` **F1 split-bf16 router GEMM** (mix `3446b6ea`, from mikealanni's
-  `RouterSplitWeights`/`LaunchRouterSplit*`). No-op here: this fork's router
-  weights are F32 in the GGUF, narrowed once to F16 at load
-  (`device_model.cpp` `Stack` -> `kF16` router+`shexp_gate_inp`, the accuracy
-  ladder is documented there), and `DenseF16GEMMKernel`'s `kHalfWeights` tier
-  already accumulates in FP32 over two independent K16 chains summed at the
-  end, with K order fixed per row and chunk. Split-bf16 exists upstream to
-  recover fp32 weight accuracy from bf16 rows; F16 rows carry three more
-  mantissa bits, and the chunk-independent order the fix also wanted is
-  already enforced (`blaslt.cpp` `Gemm`). Revisit only if the router moves to
-  BF16 rows.
-- `[x]` Vision encoder weights in managed memory (port603 `f527f094`) landed
-  as `2e195967`; its runtime check still needs a host with XRT installed.
+- `[ ]` **`72dc1a0` #874 "tune Qwen3.8-27B verification GEMM geometries at
+  2-8 rows"** — new `verify_gemm_27b.hip` (tuned tile geometries for the 27B
+  dflash verification GEMM at 2–8 rows) plus a sweep tool; hooks into
+  `batched_decode.cpp` and `dflash/executor.cpp`, both present in the fork.
+  Deferred: no Qwen27B GGUF on this host, so the fork's byte-identical
+  verification gate cannot run.
+- Not ported: `538f6e4` #866 (WMMA prefill past 262,144 visible tokens — at
+  262,144 ctx the live extent is exactly 2,048 words, inside the old cap, so
+  no gain here; port only if contexts > 262,144 are planned; manual merge
+  into the diverged sparse-window mask build), `34ebb5f` #872 (/Ob2 — the
+  fork's `CMAKE_HIP_FLAGS_RELWITHDEBINFO` is plain clang `-O2` with no /Ob1,
+  so the noinline-on-device issue does not apply), `19968dc` #830
+  (qwen-image streams weights instead of reading the mapping — the fork fixes
+  the same pinned-page-cache stall its own way: `UploadMapped` in
+  `qwen_image_21/hip/kernels.hip` copies through pinned staging rings),
+  `6feba90` #856 (MiniMax H3 on Windows — the fork muxes H3 video through the
+  ffmpeg subprocess pipe in `media.cpp` and has no `media_windows.cpp`; port
+  the native path only if an H3 run on this host fails without external
+  ffmpeg), #860, #870, #869, #811 (features/CI), `e011849` #868 (fork has no
+  `windows-build.yml` release packaging). Still open upstream: #740
+  growable arena, #708 device-resident weights, #779 masked 16-row prefill
+  GEMM, #810 Windows model-bench, #758 item 3 (side-stream overlap).
+
+Next sweep from `4ab04ab8`.
