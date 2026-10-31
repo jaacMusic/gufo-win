@@ -121,3 +121,4 @@ tests/quality/compsec.json
 .claude/settings.local.json
 /dist/
 haiku_*.txt
+gufo-server-log.txt
