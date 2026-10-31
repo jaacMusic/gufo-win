@@ -342,3 +342,25 @@ not unprofiled throughput measurements.
 Next: improve prefill at depth and target/draft batch projection reuse while
 preserving [quality](QUALITY.md). The 1700 tok/s PP and flat d0–d128K
 objectives remain unmet; see [current benchmarks](BENCHMARKS.md).
+
+## Prefill ceiling (October 31, 2026)
+
+The intra-layer phase trace (see the phase-split section in
+`docs/PERF-REVIEW-PLAN.md`) accounts for the whole prefill pass: 1259 ms of
+measured buckets against 1253 ms of wall time at pp2048, GPU busy 99.8%. The
+routed experts are 35% of it and already run at 188 GB/s against the 198 GB/s
+the probe measures for that gather, HC combines reach 92% of the streaming
+rate, and every dense GEMM runs at 24-35 TFLOP/s. No bucket above the 10%
+cost-centre rule has a lever left, so the 1700 tok/s prefill objective is a
+weight-traffic limit, not a kernel gap: only a smaller quant or
+device-resident weights (#708) move it.
+
+Width scaling has the same cause. pp512/1024/2048/4096/8192 = 1195/1463/1573/
+1637/1664 tok/s fit 1708 tok/s marginal plus about 129 ms fixed per pass,
+because 512 tokens times top-4 already touch all 128 experts, so the expert
+fetch does not shrink at small widths.
+
+Request batching is the one measured lever: two sessions (`-j 2`, 128K
+context) process four concurrent 2K prompts in 3210 ms against 6371 ms
+sequentially, 1.98x, and four sessions at 32K give the same 2.0x. Only one
+engine process fits in unified memory at a time.

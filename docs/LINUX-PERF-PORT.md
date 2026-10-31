@@ -1924,3 +1924,17 @@ serving engine up; the no-op-for-speed claim itself is upstream's and
 gets checked in the next idle-engine pp/tg run.
 
 Next sweep from `192b75a`.
+## Upstream check 2026-10-31: nothing new to port
+
+Fetched `gufo-org/gufo` `origin/main`; the tip is still `192b75a`, the #875
+commit already ported. No open upstream item was closed since the 2026-10-30
+sweep, and the open list is unchanged (#740 growable arena, #708
+device-resident weights, #779 masked 16-row prefill GEMM, #810 Windows
+model-bench, #758 item 3).
+
+The pending speed check on #875 was settled on an idle engine: pp2048 at d0 is
+1635-1668 tok/s on the current HEAD (traced and plain, one binary), inside the
+1613-1631 band the step-2 pass recorded before the port, so the commit stayed
+a numerics-only change as upstream claimed. The prefill trace work of the same
+day is in `docs/PERF-REVIEW-PLAN.md`; it closes the "needs a fresh per-kernel
+trace" item with a Windows-only measurement.

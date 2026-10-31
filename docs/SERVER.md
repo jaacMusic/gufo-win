@@ -65,7 +65,13 @@ Qwen HTTP requests share one immutable `QwenGpuModel` containing the mapped
 weights and tokenizer. Each request leases a preallocated `QwenGpuExecutor`
 with independent KV, recurrent, graph, activation, and logit state.
 `--sessions N` controls the bounded session pool. The scheduler batches ready
-requests when the model runner supports their execution mode.
+requests when the model runner supports their execution mode. Each batched
+prefill amortizes the per-pass weight traffic, so the pool, not the chunk size,
+is what raises aggregate throughput on concurrent requests: on gfx1151 with
+this class of model, four concurrent 2K-token prefills take 3210 ms with two
+sessions against 6371 ms sequentially (1.98x), and four sessions add nothing
+beyond 2.0x. Request state is capped in aggregate, so `-j 4 --context 262144`
+fails to load while `-j 2 --context 131072` fits.
 
 Text serving defaults match llama.cpp for context and generation length:
 
