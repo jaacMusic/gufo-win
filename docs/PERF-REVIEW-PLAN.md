@@ -350,3 +350,54 @@ drops (#708 device-resident weights, smaller quant), which is a format
 decision rather than a kernel change. The GLU round trip (#31188) is ~0.6%
 of the pass; #779 is masked-width only.
 
+## Width scaling and the fixed per-pass cost (2026-10-31, Windows)
+
+`gufo bench --n-prompt 512,1024,2048,4096,8192 --n-gen 16 --n-depth 0
+--repetitions 2` with no other engine resident: 1195.30 / 1462.87 / 1572.98 /
+1637.08 / 1663.61 tok/s. A straight fit gives 1708 tok/s marginal and **~129 ms
+fixed per pass**, i.e. pp512 loses 30% to a cost that does not scale with
+width.
+
+That cost is routing, not scheduling. At 512 tokens and top-4 the router makes
+2048 expert hits over 128 experts, so every expert is read regardless of width:
+the traced `head` bucket costs 64.1 ms at 512 rows against 66.0 ms at 2048
+rows, and per-layer MoE drops only 9.07 -> 5.62 ms. Below ~2K tokens the ~73 GB
+expert fetch is therefore width-invariant, and the same effect explains why the
+serve prefill rate climbs with prompt width rather than staying flat.
+
+## Serve path: TTFT, chunking, cache (2026-10-31, Windows)
+
+Measured through `/v1/chat/completions` on the production command line
+(`%TEMP%\opencode\ttft-matrix.ps1`; the stats object is `usage.gufo`):
+
+| prompt tokens | cold TTFT | cold prefill tok/s | chunks | cached TTFT |
+| --- | --- | --- | --- | --- |
+| 2105 | 1704 ms | 1268 | 3 | 22.7 ms |
+| 8210 | 5426 ms | 1559 | 3 | 44.8 ms |
+| 32594 | 21672 ms | 1526 | 6 | 121.3 ms |
+
+Snapshot write costs 73-374 ms per request and restore 18 ms. Chunking only
+starts above the 8192 `--prefill-batch` cap (992 / 1942 / 3816 / 7367 tokens
+each planned one data chunk plus a prefix chunk; 14641 planned three), so short
+prompts are not being clipped. There is no long-context degradation: 8K and 32K
+cold prefill both hold 1526-1559 tok/s.
+
+## Batching is the remaining lever (2026-10-31, Windows)
+
+`gufo serve -j/--sessions N` is the only concurrency knob (default 1). Four
+distinct ~2100-token prompts, sequential wall time against four parallel curl
+processes (`%TEMP%\opencode\conc-test.ps1`):
+
+| server | sequential | 4 concurrent | plan | speedup |
+| --- | --- | --- | --- | --- |
+| `-j 4`, ctx 32768 | 6702 ms | 3295 ms | `batched-w4` | 2.0x |
+| `-j 2`, ctx 131072 | 6371 ms | 3210 ms | `batched-w2` | 1.98x |
+| `-j 4`, ctx 262144 | fails to load: `request-state claim exceeds state capacity` | | | |
+
+Two sessions already capture the whole gain, because one pass pays the fixed
+129 ms plus the full expert fetch no matter how many requests it carries.
+Memory is the constraint: `-j 2` at 128K uses 94.6 GiB of 113 GiB, and the cap
+that fails is total request state, not per-session context. Only one engine
+process fits at a time (see `docs/WINDOWS-DEV.md`), so batch width trades
+against context length, never against a second server.
+
