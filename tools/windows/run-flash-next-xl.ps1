@@ -67,6 +67,10 @@ $env:PATH = "$bin;C:\TheRock\build\bin;$env:PATH"
 if (-not (Test-Path "$bin\gufo.exe")) {
   throw "gufo.exe not found in $bin; build first: powershell -ExecutionPolicy Bypass -File tools\windows\build.ps1"
 }
+# One engine at a time: the weights do not fit twice in unified memory, and the
+# second process dies in hipMalloc instead of saying why.
+$running = @(Get-Process gufo -ErrorAction SilentlyContinue)
+if ($running) { throw "gufo already running (PID $($running.Id -join ', ')); stop it before $Mode" }
 
 if (-not $ModelFile) {
   $ModelFile = "UD-Q4_K_XL\Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf"
