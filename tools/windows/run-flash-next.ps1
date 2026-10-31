@@ -104,4 +104,8 @@ Get-ChildItem Env: | Where-Object { $_.Name -like "GUFO_*" } | ForEach-Object {
   Write-Host "using $($_.Name)=$($_.Value) from this shell" -ForegroundColor Yellow
 }
 Write-Host "gufo $($arguments -join ' ')"
+# One engine at a time: the weights do not fit twice in unified memory, and the
+# second process dies in hipMalloc instead of saying why.
+$running = @(Get-Process gufo -ErrorAction SilentlyContinue)
+if ($running) { throw "gufo already running (PID $($running.Id -join ', ')); stop it before $Mode" }
 & "$bin\gufo.exe" @arguments
