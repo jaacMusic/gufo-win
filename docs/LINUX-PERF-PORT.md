@@ -1328,15 +1328,19 @@ fix is fork-only.
 ## Recommended order
 
 Working order, as of October 21 2026 (decode is already at upstream parity,
-so prefill and loading lead). Everything below except item 3 has landed; the
-rest of upstream up to 0.20.0 (`0c03748`) is either already in the fork or
-belongs to the tiered cache stack the fork does not have.
+so prefill and loading lead). **Every item below has landed and been measured;
+this block is history, not a backlog.** The rest of upstream up to 0.20.0
+(`0c03748`) is either already in the fork or belongs to the tiered cache stack
+the fork does not have.
 
 1. ~~`#459` + `#481` + `#482` + `#633 Prepare`~~ done, see Tier 1.
 2. ~~`#421` + `#463`~~ done. `#485` in progress — GDN row reuse
    landed (+1.75% pp2048 d0, +1.7% d32K); the remaining seven slices are
    listed in its section.
-3. `#470` — 2048 vs 4096 chunk sweep on Windows; only then decide.
+3. ~~`#470` — 2048 vs 4096 chunk sweep on Windows~~ done: 4096 alone was
+   neutral to worse at every depth, so the constant stayed at 2048, and the
+   full port (next-chunk n-gram gather) then measured pp4096 +5–7%,
+   pp24576 +6.4%, pp65536 +6.6%. See its section.
 4. ~~Loading-time investigation~~ done: the gap is Windows NTFS serializing
    unbuffered reads of the mapped shard, and the cached alternative thrashes
    the page cache; see "Windows loading path" under known differences.

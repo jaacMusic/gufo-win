@@ -25,3 +25,20 @@ reference (200,036 input pairs, no mismatches); Flash-Next routed-WMMA,
 projection and MoE-id operator tests pass on gfx1151; DeepSeek-V4 MMQ target
 builds; format check passes. AR/MTP session replay was not run (needs the full
 89 GiB model resident).
+
+## Tier B verdicts (2026-10-31)
+
+Sized against Gufo code, not against the upstream diff.
+
+| Upstream | Size | Verdict here |
+| --- | --- | --- |
+| #31188 fuse gate/up + GLU in MMQ | 18 lines (CUDA) | **Only real candidate.** Decode is already fused (`qfn_mmq_moe_gated_vec`, 1–8 tokens, SwiGLU in `out`); the wide `qfn_mmq_q4_K_moe_pair_unique` path writes raw gate/up and a separate GLU kernel reads it back. Fusing saves one memory round trip on a prefill intermediate — expected low single digits, unmeasured. |
+| #31288 top-k MoE fusion for 384 experts | 6 lines | N/A: Gufo has no `topk-moe.cu` analogue; expert routing is its own code. |
+| #27694, #30663 probabilistic draft sampling | 304 + 61 lines | Already covered: `core/speculative/speculative_verifier.cpp` does rejection sampling with draft and target probabilities (`Uniform()*draft_probability < target_probability`, lines 539–721). |
+| #29825 halve indexer score memory | 21 lines + shaders | Skip by design: Gufo keeps indexer scores F32 to avoid swapping blocks at the selection boundary (`kernels.hip.cpp:2359`). |
+| #30640 fused QSA mask op | 141 lines (CUDA) | Already covered: `SelectMarkKernel` writes selection and mask in one pass (`kernels.hip.cpp:2680`). |
+| #31243 selection independent of mask shape | 41/−57 (graph) | N/A: Gufo selection already works off a capacity-bounded block list, not a mask-shaped tensor. |
+
+Nothing else in the August–October upstream window beats what Gufo already
+does; the remaining headroom is local (prefill chunk decision, NTFS load time).
+
