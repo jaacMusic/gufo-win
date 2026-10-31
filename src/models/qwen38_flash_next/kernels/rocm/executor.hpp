@@ -458,6 +458,9 @@ private:
   bool Ple(const DeviceLayer& l, Session& s, std::uint32_t n_tokens, float* res,
            bool speculative, std::string* error_msg,
            bool embeddings_ready = false) const;
+  /// Records an intra-layer phase boundary (Timeline::LayerPhase) on the
+  /// compute stream when GUFO_TRACE_LAYERS is on; a no-op otherwise.
+  void MarkPhase(std::uint32_t phase, std::uint32_t rows) const;
   bool LinearAttention(const DeviceLayer& l, Session::LinearState& s,
                        const float* x, float* out, std::uint32_t n_tokens,
                        bool speculative, std::string* error_msg,

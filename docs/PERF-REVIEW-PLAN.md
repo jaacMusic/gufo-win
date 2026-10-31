@@ -310,3 +310,43 @@ Per-layer prefill marks (`w255`) at pp2048 d0 on the warm APU close the open
   the tier is matrix-bound dense GEMM plus the GDN recurrence. No bandwidth
   lever remains among these without the per-kernel trace.
 
+## Prefill phase split (2026-10-31, Windows, intra-layer marks)
+
+`GUFO_TRACE_LAYERS=1` now stamps phase boundaries inside the layer body
+(`Timeline::kPhaseMark`, `Executor::MarkPhase`), so the "fresh per-kernel
+trace" the step-2 pass asked for is available on the Windows host without
+rocprofv3. Reproduction (warm APU, `build/release`):
+
+```powershell
+$env:GUFO_TRACE='1'; $env:GUFO_TRACE_LAYERS='1'
+.\gufo.exe bench --model <shard1> --n-prompt 2048 --n-gen 384 --n-depth 0 --repetitions 1
+```
+
+pp2048 at the same settings: 1635-1668 tok/s (traced / plain, one binary);
+GPU busy 99.8%, idle 0.06 ms per pass. Per pass (1.25 s wall, 3 passes
+traced) the buckets are:
+
+| bucket | ms/pass | share | measured rate | headroom |
+| --- | --- | --- | --- | --- |
+| routed experts (48 calls) | 435 | 35% | 9.07 ms/layer, ~73 GB = 188 GB/s | 198 GB/s probe, 95% |
+| GDN in-projection (36) | 177 | 14% | 4.90 ms/layer | ~35 TFLOP/s F16 |
+| HC combines (attn+ffn) | 135 | 11% | 0.95 + 1.86 ms/layer | 92% of 193.7 GB/s |
+| HC mixers (attn+ffn) | 114 | 9% | 1.38 + 0.99 ms/layer | norm + inject GEMMs |
+| GDN scan (36) | 98 | 8% | 2.71 ms/layer | sequential recurrence |
+| full attention, 11 layers + head | 88 | 7% | 4.10 proj + 3.25 core | ~34 TFLOP/s |
+| GDN out-projection (36) | 73 | 6% | 2.04 ms/layer | ~32 TFLOP/s |
+| MoE shared expert (48) | 55 | 4% | 1.15 ms/layer | W8A8 GEMM |
+| LM head | 66 | 5% | one 2048-row pass | ~24 TFLOP/s |
+| MoE router (48) | 18 | 1% | 0.38 ms/layer | |
+
+Sum 1259 ms against the 1253 ms wall, so the map is complete: no hidden
+host-side stall, no unattributed tier. Everything that moves weights is
+within 5-8% of the rate the probes measured for its own access pattern, and
+every GEMM in the pass runs at 24-35 TFLOP/s (the F16 WMMA rate the fused
+attention projection proves the device sustains). This closes the tier: no
+bucket above the 10% cost-centre rule has a remaining lever larger than the
+measurement noise, so the prefill item is settled until weight traffic itself
+drops (#708 device-resident weights, smaller quant), which is a format
+decision rather than a kernel change. The GLU round trip (#31188) is ~0.6%
+of the pass; #779 is masked-width only.
+

@@ -41,9 +41,31 @@ public:
     // Diagnostic interleaved mark (GUFO_TRACE_LAYERS=1): one per body layer,
     // arg = (layer << 8) | min(rows, 255). Not part of the phase pairing.
     kLayerMark,
+    kPhaseMark,  // intra-layer phase boundary (GUFO_TRACE_LAYERS): arg =
+                 // (LayerPhase << 16) | min(rows, 255)
     kSynced,
     kLabels
   };
+  /// Boundaries of one ForwardBody layer, in stream order.
+  enum LayerPhase : std::uint32_t {
+    kPhMixA = 1,   // PLE + hc_attn mixer
+    kPhAttn,       // DeltaNet or full attention
+    kPhCombA,      // hc_ffn Combine
+    kPhMixF,       // hc_ffn mixer
+    kPhMoe,        // router + shared + routed experts
+    kPhCombF,      // next-layer hc_attn Combine
+    kPhGdnProj,    // inside kPhAttn: ssm in projection + alpha/beta
+    kPhGdnScan,    // inside kPhAttn: conv boundary + GDN recurrence
+    kPhGdnOut,     // inside kPhAttn: ssm output projection
+    kPhAttnProj,   // inside kPhAttn: qkv projection + kv store
+    kPhAttnCore,   // inside kPhAttn: causal attention kernel
+    kPhMoeRouter,  // inside kPhMoe: router GEMM + top-k
+    kPhMoeShared,  // inside kPhMoe: shared expert gate/up/down
+  };
+  static constexpr const char* kLayerPhaseName[] = {
+      "?",        "mixA",     "attn",      "combA",    "mixF",
+      "moe",      "combF",    "gdnproj",   "gdnscan",  "gdnout",
+      "attnproj", "attncore", "moerouter", "moeshared"};
   static Timeline& Get() {
     static Timeline timeline;
     return timeline;
@@ -167,9 +189,9 @@ private:
   }
   static const char* Name(Label label) {
     static constexpr const char* kNames[] = {
-        "verify",   "prefix-end",   "body",  "verify-end",
-        "draft",    "draft-end",    "cand",  "cand-end",
-        "rollback", "rollback-end", "synced"};
+        "verify",    "prefix-end", "body",     "verify-end", "draft",
+        "draft-end", "cand",       "cand-end", "rollback",   "rollback-end",
+        "layer",     "phase",      "synced"};
     return kNames[label];
   }
   static bool IsBegin(Label label) {
@@ -212,6 +234,8 @@ private:
     std::uint32_t layer_prev_il = 0;
     std::uint32_t layer_w = 0;
     bool have_layer_prev = false;
+    std::uint64_t phase_prev_tick = 0;
+    std::uint32_t phase_w = 0;
     const auto add_layer = [&](const char* what, std::uint64_t tick) {
       if (!have_layer_prev || tick <= layer_prev_tick) {
         return;
@@ -262,12 +286,30 @@ private:
         layer_prev_il = e.arg >> 8;
         layer_w = e.arg & 0xff;
         have_layer_prev = true;
+        phase_prev_tick = tick;
+        phase_w = e.arg & 0xff;
+        continue;
+      }
+      if (e.label == kPhaseMark) {
+        const std::uint32_t ph = e.arg >> 16;
+        if (phase_prev_tick != 0 && tick > phase_prev_tick &&
+            ph < std::size(kLayerPhaseName)) {
+          char key[48];
+          std::snprintf(key, sizeof(key), "ph-%s w%u", kLayerPhaseName[ph],
+                        phase_w);
+          auto& a = busy[key];
+          a.ms +=
+              static_cast<double>(tick - phase_prev_tick) * ns_per_tick_ * 1e-6;
+          ++a.n;
+        }
+        phase_prev_tick = tick;
         continue;
       }
       if (IsBegin(e.label)) {
         cycles += e.label == kVerifyBegin;
         if (e.label == kVerifyBegin) {
           have_layer_prev = false;
+          phase_prev_tick = 0;
         }
         if (have_end) {
           const std::int64_t from = sync_host > end_host ? sync_host : end_host;

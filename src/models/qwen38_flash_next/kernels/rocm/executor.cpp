@@ -2056,6 +2056,13 @@ bool Executor::Ple(const DeviceLayer& l, Session& session, std::uint32_t n,
   return true;
 }
 
+void Executor::MarkPhase(std::uint32_t phase, std::uint32_t rows) const {
+  if (Tl().Layers()) {
+    Tl().Gpu(stream_, Timeline::kPhaseMark,
+             (phase << 16) | std::min(rows, 255u));
+  }
+}
+
 bool Executor::LinearAttention(const DeviceLayer& l, Session::LinearState& s,
                                const float* x, float* out,
                                std::uint32_t n_tokens, bool speculative,
@@ -2157,6 +2164,7 @@ bool Executor::LinearAttention(const DeviceLayer& l, Session::LinearState& s,
 #endif
     return false;
   }
+  MarkPhase(Timeline::kPhGdnProj, n_tokens);
 #ifdef GUFO_NPU
   if (npu_work) {
     // Stream wait, then mapped-C decode, then GDN. The CPU keeps enqueueing;
@@ -2196,6 +2204,7 @@ bool Executor::LinearAttention(const DeviceLayer& l, Session::LinearState& s,
                 c.ssm_conv_kernel, MatrixRows(n_tokens) && !speculative,
                 convolved, c.rms_eps, stream_, out_half,
                 out_q8_1 ? s_.gdn_q8_1 : nullptr);
+  MarkPhase(Timeline::kPhGdnScan, n_tokens);
   if (!project_output) {
     return true;
   }
@@ -2205,6 +2214,7 @@ bool Executor::LinearAttention(const DeviceLayer& l, Session::LinearState& s,
       AssignError(error_msg, "SSM output F16 GEMM failed");
       return false;
     }
+    MarkPhase(Timeline::kPhGdnOut, n_tokens);
     return true;
   }
   if (tiled) {
@@ -2214,6 +2224,7 @@ bool Executor::LinearAttention(const DeviceLayer& l, Session::LinearState& s,
       AssignError(error_msg, "W8A8 GEMM failed");
       return false;
     }
+    MarkPhase(Timeline::kPhGdnOut, n_tokens);
     return true;
   }
   if (out_q8_1) {
@@ -2390,7 +2401,9 @@ bool Executor::Attention(const DeviceLayer& l, Session::AttentionState& s,
                                 dense_rows, pos, c.num_heads, c.num_kv_heads,
                                 c.head_dim, c.compress_ratio, stream_, false));
   };
+  MarkPhase(Timeline::kPhAttnProj, n_tokens);
   if (MatrixRows(n_tokens) && attend(0, n_tokens, last_only)) {
+    MarkPhase(Timeline::kPhAttnCore, n_tokens);
     return !project_output ||
            Dense(l.attn_out, s_.ctx, out, n_tokens, error_msg);
   }
@@ -2432,6 +2445,7 @@ bool Executor::Moe(const DeviceLayer& l, const float* x, float* out,
   }
   RouterTopK(s_.router, c.num_experts + 1, s_.ids, s_.weights, n_tokens,
              c.num_experts, used, stream_);
+  MarkPhase(Timeline::kPhMoeRouter, n_tokens);
   if (ExpertMatrixRows(n_tokens)) {
     ExpertCounts(s_.ids, s_.expert_counts, n_tokens, c.num_experts, used,
                  stream_);
@@ -2517,6 +2531,7 @@ bool Executor::Moe(const DeviceLayer& l, const float* x, float* out,
   })
                                                    : std::function<bool()>{};
 #endif
+  MarkPhase(Timeline::kPhMoeShared, n_tokens);
   if (last_only && l.ffn_gate_exps.type == GgmlType::kQ8_0 &&
       l.ffn_up_exps.type == GgmlType::kQ8_0 &&
       l.ffn_down_exps.type == GgmlType::kQ8_0) {
@@ -3071,6 +3086,8 @@ bool Executor::ForwardBody(Session& session, std::uint32_t n,
     if (Tl().Layers()) {
       Tl().Gpu(stream_, Timeline::kLayerMark, (il << 8) | std::min(n, 255u));
     }
+    const auto mark_phase = [&](Timeline::LayerPhase phase,
+                                std::uint32_t rows) { MarkPhase(phase, rows); };
     if (!session.CheckCancellation(error_msg))
       return false;
     const DeviceLayer& l = layers[il];
@@ -3088,6 +3105,7 @@ bool Executor::ForwardBody(Session& session, std::uint32_t n,
                half_only)) {
       return false;
     }
+    mark_phase(Timeline::kPhMixA, n);
     // The last target layer's query outputs have no later cache consumer.
     // Preserve all K/V/indexer rows and the final query's original tile.
     const bool last_attention = WidePrefill(n) && !session.mtp_enabled_ &&
@@ -3109,6 +3127,7 @@ bool Executor::ForwardBody(Session& session, std::uint32_t n,
                           last_attention, false, true)) {
       return false;
     }
+    mark_phase(Timeline::kPhAttn, n);
 
     const float* next_norm =
         il + 1 < c.num_layers
@@ -3135,16 +3154,23 @@ bool Executor::ForwardBody(Session& session, std::uint32_t n,
                           l.shexp_gate.type == GgmlType::kQ8_0 &&
                           l.shexp_up.type == GgmlType::kQ8_0;
       Combine(s_.res, l.hc_ffn.norm.f32(), rows, InjectWeights(l.hc_ffn));
+      mark_phase(Timeline::kPhCombA, rows);
       if (!HcMix(l.hc_ffn, s_.res, true, s_.mixed, s_.inject, rows, error_msg,
-                 false, no_f32) ||
-          !Moe(l, s_.mixed, s_.block_out, rows, error_msg
+                 false, no_f32)) {
+        return false;
+      }
+      mark_phase(Timeline::kPhMixF, rows);
+      if (!Moe(l, s_.mixed, s_.block_out, rows, error_msg
 #ifdef GUFO_NPU
                ,
                /*last_only=*/false, WidePrefill(rows), static_cast<int>(il)
 #endif
-                   ))
+                   )) {
         return false;
+      }
+      mark_phase(Timeline::kPhMoe, rows);
       Combine(s_.res, next_norm, rows, next_inject);
+      mark_phase(Timeline::kPhCombF, rows);
       return true;
     };
     if (skipped != 0) {
