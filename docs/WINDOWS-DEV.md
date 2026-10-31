@@ -78,6 +78,12 @@ gufo bench --model '<hf-cache>\models--unsloth--Qwen3.8-Flash-Next-GGUF\
 - `tools\windows\run-flash-next.ps1 -Mode bench` wraps the full sweep
   (depths `0,4096,16384,32768,65536,131072`, `--repetitions 2`, specular
   args). `-Draft off` = AR baseline, `-Greedy` = `--temperature 0`.
+- One engine at a time. The model does not fit twice in 113 GiB of unified
+  memory, so a second `gufo` process (serve, bench or reference binary) fails
+  to load with `Failed to create Qwen3.8-Flash-Next model: hipMalloc failed for
+  blk.29.ffn_gate_exps.weight`, and a bench started beside a serve shows
+  `[Model Load]: ... (failed)`. Stop the running engine first; check
+  `tasklist /fi "imagename eq gufo.exe"` before measuring.
 - Running two binaries against each other: run them sequentially, never
   concurrently, and unset `GUFO_NPU*` environment for AR comparisons.
 

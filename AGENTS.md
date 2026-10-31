@@ -20,8 +20,10 @@ cmake --build --preset release --parallel 4
 ```
 
 Stage only task-owned paths before Nix builds; flakes include tracked files.
-Measure performance with `result/bin/gufo` or `build/release/gufo`. Preserve
-compiler/dependency versions when comparing results.
+Measure performance with `result/bin/gufo` or `build/release/gufo`. Run one
+engine process at a time; a second copy fails to load (`hipMalloc failed for
+blk.29.ffn_gate_exps.weight`) because the weights do not fit twice in unified
+memory. Preserve compiler/dependency versions when comparing results.
 
 ## Focused tests
 
