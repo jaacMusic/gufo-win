@@ -61,6 +61,36 @@ __launch_bounds__(256) __global__ void RoutedWeights(
   if (lane == 0) y[blockIdx.x * gridDim.y + blockIdx.y] += acc;
 }
 
+// HC-combine stream: one CTA per token, a 4 x hidden F32 residual read and
+// write-back, a broadcast block_out read and a narrowed F16 norm write.
+// Replays HcCombineVec4Kernel's float4 pattern at the pp2048 shape (2048
+// tokens, hidden 2560) to see whether the ~10% combine bucket streams at the
+// routed ceiling (~198 GB/s above) or has headroom.
+__launch_bounds__(256) __global__ void HcCombineStream(
+    float* __restrict__ res, const float* __restrict__ block_out,
+    __half* __restrict__ xn, int hidden) {
+  const std::size_t hc = 4 * (std::size_t)hidden;
+  float* dst = res + (std::size_t)blockIdx.x * hc;
+  const float* src = block_out + (std::size_t)blockIdx.x * hidden;
+  __half2* out = reinterpret_cast<__half2*>(xn + (std::size_t)blockIdx.x * hc);
+  float acc = 0.0F;
+  for (std::uint32_t c = threadIdx.x; (std::size_t)c * 4 + 3 < hc;
+       c += blockDim.x) {
+    const std::uint32_t e = c * 4;
+    const std::uint32_t i = e - (e / (std::uint32_t)hidden) * hidden;
+    const float4 r = *reinterpret_cast<const float4*>(dst + e);
+    const float4 b = *reinterpret_cast<const float4*>(src + i);
+    const float4 v = {r.x + b.x, r.y + b.y, r.z + b.z, r.w + b.w};
+    *reinterpret_cast<float4*>(dst + e) = v;
+    const __half2 h0 = __floats2half2_rn(v.x, v.y);
+    const __half2 h1 = __floats2half2_rn(v.z, v.w);
+    out[c * 2] = h0;
+    out[c * 2 + 1] = h1;
+    acc += v.x + __low2float(h0) + __high2float(h1);
+  }
+  if (acc == 12345.678F) res[threadIdx.x] = acc;  // keep the loads alive
+}
+
 int main() {
   GPU_CHECK(hipSetDevice(0));
   const int experts = 512;   // pp2048: one 64-row tile per expert
@@ -103,5 +133,41 @@ int main() {
   run(RoutedWeights<1>, 1, "production BK=2");
   run(RoutedWeights<2>, 2, "BK=4");
   run(RoutedWeights<4>, 4, "BK=8");
+
+  // HC combine at the pp2048 d0 shape: 2048 CTAs, one per token, best of 9.
+  {
+    const int tokens = 2048;
+    const int hidden = 2560;
+    const std::size_t hc = 4 * (std::size_t)hidden;
+    float* cres;
+    float* cblock;
+    __half* cxn;
+    GPU_CHECK(hipMalloc(&cres, tokens * hc * sizeof(float)));
+    GPU_CHECK(hipMalloc(&cblock, tokens * hidden * sizeof(float)));
+    GPU_CHECK(hipMalloc(&cxn, tokens * hc * sizeof(__half)));
+    GPU_CHECK(hipMemset(cres, 0, tokens * hc * sizeof(float)));
+    GPU_CHECK(hipMemset(cblock, 0, tokens * hidden * sizeof(float)));
+    const double cgb =
+        (double)tokens * (2.0 * hc * sizeof(float) +
+                          hidden * sizeof(float) + hc * sizeof(__half)) /
+        1e9;
+    std::printf("HC combine: %d tokens x %d hidden = %.2f GB per call\n",
+                tokens, hidden, cgb);
+    HcCombineStream<<<tokens, 256>>>(cres, cblock, cxn, hidden);
+    GPU_CHECK(hipGetLastError());
+    GPU_CHECK(hipDeviceSynchronize());
+    float best = 1e30F;
+    for (int rep = 0; rep < 9; ++rep) {
+      const auto t0 = std::chrono::high_resolution_clock::now();
+      HcCombineStream<<<tokens, 256>>>(cres, cblock, cxn, hidden);
+      GPU_CHECK(hipDeviceSynchronize());
+      const auto t1 = std::chrono::high_resolution_clock::now();
+      best = std::min(
+          best, std::chrono::duration<float, std::milli>(t1 - t0).count());
+    }
+    std::printf("  %-22s float4 RMW+F16 out: %7.3f ms  %6.1f GB/s"
+                "  (47 calls = %.0f ms/pass)\n",
+                "HC combine", best, cgb / best * 1e3, best * 47);
+  }
   return 0;
 }

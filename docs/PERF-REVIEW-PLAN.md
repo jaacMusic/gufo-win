@@ -300,4 +300,13 @@ Per-layer prefill marks (`w255`) at pp2048 d0 on the warm APU close the open
   needs a fresh per-kernel trace (rocprofv3, Linux host) before any next move.
   The 71%-of-ceiling and 88 GB/s figures above should be read with this in
   mind.
+- Follow-up 2026-10-30 (same probe, `HcCombineStream`): the HC-combine access
+  pattern (per token a 4 x hidden F32 residual read/write-back, a broadcast
+  block_out read and a narrowed F16 norm write, 2048 tokens) streams at
+  178.3 GB/s while the routed fetch in the same run sustains 193.7 GB/s, i.e.
+  ~92% of the achievable rate. Combine-class traffic (~0.23 GB/call, 61 ms
+  over 47 layers) is therefore not pattern-limited; the ~143 ms 10.5% bucket's
+  remainder is the mix/inject epilogue and MoE-fused variants, and the rest of
+  the tier is matrix-bound dense GEMM plus the GDN recurrence. No bandwidth
+  lever remains among these without the per-kernel trace.
 
