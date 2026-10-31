@@ -109,7 +109,14 @@ static __device__ __forceinline__ int __vsubss4(const int a, const int b) {
 }
 
 static __device__ __forceinline__ int __vsub4(const int a, const int b) {
-    return __vsubss4(a, b);
+    // SWAR: subtract the low 7 bits of each byte with no borrow across bytes,
+    // then flip each byte's high bit where the operands' sign bits differed.
+    // llama.cpp #27962; exact modulo-256 wraparound, unlike __vsubss4.
+    const unsigned int a_large = a | 0x80808080;
+    const unsigned int b_small = b & 0x7f7f7f7f;
+    const unsigned int result_low_7bits = a_large - b_small;
+    const unsigned int should_flip_high_1bit = (a ^ ~b) & 0x80808080;
+    return result_low_7bits ^ should_flip_high_1bit;
 }
 
 static __device__ __forceinline__ unsigned int __vcmpeq4(unsigned int a, unsigned int b) {
@@ -125,13 +132,11 @@ static __device__ __forceinline__ unsigned int __vcmpeq4(unsigned int a, unsigne
 }
 
 static __device__ __forceinline__ unsigned int __vcmpne4(unsigned int a, unsigned int b) {
-    const uint8x4_t &va = reinterpret_cast<const uint8x4_t &>(a);
-    const uint8x4_t &vb = reinterpret_cast<const uint8x4_t &>(b);
-    unsigned int c;
-    uint8x4_t &vc = reinterpret_cast<uint8x4_t &>(c);
-#pragma unroll
-    for (int i = 0; i < 4; ++i) {
-        vc[i] = va[i] == vb[i] ? 0x00 : 0xff;
-    }
-    return c;
+    // SWAR byte compare: (x & 0x7f) + 0x7f sets each byte's high bit iff that
+    // byte is non-zero. llama.cpp #27962.
+    const unsigned int x = a ^ b;
+    const unsigned int ne_low_7bits = ((x & 0x7f7f7f7f) + 0x7f7f7f7f) & 0x80808080;
+    const unsigned int ne_high_1bit = x & 0x80808080;
+    const unsigned int ne_any_bit = ne_low_7bits | ne_high_1bit;
+    return (ne_any_bit >> 7) * 0xff;
 }

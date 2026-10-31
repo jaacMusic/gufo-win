@@ -5,6 +5,11 @@ Adapted from `ggml-org/llama.cpp` at
 The upstream source directory is `ggml/src/ggml-cuda`; Gufo builds these
 sources with HIP for AMD Strix Halo (`gfx1151`).
 
+Fixes imported since that snapshot: `f46bc30cb6a7f68a67e34a00061e20a4ad1eff43`
+(SWAR `__vsub4`/`__vcmpne4`, #27962), `748d4225b9016b17ce4bcfa69fdc2c39f473a965`
+(non-saturating packed byte subtraction, #29478),
+`9145ddb9556c1cfa568f3189eb7be44317826e31` (bf16 WMMA operand type, #30885).
+
 `qfn_mmq.h` is the public adapter. It supplies Q8_0 dense projections and
 Q4_K, Q5_K, Q5_1 and Q8_0 routed expert projections, including the paired
 Q4_K gate/up path. `qfn_ggml_stubs.*` supplies the minimal context and scratch
