@@ -53,7 +53,7 @@ October 18 2026), measured on the same gfx1151 host with the same
 | tg128, depth 0, AR | 28.29 | 35.54 (2026-10-31, same build) | 126% |
 | tg128, depth 32K, AR | 28.18 | 32.28 (2026-10-31, same build) | 115% |
 | tg128, depth 0, MTP mixed text | 35.79 | 37.10 | 104% |
-| tg128, depth 0, MTP repetitive text | 116.93 | not measured | — |
+| tg128, depth 0, MTP repetitive text | 116.93 | 94.4 (93.1/95.6, 2 runs, 2026-10-31) | 81% |
 | load to ready, MTP, 262144 ctx | 16.42 s | 34.8-36.7 s (131072 ctx) | ~45% |
 
 All AR cells remeasured 2026-10-31 on one binary (`gufo bench --n-prompt 2048
@@ -65,9 +65,12 @@ Two clarifications that keep the comparison honest:
 
 - The published 116.93 tok/s is the *repetitive* prompt column, where MTP
   drafts are almost always accepted. The comparable mixed-text column is
-  35.79 tok/s, and the local MTP decode already matches it. Repetitive local
-  numbers need `tools/bench/serving_bench` and a repetitive corpus; a plain
-  `gufo bench` prompt does not reproduce that case.
+  35.79 tok/s, and the local MTP decode already matches it. The repetitive
+  cell was measured 2026-10-31 with a counting prompt (`gufo prompt`, greedy,
+  128 tokens, 91% draft acceptance, 93.1/95.6 tok/s over two runs) — a local
+  substitute, since upstream's corpus is an external suite not in this repo
+  and `gufo bench` has no mixed/repetitive switch (its own corpus
+  over-accepts: MTP tg128 measures 67.2 tok/s there).
 - Upstream loading is Linux page-cache friendly and measured with MTP at
   context 262144; local loading includes Windows file-system behavior. The
   weight loader source is otherwise identical, so loading is an I/O-path
