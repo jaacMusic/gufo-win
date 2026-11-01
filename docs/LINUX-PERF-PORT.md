@@ -91,6 +91,14 @@ So the real code gap is **prefill (7% at depth 0, 13% at 32K depth, per the
 2026-10-31 remeasure above)**; decode exceeds upstream and loading
 is an I/O question. That ordering drives the work below.
 
+The smaller-quant prefill lever is rejected (measured 2026-10-31, engine
+idle, same bench protocol): `UD-IQ4_XS` prefill runs 1001.57 ± 20 tok/s at
+depth 0 and 924.69 ± 0.5 at depth 32K — about 40% *below* `UD-Q4_K_XL`
+(1669.74 / 1457.91) on the same binary, because the IQ4 expert dequant path
+misses the Q4 WMMA rates (also unqualified on Windows per README). Prefill
+is weight-traffic-bound at the probe ceiling, so no local lever closes the
+7-13% gap; it would need upstream IQ4 kernel work.
+
 ## Status key
 
 - `[ ]` not started
