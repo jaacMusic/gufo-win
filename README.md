@@ -35,19 +35,20 @@ with error bars and settings:
 
 Against upstream 0.24.0 (the stock `gufo` release binary, same files, same
 direct `gufo bench` calls, greedy, 32-token budget, three repetitions, one
-process per mode, NPU off, 2026-10-27):
+process per mode, NPU off, 2026-10-27; AR cells remeasured 2026-10-31 with
+two repetitions):
 
 | Depth | Mode | Gufo pp (tok/s) | upstream pp | Gufo tg (tok/s) | upstream tg | Gain tg |
 | ---: | --- | ---: | ---: | ---: | ---: | ---: |
-| 0 | AR | 1,668.82 | 1,663.39 | 33.55 | 27.55 | **+21.8%** |
+| 0 | AR | 1,669.74 | 1,663.39 | 35.54 | 27.55 | **+29.0%** |
 | 16,384 | AR | 1,500.88 | 1,451.50 | 31.86 | 27.90 | **+14.2%** |
-| 32,768 | AR | 1,481.42 | 1,431.52 | 30.93 | 27.79 | **+11.3%** |
+| 32,768 | AR | 1,457.91 | 1,431.52 | 32.28 | 27.79 | **+16.2%** |
 | 0 | MTP | 1,655.92 | 1,618.86 | 51.48 | 30.67 | **+67.9%** |
 | 16,384 | MTP | 1,466.45 | 1,406.66 | 87.29 | 85.01 | **+2.7%** |
 | 32,768 | MTP | 1,437.28 | 1,380.76 | 85.70 | 85.12 | **+0.7%** |
 
-Prefill runs 0.3-4.2% ahead and model loading stays within 1%. Decode gains
-11-22% without speculation and 68% at depth 0 with MTP; from 16K both binaries
+Prefill runs 0.4-3.4% ahead and model loading stays within 1%. Decode gains
+14-29% without speculation and 68% at depth 0 with MTP; from 16K both binaries
 copy the repeated prompt at 85-87 tok/s, so those two cells measure that copy
 speed rather than drafting. The short budget also keeps both binaries on the
 same greedy prefix: at 16K they emit identical tokens for the first 32 steps,
