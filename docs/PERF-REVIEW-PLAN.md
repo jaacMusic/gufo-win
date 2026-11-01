@@ -393,6 +393,8 @@ processes (`%TEMP%\opencode\conc-test.ps1`):
 | `-j 4`, ctx 32768 | 6702 ms | 3295 ms | `batched-w4` | 2.0x |
 | `-j 2`, ctx 131072 | 6371 ms | 3210 ms | `batched-w2` | 1.98x |
 | `-j 4`, ctx 262144 | fails to load: `request-state claim exceeds state capacity` | | | |
+| `-j 3`, ctx 262144 | fails to load: same | | | |
+| `-j 2`, ctx 262144 | loads and serves (matrix not rerun) | | | |
 
 Two sessions already capture the whole gain, because one pass pays the fixed
 129 ms plus the full expert fetch no matter how many requests it carries.
@@ -400,4 +402,25 @@ Memory is the constraint: `-j 2` at 128K uses 94.6 GiB of 113 GiB, and the cap
 that fails is total request state, not per-session context. Only one engine
 process fits at a time (see `docs/WINDOWS-DEV.md`), so batch width trades
 against context length, never against a second server.
+
+### State-capacity wall, validated (2026-10-31)
+
+The 262144-context failure is arithmetic, not a leak. At claim time the flash
+next runner sees ~25.5 GiB free (113 GiB total minus ~73 GiB resident weights
+plus OS/vision overhead) and needs ~10.3 GiB per session of dense fp16 KV, so
+`capacity / per_request` rounds down to 2 sessions:
+
+| ctx | per session | max sessions at 262144 weights |
+| --- | --- | --- |
+| 32768 | ~1.3 GiB | 4+ (scratch-limited, not state) |
+| 131072 | ~5.2 GiB | 4 |
+| 262144 | ~10.3 GiB | 2 (3 x 10.3 > 25.5) |
+
+Measured: `-j 3` @ 262144 fails, `-j 2` @ 262144 loads (101.3 GiB device used,
+20.2 GiB still free after load). The claim now derives capacity from
+`total - resident weights` (bounded by measured free) and the error message
+reports session count, per-session bytes and free bytes, so the next failure
+names its own numbers. Halving per-session bytes (fp8/Q8 KV, ~5.2 GiB at
+262144) is the only path to 4 sessions at 262K; everything else (paged or
+shared cross-session KV, growable arena) is upstream work (#740).
 

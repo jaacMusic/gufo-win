@@ -2388,8 +2388,14 @@ public:
     std::optional<std::size_t> capacity;
     if (gufo::platform::DeviceMemoryInfo(&free_bytes, &total_bytes) ==
         hipSuccess) {
+      // Derive capacity from totals minus resident weights so the claim does
+      // not depend on unrelated allocations; free_bytes still bounds it.
+      const std::size_t resident = model_->ResidentBytes();
+      const std::size_t by_arithmetic =
+          total_bytes > resident ? total_bytes - resident : 0;
+      const std::size_t available = std::min(free_bytes, by_arithmetic);
       const auto deferred = model_->DeferredScratchBytes();
-      capacity = free_bytes > deferred ? free_bytes - deferred : 0;
+      capacity = available > deferred ? available - deferred : 0;
     }
     // Snapshots live in host memory, not in the device state pool.
     return {
