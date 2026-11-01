@@ -364,3 +364,83 @@ Request batching is the one measured lever: two sessions (`-j 2`, 128K
 context) process four concurrent 2K prompts in 3210 ms against 6371 ms
 sequentially, 1.98x, and four sessions at 32K give the same 2.0x. Only one
 engine process fits in unified memory at a time.
+
+## GDN scan occupancy split (November 1, 2026)
+
+`GdnRowSplitKernel` runs 96 blocks (2 row groups x 48 value heads) on 64 CUs,
+a 1.5-wave imbalance. Splitting rows finer -- `kGdnWaves` 4 -> 2 (32 rows per
+block, 192 blocks, three per CU) with the window struct extended to four named
+q/k vectors to satisfy the register-staging assert -- is bit-identical by
+construction but measured 1639.3/1650.7/1652.5 tok/s pp2048 d0 against the
+1657.7-1661.4 baseline (about -0.7%). Mechanism: every block re-reads its
+head's full q/k plane from the convolution output, so doubling the block count
+doubles that traffic; the extra ~67 MB per layer costs more than the balanced
+CU placement saves on this serial scan. Reverted. Larger windows (`kGdnWindow`
+8 with `kGdnWaves` 4) are blocked by the same coupling: `kQkPerThread == 4`
+needs four more staged float4 per window per thread, and the 96-block grid
+cannot spread further without more q/k re-reads. The scan stays at 2.70 ms per
+GDN layer (97 ms per pass, 8%), latency-bound on the token recurrence.
+
+## Decode phase map and GEMV occupancy (November 1, 2026)
+
+`GUFO_TRACE_LAYERS=1` at d0 gives the absolute decode split, not just the
+marginals: one AR token is 29.72 ms of body, of which the LM head is 4.87 ms
+(16%) and the 47 trunk layers are 24.85 ms (0.51-0.55 ms each, except 0.97 for
+the PLE-injection layer 01). Per layer at one row: MoE 0.16 ms, GDN in
+projection 0.12, attention projection 0.11, GDN out projection 0.09, attention
+0.06, HC mixers 0.05 + 0.04, GDN scan 0.03, shared expert 0.03, router 0.02,
+HC combines 0.01 + 0.01. The per-token weight budget for that path (3.87 GiB
+dense stack + 1.40 GiB routed experts at top-10 of 512 + 0.63 GiB head, with
+the 26.8 GiB n-gram table read at three rows) is 5.90 GiB, so 29.72 ms is
+213 GB/s against the 198 GB/s probe: the layers are at the traffic ceiling and
+the head is the one leg below it (644 MiB in 4.7 ms, 137-157 GB/s).
+
+`kGemvRowsPerBlock = 8` packed eight one-wave rows into each block instead of
+launching a 32-thread block per row for every `mul_mat_vec_q8`/`_q4_1` decode
+GEMV. The per-row lane/block mapping is untouched, so rows stay bit-identical.
+It moved the head 4.87 -> 4.71 ms (-3.3%) and body 29.72 -> 29.61 (-0.4%),
+inside the 5% keep rule; eight times the waves in flight changed nothing
+because the dot already runs on `dp4a` and the kernel is bound by its 34-byte
+block access pattern, not by occupancy. Reverted; the head's only remaining
+lever is fewer bytes, not a different launch shape.
+
+That lever is the `lm_head` decode-copy class: a Q4_1 copy of `output.weight`
+turns the head's 644 MiB read into 379 MiB (+0.38 GiB resident). At d0 the
+head falls 4.63 -> 3.29 ms and the AR body 29.35 -> 28.15, so tg512 reads
+33.97/35.51 -> 35.35/37.23 tok/s (+4.8%) while pp2048 stays 1610 -> 1615
+(prefill keeps the Q8_0 WMMA path). MTP tg1024 read 65.59 -> 73.61, but cycle
+arithmetic only supports the same ~3%, and the trace shows the verify widths
+moving from w3 to w2/w4/w5: most of that gain is the greedy trajectory on the
+degenerate bench flipping, so it is not a throughput claim. Greedy and seeded
+texts diverge from the first sentence, so the class stays out of the default
+`balanced` set and is opt-in through
+`GUFO_DECODE_COPY_CLASSES=ssm_in,ssm_out,attn_qkv,shexp,lm_head`.
+
+The MTP confidence gate is calibrated, not conservative. Lowering the greedy
+gate 0.85 -> 0.50 lengthened chains (drafted 289 -> 410 on a 400-token prose
+prompt) but the extra rows accepted at only 6% (accepted 173 -> 180), so tok/s
+fell 44.8 -> 41.1. Rejected; the gate sits on a sharp calibration cliff.
+Side finding: the greedy token trace hash changed with chain length alone —
+verify width selects a different batched kernel, so logits differ in the last
+bits and near-tie argmax flips. Any width-policy change is a numerics change,
+which is why the survival prior and gate double as the acceptance tuning.
+
+The copied head still runs below the stream rate: 397 MB in 3.29 ms is 121 GB/s,
+while the same decode stream sustains 228 GB/s through the layers. Q4_1 splits
+a 32-element block across two lanes, so k=2560 gives a wave five loop
+iterations per row, and packing eight one-wave rows per block (gated to
+`rows >= 65536`, lane mapping per row unchanged) was the shape that would fix
+a concurrency limit: it moved `head w1` 3.29 -> 3.28 ms and the body
+28.15 -> 27.95, under the noise floor, and is reverted. Two independent GEMV
+shapes now show the flat curve (Q8_0 at 146 GB/s, Q4_1 at 121 GB/s), so the
+head's rate is set by its byte stream, not by waves in flight.
+
+The MTP cycle at HEAD measures 43.2 ms (busy 40.9, idle 2.29 = 5.3%) with
+verify-body 36.7, prefix 1.0, drafts 3.1 and rollback 0.2; each extra verified
+row costs 5.4 ms and a single draft step 1.68 ms. The idle is HIP graph
+wait/launch bookkeeping on Windows: the same run eager shows 1.13 ms of idle
+with the same host work per boundary (0.35 ms before rollback, 0.28 after),
+and the largest single gap is the n-gram row read between the verify prefix
+and body (0.78 ms, 0.61 host, cold table). Draft-to-target handoff is already
+device-resident, so "target/draft batch projection reuse" has no work left;
+decode has no kernel lever above the 10% cost-centre rule.

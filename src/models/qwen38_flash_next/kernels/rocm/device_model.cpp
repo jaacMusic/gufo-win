@@ -736,6 +736,12 @@ std::unique_ptr<DeviceModel> DeviceModel::Upload(
       for (auto& l : m->layers_) {
         wants_layer(l);
       }
+      // The LM head is the largest single read of a decode token (644 MiB
+      // Q8_0, 16% of an AR token at d0); a Q4_1 copy halves it. Numerics
+      // change, so it is its own class and off in the default set.
+      if (wants("lm_head")) {
+        add(m->output_, kMinElements);
+      }
       const auto status = hipDeviceSynchronize();
       if (status != hipSuccess) {
         if (error_msg != nullptr) {

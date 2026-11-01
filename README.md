@@ -117,7 +117,9 @@ on by default. Long-context sweep, same protocol as above:
 | pp2048, 8K context | 1,626.37 tok/s | 1,637.48 | +0.7% |
 
 The Q4_1 copies change decode numerics; `GUFO_DECODE_COPY=off` restores the
-exact Q8_0 path.
+exact Q8_0 path, and `GUFO_DECODE_COPY_CLASSES` names the classes to copy
+(`ssm_in,ssm_out,attn_qkv,shexp` by default). Adding `lm_head` copies the
+output matrix too: 4.8% faster AR decode at d0, different generated text.
 
 Windows decode switches stay high-speed and bit-identical: with every Windows
 switch on, logit dumps are bit-identical at all 4,418 positions and seeded
