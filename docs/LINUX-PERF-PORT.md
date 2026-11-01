@@ -1966,3 +1966,28 @@ The pending speed check on #875 was settled on an idle engine: pp2048 at d0 is
 a numerics-only change as upstream claimed. The prefill trace work of the same
 day is in `docs/PERF-REVIEW-PLAN.md`; it closes the "needs a fresh per-kernel
 trace" item with a Windows-only measurement.
+
+## Port 2026-11-01: fused GDN prefill kernel (`a6c53a6` upstream #895)
+
+Ported from `gufo-org/gufo` main by hand (no shared history):
+`GdnEpilogueRow` and `GdnPrefillKernel<GdnOutput>` (8 waves/block, one value
+head per block, 3-window-ahead LDS staging, `s_waitcnt lgkmcnt` barriers) into
+`kernels.hip.cpp`, and the `GatedDeltaNet` host rewrite that routes the
+`row_split && d == kGdnDim && !snapshots` prefill branch through one fused
+launch (z waited before it) and leaves `qn`/`kn`/`raw` untouched. Fork
+adaptation: no `GdnCheckpoint` and no `out_half_stride` (upstream gained both
+in commits this fork never took); `out_half` keeps the plain `row * d` offset.
+The separate `GdnKernel` route, batch path and `GdnEpilogueKernel` are
+unchanged; `GdnPrepKq`/`GdnPrepAb`/`GdnRowSplit` kernels are now unused and
+left in place.
+
+Gates (Windows, release build, idle engine):
+`qwen38_flash_next_gdn_ops_test` passes (fused route ≤ 5.9e-6 vs F64
+reference, split passes of 99 rows exact); greedy 64-token haiku output
+byte-identical to the pre-port binary; `--validate-prefill 512` improved
+against the sequential reference (rmse 1.207 → 0.784, cosine 0.955 → 0.977);
+pp2048 1650 ± 11 → 1671 ± 9 tok/s at d0 (+1.3%), 1468 → 1482 at d16384
+(+1.0%), tg128 unchanged. Upstream's -18% is GDN-kernel-only; GDN is one
+slice of end-to-end prefill.
+
+Next: `9fbe751` #890 (register-resident routed prefill experts).

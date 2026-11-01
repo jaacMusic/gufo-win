@@ -1979,6 +1979,367 @@ __global__ void GdnEpilogueKernel(const float* raw, const float* z,
   }
 }
 
+/// Per-head RMSNorm and sigmoid output gate of one (token, head) row of the
+/// raw attention, `row` = token * v_heads + head, by one wave: lane `lane`
+/// holds elements r * 32 + lane of the row in v[r], of z in zv[r] and of the
+/// norm weights in nw[r]. Writes the layouts GdnEpilogueKernel documents,
+/// with its arithmetic: the products, sums and FMA that kernel compiles to are
+/// spelled out, since inlined elsewhere fast-math reorders them.
+__device__ __forceinline__ void GdnEpilogueRow(
+    const float (&v)[kGdnDim / 32], const float (&zv)[kGdnDim / 32],
+    const float (&nw)[kGdnDim / 32], std::size_t row, std::uint32_t lane,
+    std::uint32_t v_heads, float eps, float* out, void* out_q8,
+    __half* out_half, void* out_q8_1) {
+  constexpr std::uint32_t d = kGdnDim;
+  const std::uint32_t per_lane = d / warpSize;
+  float ss = v[0] * v[0];
+#pragma unroll
+  for (std::uint32_t r = 1; r < per_lane; ++r) {
+    ss = __builtin_fmaf(v[r], v[r], ss);
+  }
+  const float total = Materialize(WaveSum(ss));
+  const float scale =
+      rsqrtf(__builtin_fmaf(total, 1.0F / static_cast<float>(d), eps));
+  const auto normed = [&](std::uint32_t r) {
+    return Materialize(Materialize(v[r] * scale) * nw[r]) * SigmoidF(zv[r]);
+  };
+  if (out_q8 == nullptr) {
+#pragma unroll
+    for (std::uint32_t r = 0; r < per_lane; ++r) {
+      const std::uint32_t i = r * warpSize + lane;
+      const float value = normed(r);
+      if (out_half != nullptr) {
+        out_half[row * d + i] = __float2half_rn(value);
+      } else {
+        out[row * d + i] = value;
+        if (out_q8_1 != nullptr)
+          QuantizeQ8_1Lane(value, out_q8_1, row * d + i);
+      }
+    }
+    return;
+  }
+  const std::size_t tok = row / v_heads;
+  const std::size_t head = row % v_heads;
+  const std::size_t num_blocks = (static_cast<std::size_t>(v_heads) * d) / 32;
+  const std::size_t tl = tok % kQ8ActTileTokens;
+#pragma unroll
+  for (std::uint32_t r = 0; r < per_lane; ++r) {
+    const float n = normed(r);
+    float max_abs = fabsf(n);
+    for (int off = 16; off > 0; off >>= 1) {
+      max_abs = fmaxf(max_abs, XorLane(max_abs, off));
+    }
+    const float dq = max_abs / 127.0F;
+    const float id = (dq != 0.0F) ? (1.0F / dq) : 0.0F;
+    const auto q = static_cast<std::int8_t>(roundf(n * id));
+    const std::size_t kb = ((head * d) + (r * warpSize)) / 32;
+    std::int8_t* tile =
+        Q8ActTile(out_q8, num_blocks, tok / kQ8ActTileTokens, kb);
+    tile[((lane >> 4u) * 256) + (tl * 16) + (lane & 15u)] = q;
+    if (lane == 0) {
+      *reinterpret_cast<float*>(tile + kQ8ActScaleOffset +
+                                (tl * sizeof(float))) = dq;
+    }
+  }
+}
+
+// Two-row LDS reuse adapted from mikealanni/gufo f450218743bc (MIT).
+/// Prefill Gated DeltaNet of one value head per block over convolved rows:
+/// the q/k norms and gates, the row-split recurrence and the epilogue in one
+/// launch, each value by the expressions the separate kernels used, so the
+/// recurrent state and every row still depend only on the rows before them
+/// (any split of a prompt into passes gives the same bytes).
+///
+/// Recurrence: four lanes own the 32-key slices of a row, eight row groups
+/// share a wave and each lane carries kGdnRows state rows; eight waves cover
+/// the head's 128 rows. A token's q/k slices are read from LDS once per lane
+/// and applied to both rows. Every row keeps its per-lane summation order and
+/// DPP reduction.
+///
+/// Windows of four tokens pass through LDS slots; loads run three windows
+/// ahead (the conv output is far larger than the caches). Every thread issues
+/// the same three loads per window, so the compiler's in-order wait for a
+/// window's registers does not also drain the later windows' loads: waves
+/// 0-3 load one token's q and k (lane l: float4 l), whose norms and q.k they
+/// reduce at commit; waves 4-7 one token's v rows and z; every lane a gate,
+/// which lanes 0 and 1 of the v waves keep. The finished rows of a window
+/// wait in LDS for the epilogue, which waves 0-3 run after even windows and
+/// 4-7 after odd ones (wave w takes token w % 4). Each instance writes one
+/// GdnOutput layout.
+constexpr int kGdnPrefillWaves = 8;
+
+enum class GdnOutput { kF32, kF32Q8_1, kHalf, kQ8 };
+
+template<GdnOutput kOutput>
+__launch_bounds__(kGdnPrefillWaves * 32) __global__
+    void GdnPrefillKernel(const float* conv_out, const float* alpha_beta,
+                          const float* a, const float* dt, const float* z,
+                          std::uint32_t z_stride, const float* norm_w,
+                          float* state, float* out, void* out_q8,
+                          __half* out_half, void* out_q8_1,
+                          std::uint32_t n_tokens, std::uint32_t k_heads,
+                          std::uint32_t v_heads, float eps) {
+  constexpr int kRows = kGdnRows;
+  constexpr int kWaves = kGdnPrefillWaves;
+  constexpr int d = kGdnDim;
+  constexpr int kKeysPerLane = 32;
+  constexpr int kVec = kKeysPerLane / 4;
+  constexpr int kLanesPerRow = d / kKeysPerLane;
+  constexpr int kRowsPerWave = (32 / kLanesPerRow) * kRows;
+  constexpr int kW = kGdnWindow;
+  constexpr int kAhead = kGdnWindowsAhead;
+  constexpr int kPerLane = d / 32;
+  static_assert(kRowsPerWave * kWaves == d, "one head per block");
+  static_assert(2 * kW == kWaves, "one load wave per token for q/k and v");
+  static_assert(d == 32 * 4, "one float4 of q, k, v or z per lane and token");
+  const int h = blockIdx.x;
+  const int tid = threadIdx.x;
+  const int lane = tid & 31;
+  const int wave = tid >> 5;
+  const int segment = lane % kLanesPerRow;
+  const int row_group = lane / kLanesPerRow;
+  const int kh = h % k_heads;
+  const int vec0 = segment * kVec;
+  const int channels = 2 * k_heads * d + v_heads * d;
+  const int last = static_cast<int>(n_tokens) - 1;
+  const int n_windows = (static_cast<int>(n_tokens) + kW - 1) / kW;
+
+  // Row rr of this lane within the head.
+  const auto row_local = [&](int rr) {
+    return wave * kRowsPerWave + rr * (32 / kLanesPerRow) + row_group;
+  };
+
+  // q and k rows, the head's v rows and the three scales and two gates per
+  // token in two window slots; the raw output rows in two, and z in three:
+  // a window's z is committed with it, while the previous window's epilogue
+  // may still read its own.
+  __shared__ float4 s_qk[2][2][kW][d / 4];
+  __shared__ float4 s_v[2][kW][d / 4];
+  __shared__ float s_misc[2][kW][5];
+  __shared__ float s_o[2][kW][d];
+  __shared__ float4 s_z[3][kW][d / 4];
+
+  float4 s[kRows][kVec];
+#pragma unroll
+  for (int rr = 0; rr < kRows; ++rr) {
+    const auto* state4 = reinterpret_cast<const float4*>(
+        state + (static_cast<std::size_t>(h) * d + row_local(rr)) * d);
+#pragma unroll
+    for (int i = 0; i < kVec; ++i) {
+      s[rr][i] = state4[vec0 + i];
+    }
+  }
+
+  const bool qk_wave = wave < kW;
+  const int load_token = wave % kW;
+  // q or v, then k or z: float4 `lane` of the token's rows.
+  const float* src0 =
+      conv_out + (qk_wave ? kh * d : (2 * k_heads + h) * d) + lane * 4;
+  const float* src1 = qk_wave ? src0 + k_heads * d : z + h * d + lane * 4;
+  const std::size_t stride1 = qk_wave ? channels : z_stride;
+  // Even lanes load alpha, odd lanes beta.
+  const float* gate_src = alpha_beta + h + (lane % 2 == 1 ? v_heads : 0);
+  const float a_h = a[h];
+  const float dt_h = dt[h];
+  // A token's 32 q/k float4 are stored [i][segment] so the four segments of
+  // a row's lanes read adjacent 16-byte chunks.
+  const int qk_slot = ((lane % kVec) * kLanesPerRow) + (lane / kVec);
+
+  struct Window {
+    float4 x0;
+    float4 x1;
+    float gate;
+  };
+  Window r0;
+  Window r1;
+  Window r2;
+  // Past the last token the rows are clamped to it and never used.
+  const auto load_window = [&](int w, Window& r) {
+    const auto t = static_cast<std::size_t>(min((w * kW) + load_token, last));
+    r.x0 = *reinterpret_cast<const float4*>(src0 + t * channels);
+    r.x1 = *reinterpret_cast<const float4*>(src1 + t * stride1);
+    r.gate = gate_src[t * 2 * v_heads];
+  };
+  const auto commit_window = [&](const Window& r, int lds, int zslot) {
+    if (qk_wave) {
+      const float4 q4 = r.x0;
+      const float4 k4 = r.x1;
+      s_qk[lds][0][load_token][qk_slot] = q4;
+      s_qk[lds][1][load_token][qk_slot] = k4;
+      // The products and sums of the former standalone norm kernel, spelled
+      // out: inlined here, fast-math reassociated them (and added eps before
+      // the last butterfly step).
+      const auto dot4 = [](float4 x, float4 y) {
+        return Materialize(__builtin_fmaf(
+            x.w, y.w,
+            __builtin_fmaf(x.z, y.z, __builtin_fmaf(x.y, y.y, x.x * y.x))));
+      };
+      float qs = dot4(q4, q4);
+      float ks = dot4(k4, k4);
+      float kq = dot4(k4, q4);
+#pragma unroll
+      for (unsigned offset = 16; offset > 0; offset >>= 1) {
+        qs = Materialize(qs + XorLane(qs, offset));
+        ks = Materialize(ks + XorLane(ks, offset));
+        kq = Materialize(kq + XorLane(kq, offset));
+      }
+      if (lane == 0) {
+        s_misc[lds][load_token][0] = rsqrtf(ks + eps);
+        s_misc[lds][load_token][1] =
+            rsqrtf(qs + eps) * rsqrtf(static_cast<float>(d));
+        s_misc[lds][load_token][2] = kq;
+      }
+    } else {
+      s_v[lds][load_token][lane] = r.x0;
+      s_z[zslot][load_token][lane] = r.x1;
+      if (lane == 0) {
+        s_misc[lds][load_token][3] = __expf(a_h * SoftplusF(r.gate + dt_h));
+      } else if (lane == 1) {
+        s_misc[lds][load_token][4] = SigmoidF(r.gate);
+      }
+    }
+  };
+
+  const int epilogue_group = wave / kW;
+  float nw[kPerLane];
+#pragma unroll
+  for (int r = 0; r < kPerLane; ++r) {
+    nw[r] = norm_w[r * 32 + lane];
+  }
+  const auto epilogue = [&](int w, int zslot) {
+    const int t = (w * kW) + load_token;
+    if (t >= static_cast<int>(n_tokens)) {
+      return;
+    }
+    const auto* zrow = reinterpret_cast<const float*>(s_z[zslot][load_token]);
+    float v[kPerLane];
+    float zv[kPerLane];
+#pragma unroll
+    for (int r = 0; r < kPerLane; ++r) {
+      v[r] = s_o[w & 1][load_token][r * 32 + lane];
+      zv[r] = zrow[r * 32 + lane];
+    }
+    GdnEpilogueRow(v, zv, nw, (static_cast<std::size_t>(t) * v_heads) + h, lane,
+                   v_heads, eps, out,
+                   kOutput == GdnOutput::kQ8 ? out_q8 : nullptr,
+                   kOutput == GdnOutput::kHalf ? out_half : nullptr,
+                   kOutput == GdnOutput::kF32Q8_1 ? out_q8_1 : nullptr);
+  };
+  // Only LDS needs ordering at the window barriers; a full __syncthreads
+  // would also drain the loads still in flight for later windows.
+  const auto lds_barrier = [] {
+    asm volatile("s_waitcnt lgkmcnt(0)" ::: "memory");
+    __builtin_amdgcn_s_barrier();
+    asm volatile("" ::: "memory");
+  };
+
+  load_window(0, r0);
+  load_window(1, r1);
+  load_window(2, r2);
+  commit_window(r0, 0, 0);
+  lds_barrier();
+  // Window w = 3m + k: `cur` held it (committed already) and takes window
+  // w + 3; `next` holds window w + 1, committed after this window's tokens.
+  const auto window = [&](int w, int k, Window& cur, const Window& next) {
+    if (w >= n_windows) {
+      return;
+    }
+    const int lds = w & 1;
+    load_window(w + kAhead, cur);
+    const int t_end = min(kW, static_cast<int>(n_tokens) - (w * kW));
+    for (int tl = 0; tl < t_end; ++tl) {
+      const float4* q4 = s_qk[lds][0][tl];
+      const float4* k4 = s_qk[lds][1][tl];
+      // Wave-uniform: from an SGPR, the decays pair into dual issues.
+      const float decay = __builtin_bit_cast(
+          float, __builtin_amdgcn_readfirstlane(
+                     __builtin_bit_cast(int, s_misc[lds][tl][3])));
+      float u[kRows];
+      float p[kRows];
+      float4 kc[kVec];
+      // Each row's u and p are one sequential FMA chain over its 32 keys in
+      // natural order, the first term a plain product: the order the
+      // single-row kernel compiled to, written out so it cannot change.
+#pragma unroll
+      for (int i = 0; i < kVec; ++i) {
+        const float4 qv = q4[(i * kLanesPerRow) + segment];
+        kc[i] = k4[(i * kLanesPerRow) + segment];
+#pragma unroll
+        for (int rr = 0; rr < kRows; ++rr) {
+          s[rr][i].x *= decay;
+          s[rr][i].y *= decay;
+          s[rr][i].z *= decay;
+          s[rr][i].w *= decay;
+          if (i == 0) {
+            u[rr] = s[rr][i].x * kc[i].x;
+            p[rr] = s[rr][i].x * qv.x;
+          } else {
+            u[rr] = __builtin_fmaf(s[rr][i].x, kc[i].x, u[rr]);
+            p[rr] = __builtin_fmaf(s[rr][i].x, qv.x, p[rr]);
+          }
+          u[rr] = __builtin_fmaf(s[rr][i].y, kc[i].y, u[rr]);
+          p[rr] = __builtin_fmaf(s[rr][i].y, qv.y, p[rr]);
+          u[rr] = __builtin_fmaf(s[rr][i].z, kc[i].z, u[rr]);
+          p[rr] = __builtin_fmaf(s[rr][i].z, qv.z, p[rr]);
+          u[rr] = __builtin_fmaf(s[rr][i].w, kc[i].w, u[rr]);
+          p[rr] = __builtin_fmaf(s[rr][i].w, qv.w, p[rr]);
+        }
+      }
+      const float inv_k = s_misc[lds][tl][0];
+      const float q_scale = s_misc[lds][tl][1];
+      const float kq = s_misc[lds][tl][2];
+      const float beta = s_misc[lds][tl][4];
+#pragma unroll
+      for (int rr = 0; rr < kRows; ++rr) {
+        GdnRowReduce(u[rr], p[rr]);
+        const int row = row_local(rr);
+        const float v = reinterpret_cast<const float*>(s_v[lds][tl])[row];
+        // (v - u * inv_k) * beta with the product fused into the subtract.
+        float delta = __builtin_fmaf(-u[rr], inv_k, v) * beta;
+        // Keeps fast-math from folding beta * inv_k across the two products.
+        asm volatile("" : "+v"(delta));
+        const float update = delta * inv_k;
+        // The row's four lanes hold the same reduced value and store it
+        // together: a branch here would split the rows' code into separate
+        // blocks and serialize their FMA chains.
+        s_o[lds][tl][row] = __builtin_fmaf(kq, update, p[rr]) * q_scale;
+#pragma unroll
+        for (int i = 0; i < kVec; ++i) {
+          s[rr][i].x = __builtin_fmaf(update, kc[i].x, s[rr][i].x);
+          s[rr][i].y = __builtin_fmaf(update, kc[i].y, s[rr][i].y);
+          s[rr][i].z = __builtin_fmaf(update, kc[i].z, s[rr][i].z);
+          s[rr][i].w = __builtin_fmaf(update, kc[i].w, s[rr][i].w);
+        }
+      }
+    }
+    // The other q/k/v slot was last read one window ago (before the
+    // previous barrier), so window w + 1 goes in without a second barrier.
+    // Its output rows were read by the previous window's epilogue, which
+    // finished before this window started.
+    if (w + 1 < n_windows) {
+      commit_window(next, lds ^ 1, (k + 1) % 3);
+    }
+    lds_barrier();
+    if (epilogue_group == lds) {
+      epilogue(w, k);
+    }
+  };
+  for (int w = 0; w < n_windows; w += kAhead) {
+    window(w, 0, r0, r1);
+    window(w + 1, 1, r1, r2);
+    window(w + 2, 2, r2, r0);
+  }
+#pragma unroll
+  for (int rr = 0; rr < kRows; ++rr) {
+    auto* state4 = reinterpret_cast<float4*>(
+        state + (static_cast<std::size_t>(h) * d + row_local(rr)) * d);
+#pragma unroll
+    for (int i = 0; i < kVec; ++i) {
+      state4[vec0 + i] = s[rr][i];
+    }
+  }
+}
+
 /// Row j of the rolling state after token t is row (t + 1 + j) of the
 /// concatenation [history ; rows], for any history depth `hist`.
 __global__ void RollingSnapshotKernel(
@@ -7036,39 +7397,48 @@ bool GatedDeltaNet(const float* qkv, std::uint32_t qkv_stride, const float* z,
     hipLaunchKernelGGL(CopyKernel, dim3(Blocks(hist_count)), dim3(kThreads), 0,
                        stream, conv_scratch + count, conv_state, hist_count);
   }
-  const unsigned waves = kThreads / 32;
+  void* const out_q8_1_rows =
+      out_q8 == nullptr && out_half == nullptr && d == kGdnDim ? out_q8_1
+                                                               : nullptr;
   if (row_split && d == kGdnDim && state_snapshots.rows[0] == nullptr) {
-    hipLaunchKernelGGL(GdnPrepKqKernel, dim3(k_heads, n_tokens), dim3(32), 0,
-                       stream, conv_scratch, qn, n_tokens, k_heads, channels,
-                       eps);
-    hipLaunchKernelGGL(
-        GdnPrepAbKernel,
-        dim3(Blocks(static_cast<std::size_t>(n_tokens) * v_heads)),
-        dim3(kThreads), 0, stream, alpha_beta, a, dt, kn,
-        static_cast<std::size_t>(n_tokens) * v_heads, v_heads);
-    hipLaunchKernelGGL(GdnRowSplitKernel,
-                       dim3(kGdnDim / kGdnRowSplitRowsPerBlock, v_heads),
-                       dim3(kGdnWaves * 32), 0, stream, conv_scratch, qn, kn,
-                       state, raw, n_tokens, k_heads, v_heads);
-  } else {
-    hipLaunchKernelGGL(GdnPrepKernel<false>,
-                       dim3((n_tokens * k_heads + waves - 1) / waves),
-                       dim3(kThreads), 0, stream, conv_scratch, qn, kn,
-                       n_tokens * k_heads, k_heads, channels, eps, nullptr, 0);
-    hipLaunchKernelGGL(GdnKernel<false>,
-                       dim3(v_heads, kGdnDim / kGdnRowsPerBlock),
-                       dim3(kGdnRowsPerBlock * kGdnLanes), 0, stream,
-                       conv_scratch, qn, kn, alpha_beta, a, dt, state, raw,
-                       state_snapshots, n_tokens, k_heads, v_heads, nullptr, 0);
+    // The fused recurrence and epilogue read z from its first token.
+    if (z_ready != nullptr &&
+        hipStreamWaitEvent(stream, z_ready, 0) != hipSuccess)
+      return false;
+    const auto launch = [&](auto kernel) {
+      hipLaunchKernelGGL(kernel, dim3(v_heads), dim3(kGdnPrefillWaves * 32), 0,
+                         stream, conv_scratch, alpha_beta, a, dt, z, z_stride,
+                         norm_w, state, out, out_q8, out_half, out_q8_1_rows,
+                         n_tokens, k_heads, v_heads, eps);
+    };
+    if (out_q8 != nullptr) {
+      launch(GdnPrefillKernel<GdnOutput::kQ8>);
+    } else if (out_half != nullptr) {
+      launch(GdnPrefillKernel<GdnOutput::kHalf>);
+    } else if (out_q8_1_rows != nullptr) {
+      launch(GdnPrefillKernel<GdnOutput::kF32Q8_1>);
+    } else {
+      launch(GdnPrefillKernel<GdnOutput::kF32>);
+    }
+    return true;
   }
+  const unsigned waves = kThreads / 32;
+  hipLaunchKernelGGL(GdnPrepKernel<false>,
+                     dim3((n_tokens * k_heads + waves - 1) / waves),
+                     dim3(kThreads), 0, stream, conv_scratch, qn, kn,
+                     n_tokens * k_heads, k_heads, channels, eps, nullptr, 0);
+  hipLaunchKernelGGL(GdnKernel<false>,
+                     dim3(v_heads, kGdnDim / kGdnRowsPerBlock),
+                     dim3(kGdnRowsPerBlock * kGdnLanes), 0, stream,
+                     conv_scratch, qn, kn, alpha_beta, a, dt, state, raw,
+                     state_snapshots, n_tokens, k_heads, v_heads, nullptr, 0);
   if (z_ready != nullptr &&
       hipStreamWaitEvent(stream, z_ready, 0) != hipSuccess)
     return false;
   hipLaunchKernelGGL(
       GdnEpilogueKernel<false>, dim3((n_tokens * v_heads + waves - 1) / waves),
       dim3(kThreads), 0, stream, raw, z, z_stride, norm_w, out, out_q8,
-      out_half, n_tokens * v_heads, v_heads, eps, nullptr, 0,
-      out_q8 == nullptr && out_half == nullptr ? out_q8_1 : nullptr);
+      out_half, n_tokens * v_heads, v_heads, eps, nullptr, 0, out_q8_1_rows);
   return true;
 }
 
