@@ -48,17 +48,18 @@ October 18 2026), measured on the same gfx1151 host with the same
 
 | metric | upstream | local | local/upstream |
 | --- | ---: | ---: | ---: |
-| pp2048, depth 0, AR | 1801.01 tok/s | 1635-1668 (2026-10-31, HEAD `1aa23815`) | 91% |
-| pp2048, depth 32K, AR | 1672.60 | 1289.17 (stale, pre-Tier-4) | 77% |
-| tg128, depth 0, AR | 28.29 | 27.22 | 96% |
-| tg128, depth 32K, AR | 28.18 | 25.60 | 91% |
+| pp2048, depth 0, AR | 1801.01 tok/s | 1669.74 (2026-10-31, HEAD `1aa23815` build) | 93% |
+| pp2048, depth 32K, AR | 1672.60 | 1457.91 (2026-10-31, same build) | 87% |
+| tg128, depth 0, AR | 28.29 | 35.54 (2026-10-31, same build) | 126% |
+| tg128, depth 32K, AR | 28.18 | 32.28 (2026-10-31, same build) | 115% |
 | tg128, depth 0, MTP mixed text | 35.79 | 37.10 | 104% |
 | tg128, depth 0, MTP repetitive text | 116.93 | not measured | — |
 | load to ready, MTP, 262144 ctx | 16.42 s | 34.8-36.7 s (131072 ctx) | ~45% |
 
-Only the pp2048 depth-0 cell was remeasured on the current HEAD (2026-10-31,
-1635-1668 tok/s, see "Upstream check 2026-10-31" below); the other local cells
-date from `c85aada` + Tier 1 and are pessimistic to an unknown degree.
+All AR cells remeasured 2026-10-31 on one binary (`gufo bench --n-prompt 2048
+--n-gen 128 --n-depth 0,32768 --repetitions 2 --temperature 0`, engine idle,
+39.3 s model load). Decode now exceeds the upstream AR numbers; the MTP
+mixed-text cell still dates from `c85aada` + Tier 1.
 
 Two clarifications that keep the comparison honest:
 
@@ -77,8 +78,8 @@ Two clarifications that keep the comparison honest:
   host's storage, not the read path. Upstream #708 (device-resident weights)
   does not apply either: the Flash-Next loader hipMallocs every tensor.
 
-So the real code gap is **prefill (~9% at depth 0, more at depth; older cells
-above still say 18-23%)**; decode is at parity and loading
+So the real code gap is **prefill (7% at depth 0, 13% at 32K depth, per the
+2026-10-31 remeasure above)**; decode exceeds upstream and loading
 is an I/O question. That ordering drives the work below.
 
 ## Status key
