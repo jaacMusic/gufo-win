@@ -19,9 +19,12 @@ namespace gufo::hip {
                                                 std::size_t bytes) {
   const hipError_t status =
       hipMallocManaged(pointer, bytes, hipMemAttachGlobal);
-  if (status != hipSuccess || pointer == nullptr || *pointer == nullptr ||
-      bytes == 0) {
+  if (status != hipSuccess) {
     return status;
+  }
+  if (pointer == nullptr || *pointer == nullptr || bytes == 0) {
+    // A "successful" call without usable memory must not report success.
+    return hipErrorInvalidValue;
   }
   if (hipMemAdvise(*pointer, bytes, hipMemAdviseSetCoarseGrain, 0) !=
       hipSuccess) {
