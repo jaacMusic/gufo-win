@@ -97,6 +97,25 @@ void ApplyPenalties(std::vector<Candidate>* candidates,
   }
 }
 
+void ApplyLogitBias(std::vector<Candidate>* candidates,
+                    const SamplingConfig& config) {
+  if (config.logit_bias.empty())
+    return;
+  // Candidates arrive in ascending token order, as does logit_bias: one merge
+  // pass replaces a binary search per candidate.
+  std::size_t bias_index = 0;
+  for (auto& candidate : *candidates) {
+    while (config.logit_bias[bias_index].first < candidate.token) {
+      if (++bias_index == config.logit_bias.size())
+        return;
+    }
+    if (config.logit_bias[bias_index].first == candidate.token) {
+      candidate.logit +=
+          static_cast<double>(config.logit_bias[bias_index].second);
+    }
+  }
+}
+
 void ApplyTopK(std::vector<Candidate>* candidates,
                const SamplingConfig& config) {
   if (config.top_k <= 0) {
@@ -219,6 +238,13 @@ bool SamplerState::CanSelectArgmax(TokenId token,
   return !pending_sample_ && !suppressed(token) && config_.logit_bias.empty() &&
          config_.temperature == 0.0F &&
          (penalties_applied || !config_.penalties_enabled());
+}
+
+bool SamplerState::CanUsePlainArgmax() const noexcept {
+  // A raw model argmax is only this state's exact choice when no mask, no
+  // deferred draw and nothing in the config changes it.
+  return config_.can_use_unmodified_argmax() && suppressed_.empty() &&
+         !pending_sample_.has_value();
 }
 
 SamplingDistribution::SamplingDistribution(std::vector<Probability> entries)
@@ -367,7 +393,7 @@ TokenId SamplingDistribution::SampleResidual(
 
 static SamplingDistribution DistributionWithPenalties(
     std::span<const float> logits, const SamplingConfig& config,
-    std::span<const TokenPenalty> penalties) {
+    std::span<const TokenPenalty> penalties, bool apply_logit_bias = true) {
   config.Validate();
   if (logits.empty()) {
     throw std::invalid_argument("cannot sample an empty logit distribution");
@@ -392,6 +418,8 @@ static SamplingDistribution DistributionWithPenalties(
   }
 
   ApplyPenalties(&candidates, config, penalties);
+  if (apply_logit_bias)
+    ApplyLogitBias(&candidates, config);
   ApplyTopK(&candidates, config);
   if (config.temperature == 0.0F) {
     return SamplingDistribution(
@@ -592,7 +620,9 @@ SamplingDistribution SamplerState::Distribution(
     else
       masked[i] += static_cast<float>(BiasAt(token_ids[i]));
   }
-  return DistributionWithPenalties(masked, config_, penalties);
+  // Bias is already baked into `masked`; applying it here too would shift
+  // those logits twice.
+  return DistributionWithPenalties(masked, config_, penalties, false);
 }
 
 std::optional<SamplingDistribution> SamplerState::DistributionFromTop(
@@ -618,6 +648,12 @@ std::optional<SamplingDistribution> SamplerState::DistributionFromTop(
   candidates.reserve(values.size());
   bool complete = false;  // the list holds every finite logit of the row
   for (std::size_t i = 0; i < values.size(); ++i) {
+    if (std::isnan(values[i]) ||
+        values[i] == std::numeric_limits<float>::infinity()) {
+      // Only -inf padding marks the end of a partial list; NaN or +inf
+      // breaks the ordering the completeness proof needs.
+      return std::nullopt;
+    }
     if (!std::isfinite(values[i])) {
       complete = true;  // non-finite entries sort last: finite ones ran out
       continue;
@@ -1105,26 +1141,6 @@ TokenId SampleLogits(std::span<const float> logits, float temperature,
     *rng_state = sampler.rng_state();
   }
   return token;
-}
-
-double TokenProbability(std::span<const float> logits, float temperature,
-                        TokenId token) {
-  if (token >= logits.size()) {
-    throw std::out_of_range("sampled token exceeds target vocabulary");
-  }
-  SamplingConfig config;
-  config.temperature = temperature;
-  return BuildDistribution(logits, config).probability(token);
-}
-
-TokenId SampleResidual(std::span<const float> target_logits, float temperature,
-                       std::span<const TokenId> candidate_ids,
-                       std::span<const float> candidate_probabilities,
-                       std::uint64_t* rng_state) {
-  SamplingConfig config;
-  config.temperature = temperature;
-  return BuildDistribution(target_logits, config)
-      .SampleResidual(candidate_ids, candidate_probabilities, rng_state);
 }
 
 }  // namespace gufo::sampling

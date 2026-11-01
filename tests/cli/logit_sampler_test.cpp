@@ -760,6 +760,42 @@ void TestLogitBiasAppliesToAllPaths() {
          "a biased request falls back from candidate lists to the full row");
 }
 
+void TestBuildDistributionAppliesLogitBias() {
+  using gufo::sampling::SamplerState;
+  using gufo::sampling::SamplingConfig;
+  using gufo::sampling::TokenId;
+  std::vector<float> logits(513);
+  for (std::size_t i = 0; i < logits.size(); ++i)
+    logits[i] = std::sin(static_cast<float>(i) * 0.9F);
+  const std::array<TokenId, 4> history{5, 5, 40, 400};
+  SamplingConfig config;
+  config.temperature = 0.9F;
+  config.top_k = 50;
+  config.repeat_penalty = 1.2F;
+  config.frequency_penalty = 0.5F;
+  config.logit_bias = {
+      {TokenId{5}, 2.0F}, {TokenId{400}, -3.0F}, {TokenId{512}, 10.0F}};
+  SamplerState sampler(config, history);
+  sampler.Accept(std::span(history).first(3));
+  const auto expected = gufo::sampling::BuildDistribution(
+      logits, config, history, std::span(history).first(3));
+  const auto actual = sampler.Distribution(logits);
+  Expect(actual.entries().size() == expected.entries().size(),
+         "BuildDistribution applies logit_bias like SamplerState");
+  for (const auto& entry : expected.entries())
+    Expect(std::abs(actual.probability(entry.token) - entry.value) < 1e-12,
+           "BuildDistribution applies logit_bias like SamplerState");
+  const SamplingConfig unbiased = [&config]() {
+    auto copy = config;
+    copy.logit_bias.clear();
+    return copy;
+  }();
+  const auto plain = gufo::sampling::BuildDistribution(
+      logits, unbiased, history, std::span(history).first(3));
+  Expect(expected.probability(512) > 0.99 && plain.probability(512) < 0.99,
+         "the bias changes the built distribution");
+}
+
 }  // namespace
 
 int main() {
@@ -806,6 +842,7 @@ int main() {
   TestEogBoundaryTracksOpenSpans();
   TestSuppressedTokensLeaveTheDistribution();
   TestLogitBiasAppliesToAllPaths();
+  TestBuildDistributionAppliesLogitBias();
   std::cout << "All logit sampler tests passed.\n";
   return 0;
 }

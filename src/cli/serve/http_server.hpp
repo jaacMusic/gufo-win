@@ -120,9 +120,13 @@ public:
 
 private:
   struct ConnectionWorker;
+  /// Shared with the request's cancellation callback so the descriptor is
+  /// never polled after it has been closed and possibly reused.
+  struct ConnectionState;
 
   HttpResponse handle_request(const HttpRequest& req);
-  void handle_connection(int client_fd);
+  void handle_connection(int client_fd,
+                         const std::shared_ptr<ConnectionState>& connection);
   void reap_workers();
   void register_routes();
 

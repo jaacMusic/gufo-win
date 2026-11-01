@@ -1021,6 +1021,12 @@ struct TextGenerationScheduler::Impl {
         CompleteFailure(item.request, std::current_exception());
         continue;
       }
+      // Accumulate before publishing: publishing can make the result terminal
+      // and visible to Wait(), which copies it under output_mutex.
+      item.request->result.decode_ms +=
+          std::chrono::duration<double, std::milli>(Clock::now() -
+                                                    item.decode_start)
+              .count();
       for (const auto& selection : step.selections) {
         if (!PublishDecodedSelection(item.request, selection)) {
           published = false;
@@ -1029,10 +1035,6 @@ struct TextGenerationScheduler::Impl {
         if (item.request->stop_filter.stopped())
           break;
       }
-      item.request->result.decode_ms +=
-          std::chrono::duration<double, std::milli>(Clock::now() -
-                                                    item.decode_start)
-              .count();
       if (!published || IsTerminal(item.request)) {
         continue;
       }

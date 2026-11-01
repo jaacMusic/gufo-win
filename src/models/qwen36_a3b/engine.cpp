@@ -1346,8 +1346,13 @@ bool Engine::Run(const std::function<void()>& body, std::uint64_t key,
     body();
     if (!Ok(hipStreamEndCapture(stream_, &g), "end capture", error) ||
         !Ok(hipGraphInstantiate(&exec, g, nullptr, nullptr, 0),
-            "graph instantiate", error))
+            "graph instantiate", error)) {
+      // A failed instantiate is retried on the next launch, so the capture
+      // must not leak once per attempt.
+      if (g != nullptr)
+        (void)hipGraphDestroy(g);
       return false;
+    }
     (void)hipGraphDestroy(g);
     it = spec_graphs_.emplace(key, exec).first;
   }
@@ -1742,8 +1747,13 @@ bool Engine::Forward(std::span<const std::int32_t> tokens, float* logits,
     Body(1, 1);
     if (!Ok(hipStreamEndCapture(stream_, &g), "end capture", error) ||
         !Ok(hipGraphInstantiate(&decode_exec_, g, nullptr, nullptr, 0),
-            "graph instantiate", error))
+            "graph instantiate", error)) {
+      // The next decode token retries the capture, so a failed instantiate
+      // must not leak a graph per token.
+      if (g != nullptr)
+        (void)hipGraphDestroy(g);
       return false;
+    }
     (void)hipGraphDestroy(g);
   }
   if (graph && decode_exec_ != nullptr) {

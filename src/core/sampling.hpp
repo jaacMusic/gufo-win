@@ -98,6 +98,10 @@ public:
   /// penalty arithmetic and history; raw model argmaxes leave it false.
   [[nodiscard]] bool CanSelectArgmax(TokenId token,
                                      bool penalties_applied = false) const;
+  /// True when a raw model argmax is exactly this state's choice: no active
+  /// penalties, bias, suppression mask or deferred draw. Callers holding only
+  /// a config must keep using SamplingConfig::can_use_unmodified_argmax.
+  [[nodiscard]] bool CanUsePlainArgmax() const noexcept;
   [[nodiscard]] std::span<const TokenId> history() const noexcept;
   [[nodiscard]] std::span<const TokenPenalty> penalties() const noexcept {
     return penalty_counts_;
@@ -191,13 +195,6 @@ private:
 // Compatibility helpers for callers that have not yet adopted SamplerState.
 [[nodiscard]] TokenId SampleLogits(std::span<const float> logits,
                                    float temperature, std::uint64_t* rng_state);
-[[nodiscard]] double TokenProbability(std::span<const float> logits,
-                                      float temperature, TokenId token);
-[[nodiscard]] TokenId SampleResidual(
-    std::span<const float> target_logits, float temperature,
-    std::span<const TokenId> candidate_ids,
-    std::span<const float> candidate_probabilities, std::uint64_t* rng_state);
-
 }  // namespace gufo::sampling
 
 #endif  // GUFO_CORE_SAMPLING_HPP_

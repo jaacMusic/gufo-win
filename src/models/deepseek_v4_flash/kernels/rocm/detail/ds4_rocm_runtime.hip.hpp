@@ -735,6 +735,10 @@ static const char *hip_model_range_ptr_from_fd(
         (wait && !g_model_uploader->Finish(&error))) {
         fprintf(stderr, DS4_GPU_LOG_PREFIX "model upload failed for %s: %s\n",
                 what ? what : "weights", error.c_str());
+        // The span is not cached, so the next use retries the upload; without
+        // this the failed attempt stays resident for the whole session.
+        (void)hipFree(dev);
+        g_model_allocations.pop_back();
         return NULL;
     }
 

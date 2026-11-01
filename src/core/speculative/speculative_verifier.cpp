@@ -289,6 +289,7 @@ void SpeculativeVerifier::ConfigureAdaptiveDraftPolicy() {
   options_.initial_draft_tokens =
       std::clamp(options_.initial_draft_tokens, options_.min_draft_tokens,
                  options_.max_draft_tokens);
+  options_.rolling_window = std::max<std::size_t>(options_.rolling_window, 1);
   ResetAdaptiveDraftLength();
 }
 
@@ -408,8 +409,7 @@ SpeculativeVerifier::StepResult SpeculativeVerifier::VerifyStep(
     tokenization::TokenId eos_id, std::uint32_t max_emitted_tokens,
     sampling::SamplerState& sampler) {
   sampler.config().Validate();
-  if (!use_batched_verification_ &&
-      sampler.config().can_use_unmodified_argmax()) {
+  if (!use_batched_verification_ && sampler.CanUsePlainArgmax()) {
     return VerifySequentialStep(current_sequence, cur_pos, current_token,
                                 eos_id, max_emitted_tokens);
   }
@@ -490,7 +490,7 @@ void SpeculativeVerifier::PrepareTargetOnlyStep(PreparedStep& prepared,
     const auto row = target_executor_->CopyLastLogits();
     logits.assign(row.begin(), row.end());
   }
-  request.sampler.SetRngState(working_sampler.rng_state());
+  request.sampler.CopyDrawStateFrom(working_sampler);
   ++stats_.total_verification_steps;
   ++stats_.total_emitted_tokens;
   prepared.immediate = StepResult{
@@ -566,8 +566,8 @@ void SpeculativeVerifier::PrepareProposalVerification(
   // Validate every row before advancing target state, including rows that
   // would otherwise go unchecked after an early rejection.
   auto& token_probabilities = prepared.token_probabilities;
-  token_probabilities.resize(num_draft);
   if (random_sampling) {
+    token_probabilities.resize(num_draft);
     for (std::size_t row = 0; row < num_draft; ++row)
       token_probabilities[row] = draft_token_probability(row);
   }
@@ -654,7 +654,7 @@ SpeculativeVerifier::ProcessVerificationChunk(
                            : target_executor_->CopyVerificationLogits(0);
       logits.assign(row.begin(), row.end());
     }
-    sampler.SetRngState(working_sampler.rng_state());
+    sampler.CopyDrawStateFrom(working_sampler);
     ++stats_.total_verification_steps;
     ++stats_.total_emitted_tokens;
     return StepResult{.emitted_tokens = {next},
@@ -801,7 +801,7 @@ SpeculativeVerifier::ProcessVerificationChunk(
   stats_.total_emitted_tokens += result.emitted_tokens.size();
   UpdateAdaptiveDraftLength(accepted_count, num_draft);
   if (prepared.sampled)
-    sampler.SetRngState(working_sampler.rng_state());
+    sampler.CopyDrawStateFrom(working_sampler);
   draft_backend_->AcceptFeedback(std::span<const tokenization::TokenId>(
                                      proposal.tokens.data(), accepted_count),
                                  correction_token);
@@ -840,7 +840,7 @@ std::vector<SpeculativeVerifier::StepResult> SpeculativeVerifier::VerifyBatch(
     const auto& request = requests[index];
     auto& verifier = request.verifier;
     if (!verifier.use_batched_verification_ &&
-        request.sampler.config().can_use_unmodified_argmax()) {
+        request.sampler.CanUsePlainArgmax()) {
       request.sampler.config().Validate();
       result[index] = verifier.VerifySequentialStep(
           request.sequence, request.position, request.current_token,
@@ -1347,7 +1347,7 @@ std::vector<tokenization::TokenId> SpeculativeVerifier::Generate(
 
   tokenization::TokenId first_token = Prime(prompt_tokens);
   sampling::SamplerState sampler(options.sampling, prompt_tokens);
-  if (!options.sampling.can_use_unmodified_argmax()) {
+  if (!sampler.CanUsePlainArgmax()) {
     first_token = target_executor_->SampleLastLogits(sampler);
   }
   const auto eos_id = target_executor_->GetEosTokenId();

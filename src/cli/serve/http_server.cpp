@@ -94,7 +94,13 @@ private:
 
 bool ReadUntil(std::string& out, int fd, std::string_view delim) {
   char buf[4096];
-  while (out.find(delim) == std::string::npos) {
+  const std::size_t overlap = delim.empty() ? 0 : delim.size() - 1;
+  // Rescan only the delimiter-length tail of what earlier passes covered;
+  // rescanning from zero is quadratic per header block.
+  std::size_t scanned = 0;
+  while (out.find(delim, scanned > overlap ? scanned - overlap : 0) ==
+         std::string::npos) {
+    scanned = out.size();
     const ssize_t n = gufo::platform::SocketRead(fd, buf, sizeof(buf));
     if (n <= 0)
       return false;
@@ -1031,6 +1037,14 @@ struct HttpServer::ConnectionWorker {
   std::jthread thread;
 };
 
+/// Owns one client descriptor for the lifetime of a request. The cancellation
+/// callback polls it under `mutex`, so the worker's close cannot race with a
+/// check or expose a since-reused descriptor.
+struct HttpServer::ConnectionState {
+  std::mutex mutex;
+  int fd{-1};
+};
+
 HttpServer::HttpServer(std::string host, int port,
                        std::shared_ptr<TextGenerationBackend> backend,
                        std::shared_ptr<VideoJobService> video_jobs,
@@ -1225,6 +1239,18 @@ void HttpServer::run(bool handle_signals) {
       if (stopped_.load(std::memory_order_acquire)) {
         break;
       }
+#ifdef _WIN32
+      const bool out_of_descriptors = WSAGetLastError() == WSAEMFILE;
+#else
+      const int accept_error = errno;
+      const bool out_of_descriptors =
+          accept_error == EMFILE || accept_error == ENFILE;
+#endif
+      if (out_of_descriptors) {
+        // The listener stays readable while descriptors are exhausted, so an
+        // immediate retry would spin a core until another connection closes.
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      }
       continue;
     }
     if (stopped_.load(std::memory_order_acquire)) {
@@ -1241,16 +1267,24 @@ void HttpServer::run(bool handle_signals) {
       overloaded = stopped_.load(std::memory_order_acquire) ||
                    workers_.size() >= options_.max_connections;
       if (!overloaded) {
+        auto connection = std::make_shared<ConnectionState>();
+        connection->fd = client_fd;
         worker_ptr->fd = client_fd;
-        worker_ptr->thread = std::jthread([this, worker_ptr, client_fd] {
-          handle_connection(client_fd);
-          {
-            const std::lock_guard<std::mutex> lock(workers_mutex_);
-            gufo::platform::CloseConnection(worker_ptr->fd);
-            worker_ptr->fd = -1;
-          }
-          worker_ptr->done.store(true, std::memory_order_release);
-        });
+        worker_ptr->thread =
+            std::jthread([this, worker_ptr, connection, client_fd] {
+              handle_connection(client_fd, connection);
+              {
+                const std::lock_guard<std::mutex> lock(workers_mutex_);
+                {
+                  const std::lock_guard<std::mutex> connection_lock(
+                      connection->mutex);
+                  gufo::platform::CloseConnection(connection->fd);
+                  connection->fd = -1;
+                }
+                worker_ptr->fd = -1;
+              }
+              worker_ptr->done.store(true, std::memory_order_release);
+            });
         workers_.push_back(std::move(worker));
       }
     }
@@ -1400,7 +1434,8 @@ HttpResponse HttpServer::handle_request(const HttpRequest& req) {
              "invalid_request_error", "not_found");
 }
 
-void HttpServer::handle_connection(int client_fd) {
+void HttpServer::handle_connection(
+    int client_fd, const std::shared_ptr<ConnectionState>& connection) {
   constexpr std::chrono::seconds kSocketTimeout{120};
   gufo::platform::SetSocketTimeout(client_fd, SO_RCVTIMEO, kSocketTimeout);
   gufo::platform::SetSocketTimeout(client_fd, SO_SNDTIMEO, kSocketTimeout);
@@ -1520,13 +1555,15 @@ void HttpServer::handle_connection(int client_fd) {
 #ifdef _WIN32
           // WSAPoll does not report a connection that stop() shut down
           // locally, so a stopping server cancels its generations directly.
-          req.is_cancelled = [this, client_fd] {
+          req.is_cancelled = [this, connection] {
+            const std::lock_guard<std::mutex> lock(connection->mutex);
             return stopped_.load(std::memory_order_acquire) ||
-                   IsPeerDisconnected(client_fd);
+                   connection->fd < 0 || IsPeerDisconnected(connection->fd);
           };
 #else
-          req.is_cancelled = [client_fd] {
-            return IsPeerDisconnected(client_fd);
+          req.is_cancelled = [connection] {
+            const std::lock_guard<std::mutex> lock(connection->mutex);
+            return connection->fd < 0 || IsPeerDisconnected(connection->fd);
           };
 #endif
         }

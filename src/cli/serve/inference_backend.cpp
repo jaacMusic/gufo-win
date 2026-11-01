@@ -534,7 +534,7 @@ public:
     if (!frontier_.has_value()) {
       throw std::logic_error("Qwen state has no next-token frontier");
     }
-    if (sampler.config().can_use_unmodified_argmax()) {
+    if (sampler.CanUsePlainArgmax()) {
       return *frontier_;
     }
     if (frontier_logits_.empty()) {
@@ -555,7 +555,7 @@ public:
     }
     resume_tokens_.clear();
     if (!frontier_published_) {
-      if (!sampler.config().can_use_unmodified_argmax())
+      if (!sampler.CanUsePlainArgmax())
         frontier_ = SelectFrontier(sampler);
       if (!AppendSpeculativeSelection(*frontier_, sampler, result))
         return false;
@@ -1907,7 +1907,7 @@ public:
       return {.selections = {}, .stop = true};
     const auto stats_before = deepseek.session().DsparkStatistics();
     std::optional<models::deepseek_v4_flash::DsparkSamplerBridge> bridge;
-    if (!sampler.config().can_use_unmodified_argmax()) {
+    if (!sampler.CanUsePlainArgmax()) {
       bridge.emplace(sampler);
     }
     std::vector<int> emitted;
@@ -1988,7 +1988,7 @@ public:
       states[index] = &deepseek;
       stats_before[index] = deepseek.session().DsparkStatistics();
       auto& sampler = decodes[index].sampler.get();
-      if (!sampler.config().can_use_unmodified_argmax()) {
+      if (!sampler.CanUsePlainArgmax()) {
         bridges[index].emplace(sampler);
       }
       items[index] = {
