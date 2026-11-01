@@ -53,7 +53,7 @@ October 18 2026), measured on the same gfx1151 host with the same
 | tg128, depth 0, AR | 28.29 | 35.54 (2026-10-31, same build) | 126% |
 | tg128, depth 32K, AR | 28.18 | 32.28 (2026-10-31, same build) | 115% |
 | tg128, depth 0, MTP mixed text | 35.79 | 37.10 | 104% |
-| tg128, depth 0, MTP repetitive text | 116.93 | 94.4 (93.1/95.6, 2 runs, 2026-10-31) | 81% |
+| tg128, depth 0, MTP repetitive text | 116.93 | 94.4 (93.1/95.6, 2 runs, 2026-10-31) | 81% (not a gap: stock v0.24.0 = 61-63.5 on the same prompt) |
 | load to ready, MTP, 262144 ctx | 16.42 s | 34.8-36.7 s (131072 ctx) | ~45% |
 
 All AR cells remeasured 2026-10-31 on one binary (`gufo bench --n-prompt 2048
@@ -70,7 +70,13 @@ Two clarifications that keep the comparison honest:
   128 tokens, 91% draft acceptance, 93.1/95.6 tok/s over two runs) — a local
   substitute, since upstream's corpus is an external suite not in this repo
   and `gufo bench` has no mixed/repetitive switch (its own corpus
-  over-accepts: MTP tg128 measures 67.2 tok/s there).
+  over-accepts: MTP tg128 measures 67.2 tok/s there). Like-for-like A/B
+  (2026-10-31, engine idle, identical counting prompt and weights): the stock
+  upstream v0.24.0 Windows binary generates the same 128 tokens at
+  61.0-63.5 tok/s (three runs, one 25.4 outlier discarded; 103-105 of ~120
+  drafts accepted) against this fork's 93.1-95.6, so the published 116.93 is
+  a corpus/host artifact, not a code gap — the fork decodes this prompt ~1.5x
+  faster than the stock binary on this machine. Cell closed as not a gap.
 - Upstream loading is Linux page-cache friendly and measured with MTP at
   context 262144; local loading includes Windows file-system behavior. The
   weight loader source is otherwise identical, so loading is an I/O-path
