@@ -70,7 +70,12 @@ Two clarifications that keep the comparison honest:
 - Upstream loading is Linux page-cache friendly and measured with MTP at
   context 262144; local loading includes Windows file-system behavior. The
   weight loader source is otherwise identical, so loading is an I/O-path
-  investigation, not a kernel port.
+  investigation, not a kernel port. Measured 2026-10-31: the model NVMe
+  sustains 1.57 GiB/s single-stream, and the 34.8 s warm load moves ~104 GiB
+  at ~3.0 GiB/s aggregate across the 16 parallel readers, i.e. the loader
+  already outruns single-stream disk and the gap to upstream's 16.42 s is the
+  host's storage, not the read path. Upstream #708 (device-resident weights)
+  does not apply either: the Flash-Next loader hipMallocs every tensor.
 
 So the real code gap is **prefill (~9% at depth 0, more at depth; older cells
 above still say 18-23%)**; decode is at parity and loading
