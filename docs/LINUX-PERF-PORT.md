@@ -48,13 +48,17 @@ October 18 2026), measured on the same gfx1151 host with the same
 
 | metric | upstream | local | local/upstream |
 | --- | ---: | ---: | ---: |
-| pp2048, depth 0, AR | 1801.01 tok/s | 1478.20 | 82% |
-| pp2048, depth 32K, AR | 1672.60 | 1289.17 | 77% |
+| pp2048, depth 0, AR | 1801.01 tok/s | 1635-1668 (2026-10-31, HEAD `1aa23815`) | 91% |
+| pp2048, depth 32K, AR | 1672.60 | 1289.17 (stale, pre-Tier-4) | 77% |
 | tg128, depth 0, AR | 28.29 | 27.22 | 96% |
 | tg128, depth 32K, AR | 28.18 | 25.60 | 91% |
 | tg128, depth 0, MTP mixed text | 35.79 | 37.10 | 104% |
 | tg128, depth 0, MTP repetitive text | 116.93 | not measured | — |
 | load to ready, MTP, 262144 ctx | 16.42 s | 34.8-36.7 s (131072 ctx) | ~45% |
+
+Only the pp2048 depth-0 cell was remeasured on the current HEAD (2026-10-31,
+1635-1668 tok/s, see "Upstream check 2026-10-31" below); the other local cells
+date from `c85aada` + Tier 1 and are pessimistic to an unknown degree.
 
 Two clarifications that keep the comparison honest:
 
@@ -68,7 +72,8 @@ Two clarifications that keep the comparison honest:
   weight loader source is otherwise identical, so loading is an I/O-path
   investigation, not a kernel port.
 
-So the real code gap is **prefill (~18-23%)**; decode is at parity and loading
+So the real code gap is **prefill (~9% at depth 0, more at depth; older cells
+above still say 18-23%)**; decode is at parity and loading
 is an I/O question. That ordering drives the work below.
 
 ## Status key
