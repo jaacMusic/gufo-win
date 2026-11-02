@@ -187,6 +187,14 @@ and newly processed tokens separately; resuming from the checkpoint processes
 the short suffix. System instructions, tool definitions and image identities
 must match the retained prefix.
 
+A restore into the session that wrote the checkpoint copies only the mutable
+recurrent state, about 240 MB, and keeps the resident K/V rows in place; any
+other session copies the full payload, because rows decoded through another
+batch shape are not bit-identical. The model gates that choice on session
+identity, an epoch that changes on reset or on a copying restore, and a
+matching token prefix (`Executor::SnapshotInfo::reused_rows`). The gain is
+measured in [BENCHMARKS.md](models/qwen3.8-flash-next/BENCHMARKS.md).
+
 Qwen image identity is checked only for images consumed before each checkpoint.
 Appending an image reuses the preceding text/image state in RAM or on disk;
 changing, removing or moving an earlier image invalidates checkpoints after it.
