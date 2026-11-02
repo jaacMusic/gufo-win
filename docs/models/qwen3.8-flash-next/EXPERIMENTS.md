@@ -195,11 +195,11 @@ prefills sessions one at a time.
 | --- | --- |
 | Keep one selector query head live on Clang 23 and newer | Retained: full head unrolling causes 304 scalar-register spills with ROCm 10.1's Clang 24; the bounded loop reduces this to 18 and VGPR use from 169 to 164. Neither 10.1 variant uses private scratch; the original Clang 23 build does. The F32 queries, FMA sequence, reduction tree and selected blocks stay unchanged. On Clang 24, the isolated 64-query × 8,192-block scorer falls from 109.3 to 76.3 µs, with identical output bytes. Clang 22 retains its original unrolling. |
 | Reproduce older activation rounding on newer compilers | Rejected: first-layer Q8 codes differ at 37 of 327,680 values; the newer compiler agrees more often with independent FP32 and FP64 calculations. Restoring the old fused remainder matches the first mixer but does not recover sampled thinking throughput. Production rounding and sampling remain unchanged. |
-| Price the actual C1 sampled draft head | Retained with the compact target path: fixed-history measurements replace full-head estimates only for eligible sampled C1 cycles. The first cycle and short tails keep their established costs; the focused short-reply control passes all 84 phases. Full target-row verification also keeps the original curve, removing a thinking/tool pause increase (111 → 120 ms, then 113 ms with the guard; all 63 focused phases pass). Full-head, greedy and concurrent curves stay unchanged. See [migration qualification and timing limits](ROCM.md). |
+| Price the actual C1 sampled draft head | Retained with the compact target path: fixed-history measurements replace full-head estimates only for eligible sampled C1 cycles. The first cycle and short tails keep their established costs; the focused short-reply control passes all 84 phases. Full target-row verification also keeps the original curve, removing a thinking/tool pause increase (111 → 120 ms, then 113 ms with the guard; all 63 focused phases pass). Full-head, greedy and concurrent curves stay unchanged. See migration qualification and timing limits in [quality](QUALITY.md). |
 
 The scorer measurement is the median of five warmed calls with production
 compiler flags. Full-model and request-level qualification are recorded in
-[quality](QUALITY.md#llvm-selector-scheduling-october-23-2026); the microbenchmark
+[quality](QUALITY.md); the microbenchmark
 percentage is not an end-to-end speedup.
 
 An independent `tools/prof/prof.py` capture of the final pp2048 pass at d32K
@@ -221,7 +221,7 @@ the HTTP table uses separate unprofiled production runs.
 | Wider lookup blocks, lookup without a sidecar and Flash-Next DFlash2 | Not retained. Wider blocks need independently qualified decode arithmetic and recurrent rollback beyond eight rows; the AR-only path currently has no speculative reserve. The available DFlash2 fork still needs an audit of its exported proposal probabilities and restore/batch fallback before a lossless port. These are separate implementation projects, not enabled features. |
 
 Matched serving gains are modest: about 1–2.5% for copying and flat ordinary
-coding/thinking. See [the focused comparison and quality limits](QUALITY.md#exact-sampled-decode-october-21-2026).
+coding/thinking. See [the focused comparison and quality limits](QUALITY.md).
 
 ## Mid-size prefill passes (October 21, 2026)
 
