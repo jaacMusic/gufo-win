@@ -177,6 +177,26 @@ also enables survival and vision; these direct bench numbers do not. Logs:
 (git-ignored). The 0.1.0 comparison of 2026-10-21 showed the same ranking with
 weaker Bubo numbers (Bubo pp 1293.86-1540.60, MTP 33.96-67.36).
 
+### Bubo 0.1.1 cached first-token claim
+
+Bubo's release notes claim a follow-up request's first token arrives in 527 ms
+at 32K context and 515 ms at 100K, with queue wait falling to 7-8 ms and
+identical output. Measured here on 2026-11-01 against the same server path
+(`/v1/chat/completions`, sessions 1, context 131072, greedy, 16-token replies,
+same filler prompt and snapshot; one cold pass then three cached repeats):
+
+| prompt tokens | cold TTFT | cached TTFT | restore (queue_ms) | identical output |
+| ---: | ---: | ---: | ---: | --- |
+| 32,584 | 19,833 ms | 113-132 ms | 50 ms (113-132) | yes |
+| 99,301 | 62,815 ms | 363-373 ms | 142-144 ms (363-373) | yes |
+
+Gufo's `queue_ms` on a cached pass is admission plus cache restore, so it is
+not the same definition as Bubo's 7-8 ms queue figure; the user-visible wait
+is TTFT either way. Gufo beats Bubo's claimed first-token wait at both sizes:
+about 4.0-4.7x sooner at 32K and about 1.4x sooner at 100K, with
+byte-identical output across cold and cached passes. Harness:
+`%TEMP%\opencode\ttft-claim.py`.
+
 ## Multiple users, autoregressive
 
 Same pp2048 prose prompt as single-user d0, tg128, context 4096 per user.
