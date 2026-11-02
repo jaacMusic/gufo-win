@@ -657,7 +657,8 @@ std::vector<TokenId> QwenTokenizer::BpeEncodeText(std::string_view text) const {
 }
 
 std::vector<TokenId> QwenTokenizer::Encode(
-    std::string_view text, const TokenizerOptions& options) const {
+    std::string_view text, const TokenizerOptions& options,
+    std::vector<TokenBoundary>* boundaries) const {
   std::vector<TokenId> tokens;
   if (text.empty()) {
     if (options.add_bos && bos_token_id_ != kInvalidTokenId) {
@@ -730,6 +731,9 @@ std::vector<TokenId> QwenTokenizer::Encode(
 
       tokens.push_back(matched_id);
       pos = next_special_pos + matched_special.size();
+      if (boundaries != nullptr) {
+        boundaries->push_back(TokenBoundary{pos, tokens.size()});
+      }
     }
   }
 

@@ -21,6 +21,7 @@
 #include <utility>
 
 #include "src/cli/serve/logging.hpp"
+#include "src/cli/serve/prompt_token_cache.hpp"
 #include "src/cli/serve/text_generation_scheduler.hpp"
 #include "src/cli/serve/text_model_runner.hpp"
 #include "src/core/eog_boundary.hpp"
@@ -78,7 +79,8 @@ tokenization::ChatTemplateOptions QwenChatOptions(const ChatRequest& request,
 TextPreparedPrompt PrepareQwenPrompt(
     const ChatRequest& request, const tokenization::QwenTokenizer& tokenizer,
     const std::shared_ptr<models::qwen::vision::Encoder>& encoder,
-    std::uint32_t max_context, models::qwen::vision::ImageCache& image_cache) {
+    std::uint32_t max_context, models::qwen::vision::ImageCache& image_cache,
+    serve::PromptTokenCache* token_cache = nullptr) {
   const bool has_images = std::ranges::any_of(
       request.messages, [](const auto& m) { return !m.images.empty(); });
   const auto options = QwenChatOptions(request, max_context);
@@ -90,7 +92,8 @@ TextPreparedPrompt PrepareQwenPrompt(
               : std::span<const tokenization::ChatTool>{request.tools},
           options,
           encoder && has_images ? encoder->identity() : std::string_view{},
-          max_context, request.cache_prompt ? &image_cache : nullptr));
+          max_context, request.cache_prompt ? &image_cache : nullptr,
+          token_cache));
   if (has_images) {
     // fork has no Logger::LogFormatted; one line per image request is enough.
     const auto stats = image_cache.GetStats();
@@ -952,12 +955,23 @@ public:
 
   [[nodiscard]] std::optional<std::vector<TextRunnerToken>> RenderAndTokenize(
       const ChatRequest& request) const override {
-    return tokenization::QwenChatTemplate::RenderAndTokenize(
-        model_->GetTokenizer(), request.messages,
+    const auto tools =
         request.tool_choice == ChatRequest::ToolChoice::kNone
             ? std::span<const tokenization::ChatTool>{}
-            : std::span<const tokenization::ChatTool>{request.tools},
-        QwenChatOptions(request, max_context_));
+            : std::span<const tokenization::ChatTool>{request.tools};
+    std::string error_msg;
+    const auto rendered = tokenization::QwenChatTemplate::Render(
+        request.messages, tools, QwenChatOptions(request, max_context_),
+        &error_msg);
+    if (!rendered) {
+      return std::nullopt;
+    }
+    tokenization::TokenizerOptions tok_opts;
+    tok_opts.add_bos = false;
+    tok_opts.add_eos = false;
+    tok_opts.parse_special_tokens = true;
+    return prompt_cache_.Encode(std::move(*rendered), model_->GetTokenizer(),
+                                tok_opts);
   }
 
   [[nodiscard]] std::optional<TextPreparedPrompt> PreparePrompt(
@@ -1454,6 +1468,7 @@ private:
   }
 
   mutable models::qwen::vision::ImageCache image_cache_;
+  mutable serve::PromptTokenCache prompt_cache_;
   std::shared_ptr<const hip::QwenGpuModel> model_;
   std::shared_ptr<const hip::QwenDFlashGpuModel> dflash_model_;
   std::uint32_t max_context_;
@@ -2435,19 +2450,30 @@ public:
 
   [[nodiscard]] std::optional<std::vector<TextRunnerToken>> RenderAndTokenize(
       const ChatRequest& request) const override {
-    return tokenization::QwenChatTemplate::RenderAndTokenize(
-        model_->tokenizer(), request.messages,
+    const auto tools =
         request.tool_choice == ChatRequest::ToolChoice::kNone
             ? std::span<const tokenization::ChatTool>{}
-            : std::span<const tokenization::ChatTool>{request.tools},
-        QwenChatOptions(request, max_context_));
+            : std::span<const tokenization::ChatTool>{request.tools};
+    std::string error_msg;
+    const auto rendered = tokenization::QwenChatTemplate::Render(
+        request.messages, tools, QwenChatOptions(request, max_context_),
+        &error_msg);
+    if (!rendered) {
+      return std::nullopt;
+    }
+    tokenization::TokenizerOptions tok_opts;
+    tok_opts.add_bos = false;
+    tok_opts.add_eos = false;
+    tok_opts.parse_special_tokens = true;
+    return prompt_cache_.Encode(std::move(*rendered), model_->tokenizer(),
+                                tok_opts);
   }
 
   [[nodiscard]] std::optional<TextPreparedPrompt> PreparePrompt(
       const ChatRequest& request) const override {
     return PrepareQwenPrompt(request, model_->tokenizer(),
                              model_->VisionEncoder(), max_context_,
-                             image_cache_);
+                             image_cache_, &prompt_cache_);
   }
 
   void SetPromptContext(
@@ -2819,6 +2845,7 @@ public:
 
 private:
   mutable models::qwen::vision::ImageCache image_cache_;
+  mutable serve::PromptTokenCache prompt_cache_;
   std::shared_ptr<QwenFlashNextModel> model_;
   std::uint32_t max_context_;
   bool use_mtp_;

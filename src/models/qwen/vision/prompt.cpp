@@ -6,11 +6,14 @@
 #include <stdexcept>
 #include <string_view>
 
+#include "src/cli/serve/prompt_token_cache.hpp"
 #include "src/core/crypto/sha256.hpp"
 #include "src/models/qwen/vision/image_cache.hpp"
 
 namespace gufo::models::qwen::vision {
 namespace {
+using gufo::serve::PromptTokenCache;
+
 constexpr std::uint32_t kResizeFactor = kPatchSize * kMergeSize;
 constexpr std::uint32_t kMinPixels = 65536;
 constexpr std::uint32_t kMaxPixels = 16777216;
@@ -250,7 +253,8 @@ Prompt Prepare(const tokenization::QwenTokenizer& tokenizer,
                std::span<const tokenization::ChatTool> tools,
                const tokenization::ChatTemplateOptions& options,
                std::string_view encoder_identity, std::uint32_t max_context,
-               ImageCache* image_cache) {
+               ImageCache* image_cache,
+               gufo::serve::PromptTokenCache* token_cache) {
   std::vector<std::size_t> offsets;
   std::size_t stable_prefix_bytes = 0;
   std::string error;
@@ -263,6 +267,29 @@ Prompt Prepare(const tokenization::QwenTokenizer& tokenizer,
   tok_options.add_bos = false;
   tok_options.add_eos = false;
   tok_options.parse_special_tokens = true;
+  // Image-free prompts take the memoized path: extend the previous
+  // tokenization when the render byte-extends it at a special boundary.
+  if (token_cache != nullptr && offsets.empty()) {
+    // The stable suffix anchors the cache-reuse policy; it is short, so
+    // encoding it separately stays cheap.
+    const auto stable = tokenizer.Encode(
+        std::string_view(*rendered).substr(stable_prefix_bytes), tok_options);
+    prompt.tokens =
+        token_cache->Encode(std::move(*rendered), tokenizer, tok_options);
+    if (prompt.tokens.size() > max_context) {
+      throw std::length_error(
+          "prompt exceeds the " + std::to_string(max_context) +
+          "-token context; increase --context or shorten the conversation");
+    }
+    if (stable.size() > prompt.tokens.size() ||
+        !std::ranges::equal(stable,
+                            std::span(prompt.tokens).last(stable.size()))) {
+      throw std::logic_error("Qwen stable prefix is not a token boundary");
+    }
+    prompt.stable_prefix_tokens = prompt.tokens.size() - stable.size();
+    prompt.rope.Validate(max_context);
+    return prompt;
+  }
   const auto append = [&](std::string_view text) {
     auto tokens = tokenizer.Encode(text, tok_options);
     if (tokens.size() > max_context - prompt.tokens.size()) {

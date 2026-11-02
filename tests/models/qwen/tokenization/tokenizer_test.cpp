@@ -8,6 +8,7 @@
 #include <string_view>
 #include <vector>
 
+#include "src/cli/serve/prompt_token_cache.hpp"
 #include "src/core/gguf_reader.hpp"
 
 namespace {
@@ -330,6 +331,63 @@ void TestCorpusConformance() {
   }
 }
 
+void TestBoundaryCutEncodeEquivalence() {
+  std::vector<std::string> tokens;
+  tokens.reserve(300);
+  for (int i = 0; i < 256; ++i) {
+    tokens.emplace_back(1, static_cast<char>(i));
+  }
+  for (const auto* piece : {"Hello", "World", "user", "assistant"}) {
+    tokens.emplace_back(piece);
+  }
+  std::unordered_map<std::string, gufo::tokenization::TokenId> specials = {
+      {"<|endoftext|>", 0},
+      {"<|im_start|>", 1},
+      {"<|im_end|>", 2},
+  };
+  std::string err;
+  auto tok = gufo::tokenization::QwenTokenizer::CreateFromVocabulary(
+      tokens, {}, specials, &err);
+  Expect(tok != nullptr, "boundary tokenizer: " + err);
+
+  gufo::tokenization::TokenizerOptions opts;
+  opts.parse_special_tokens = true;
+
+  const std::string text =
+      "<|im_start|>user\nHello World<|im_end|>\n<|im_start|>assistant\nHi "
+      "there<|im_end|>\n<|im_start|>user\nAgain<|im_end|>";
+  std::vector<gufo::tokenization::TokenBoundary> boundaries;
+  const auto full = tok->Encode(text, opts, &boundaries);
+  Expect(!boundaries.empty(), "Encode records boundaries");
+
+  // A suffix that starts at any recorded boundary re-encodes identically.
+  for (const auto& boundary : boundaries) {
+    const auto suffix = tok->Encode(text.substr(boundary.byte_end), opts);
+    auto joined = std::vector<gufo::tokenization::TokenId>(
+        full.begin(),
+        full.begin() + static_cast<std::ptrdiff_t>(boundary.token_count));
+    joined.insert(joined.end(), suffix.begin(), suffix.end());
+    Expect(joined == full, "boundary cut reproduces the full encode");
+  }
+
+  // The serve-side memo produces the same tokens across extensions, an
+  // identical replay, and an unrelated prompt.
+  gufo::serve::PromptTokenCache cache;
+  const std::string turn1 =
+      "<|im_start|>user\nHello World<|im_end|>\n<|im_start|>assistant\nHi "
+      "there<|im_end|>\n";
+  const auto cached1 = cache.Encode(turn1, *tok, opts);
+  Expect(cached1 == tok->Encode(turn1, opts), "memo matches a full encode");
+  const auto cached2 = cache.Encode(text, *tok, opts);
+  Expect(cached2 == full, "memo extension matches the full encode");
+  const auto replay = cache.Encode(text, *tok, opts);
+  Expect(replay == full, "memo replay matches the full encode");
+  const auto other =
+      cache.Encode("<|im_start|>system\nother<|im_end|>", *tok, opts);
+  Expect(other == tok->Encode("<|im_start|>system\nother<|im_end|>", opts),
+         "memo miss matches the full encode");
+}
+
 }  // namespace
 
 int main() {
@@ -340,6 +398,7 @@ int main() {
   TestUnicodeContractionBoundary();
   TestEmptyAndSpecialEdgeCases();
   TestCorpusConformance();
+  TestBoundaryCutEncodeEquivalence();
   std::cout << "All QwenTokenizer tests passed successfully!\n";
   return 0;
 }

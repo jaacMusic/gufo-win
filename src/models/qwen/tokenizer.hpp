@@ -30,6 +30,15 @@ struct TokenizerOptions {
   bool parse_special_tokens{true};
 };
 
+/// Cut point where a prompt extension can resume encoding: byte offset in the
+/// input text and the token count covering those bytes. Encoding a suffix that
+/// starts at one of these offsets reproduces a full re-encode exactly, because
+/// each special-delimited segment is encoded independently.
+struct TokenBoundary {
+  std::size_t byte_end{0};
+  std::size_t token_count{0};
+};
+
 struct VocabularyLoadOptions {
   bool eager_decoded_tokens{true};
 };
@@ -57,9 +66,11 @@ public:
       std::string* error_msg = nullptr,
       VocabularyLoadOptions load_options = {});
 
-  /// Encodes a UTF-8 text string into token IDs.
+  /// Encodes a UTF-8 text string into token IDs. When boundaries is given,
+  /// records every special-token end as a TokenBoundary cut point.
   [[nodiscard]] std::vector<TokenId> Encode(
-      std::string_view text, const TokenizerOptions& options = {}) const;
+      std::string_view text, const TokenizerOptions& options = {},
+      std::vector<TokenBoundary>* boundaries = nullptr) const;
 
   /// Decodes a sequence of token IDs into a UTF-8 string.
   [[nodiscard]] std::string Decode(std::span<const TokenId> tokens) const;

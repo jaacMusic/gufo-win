@@ -11,6 +11,10 @@
 #include "src/core/image.hpp"
 #include "src/models/qwen/chat_template.hpp"
 
+namespace gufo::serve {
+class PromptTokenCache;
+}
+
 namespace gufo::models::qwen::vision {
 
 class ImageCache;
@@ -68,7 +72,8 @@ struct Prompt {
     std::span<const tokenization::ChatTool> tools,
     const tokenization::ChatTemplateOptions& options,
     std::string_view encoder_identity, std::uint32_t max_context,
-    ImageCache* image_cache = nullptr);
+    ImageCache* image_cache = nullptr,
+    gufo::serve::PromptTokenCache* token_cache = nullptr);
 
 }  // namespace gufo::models::qwen::vision
 #endif
