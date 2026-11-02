@@ -2011,13 +2011,15 @@ never triaged:
    128-token map) is a hand merge, ~1,000 lines into a diverged
    `kernels.hip.cpp`. Gates exist: `routed_wmma_ops` bit-identity
    (`CheckPassRoutes` to add) + greedy haiku. Largest remaining prefill item.
-2. `[ ]` **`eb1d52e` #894 one-launch decode HC mixer** — `HcMixQ8Fused` runs a
+2. `[x]` **`eb1d52e` #894 one-launch decode HC mixer** — `HcMixQ8Fused` runs a
    decode batch's combine + Q8_0 down/up + SiLU + epilogue in one launch
    (1–8 rows): mixer T1 47.8→44.5 µs, AR decode 28.8→29.7 (+3%), C4 MTP wall
    76→80 (+5%). New kernel + executor route in the fork's HC decode path; the
    fork's HC stack diverged (MoE-fused F16 combine, fused HC down #485), so
    port the launch-site selection by hand. Byte-identity gates in
    `hc_mix_ops` replay.
+
+   Ported 2026-11-02: kernel block + HcFusedMix copied from upstream (added InjectParts, SiluScaleQ8_1 the fork lacked); PendingCombine handshake - Combine(..., next) defers the Q8_1 combine when the next layer mixer fits FusedMixer (hc_count 4, hidden 2560, rank 320, Q8_0 down/up), HcMix consumes it in HcMixQ8Fused and falls back to HcCombineQ8_1 on mismatch; hc_fused_state_ counters + s.lo_q8_1 allocated in Create. hc_mix_ops byte-identity passes on gfx1151; hc_mix_bench target added (EXCLUDE_FROM_ALL). Fork A/B (release, UD-Q4_K_XL, 2 reps): tg128 35.33 to 35.59 @d0 and 32.66 to 32.88 @d16384 (+0.7 pct both), pp2048 neutral. Gain smaller than upstream +3 pct because the fork already fuses SiLU into the HC down GEMM (#485), so only the combine/up/epilogue launches collapse.
 3. `[x]` **`2e6aa96` #876 dense sweep in budget-crossing chains** —
    correctness fix, small. Upstream bug: with a sparse mask present,
    `AttentionKernel` takes the sparse route as soon as `start_pos + t >=
