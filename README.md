@@ -37,18 +37,18 @@ Against Bubo 0.1.1 (haloforge-labs release binary, same model snapshot, same
 `bench` calls through `tools/windows/bench-flash-next-context.ps1`, greedy,
 two repetitions, 2026-11-01):
 
-| Context | Gufo pp | Bubo pp | Δ | Gufo AR | Bubo AR | Δ | Gufo MTP | Bubo MTP | Δ |
+| Context | Gufo-win pp | Bubo pp | Δ | Gufo-win AR | Bubo AR | Δ | Gufo-win MTP | Bubo MTP | Δ |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | 8,192 | **1,688.9** | 1,661.3 | **+1.7%** | **33.6** | 28.1 | **+19.8%** | **52.0** | 35.0 | **+48.6%** |
 | 32,768 | **1,642.6** | 1,592.5 | **+3.1%** | **32.0** | 28.7 | **+11.4%** | **99.4** | 96.4 | **+3.1%** |
 | 131,072 | **1,582.4** | 1,523.6 | **+3.9%** | **29.3** | 27.9 | **+5.1%** | **94.4** | 92.1 | **+2.5%** |
 | 262,144 | **1,516.2** | 1,454.7 | **+4.2%** | **27.4** | 27.0 | **+1.3%** | **90.1** | 86.8 | **+3.8%** |
 
-Gufo leads every cell (bold; Δ = Gufo ÷ Bubo − 1). The 8K AR cell ends the
+Gufo-win leads every cell (bold; Δ = Gufo-win ÷ Bubo − 1). The 8K AR cell ends the
 turn after 28 generated tokens. Bubo is faster on the cached first token of a
 32K conversation turn: its serving stack keeps session KV resident and answers
-in 8.6–9.0 ms, against Gufo's 21–23 ms (27–30 ms at 100K, where Bubo takes
-102–113 ms). Gufo restores a checkpoint by copying only the ~240 MB of mutable
+in 8.6–9.0 ms, against Gufo-win's 21–23 ms (27–30 ms at 100K, where Bubo takes
+102–113 ms). Gufo-win restores a checkpoint by copying only the ~240 MB of mutable
 recurrent state when the request returns to the session that wrote it
 (2026-11-02); that replaced a full 2.0–5.7 GB re-upload and, together with
 tokenization memoization (2026-11-01), took the cached turn from 126 ms to
@@ -61,7 +61,7 @@ direct `gufo bench` calls, greedy, 32-token budget, three repetitions, one
 process per mode, NPU off, 2026-10-27; AR cells remeasured 2026-10-31 with
 two repetitions):
 
-| Depth | Mode | Gufo pp (tok/s) | upstream pp | Gufo tg (tok/s) | upstream tg | Gain tg |
+| Depth | Mode | Gufo-win pp (tok/s) | upstream pp | Gufo-win tg (tok/s) | upstream tg | Gain tg |
 | ---: | --- | ---: | ---: | ---: | ---: | ---: |
 | 0 | AR | 1,669.74 | 1,663.39 | 35.54 | 27.55 | **+29.0%** |
 | 16,384 | AR | 1,500.88 | 1,451.50 | 31.86 | 27.90 | **+14.2%** |
@@ -197,7 +197,7 @@ survival stopping, the Latin draft vocabulary, prompt lookup and temperature
 
 What this fork is about, in one list:
 
-- **Native Windows on Strix Halo.** Build and run Gufo directly on Windows 11
+- **Native Windows on Strix Halo.** Build and run Gufo-win directly on Windows 11
   against AMD's TheRock ROCm — no WSL, no containers — and publish prebuilt
   release zips so a working server is unpack-and-run from a fresh Strix Halo
   machine.
