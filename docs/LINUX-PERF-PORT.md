@@ -1991,3 +1991,88 @@ pp2048 1650 ± 11 → 1671 ± 9 tok/s at d0 (+1.3%), 1468 → 1482 at d16384
 slice of end-to-end prefill.
 
 Next: `9fbe751` #890 (register-resident routed prefill experts).
+
+## Upstream sweep 2026-11-02: `a6c53a6..9b3b1f4` (plus `192b75a..a6c53a6` misses)
+
+Fetched upstream `origin/main` = `9b3b1f4`. Triage of everything since the
+#895 (fused GDN) port, plus the commits that landed beside `a6c53a6` and were
+never triaged:
+
+### Port candidates, ranked
+
+1. `[ ]` **`9fbe751` #890 register-resident routed prefill experts** (already
+   the standing "next"). Upstream (measured on a production fork at 4,096 /
+   26,541 rows): routed down Q5_1 21.1→23.8 / 25.1→30.6 TFLOPS, Q8_0
+   17.8→20.4 / 23.6→29.0; gate/up Q4_K 26.7→28.3 / 32.6→33.1. End to end
+   `gufo bench` pp16384 1,590→1,626 (+2.3%). Fork state checked:
+   `executor.cpp` still runs the pre-#890 design (16/48-row
+   `RoutedF16Gemm`/`RoutedGatedF16Gemm`, per-launch pinned tile map), so the
+   whole kernel rewrite (`RoutedDownF16Kernel`, `RoutedPairF16Kernel`, shared
+   128-token map) is a hand merge, ~1,000 lines into a diverged
+   `kernels.hip.cpp`. Gates exist: `routed_wmma_ops` bit-identity
+   (`CheckPassRoutes` to add) + greedy haiku. Largest remaining prefill item.
+2. `[ ]` **`eb1d52e` #894 one-launch decode HC mixer** — `HcMixQ8Fused` runs a
+   decode batch's combine + Q8_0 down/up + SiLU + epilogue in one launch
+   (1–8 rows): mixer T1 47.8→44.5 µs, AR decode 28.8→29.7 (+3%), C4 MTP wall
+   76→80 (+5%). New kernel + executor route in the fork's HC decode path; the
+   fork's HC stack diverged (MoE-fused F16 combine, fused HC down #485), so
+   port the launch-site selection by hand. Byte-identity gates in
+   `hc_mix_ops` replay.
+3. `[x]` **`2e6aa96` #876 dense sweep in budget-crossing chains** —
+   correctness fix, small. Upstream bug: with a sparse mask present,
+   `AttentionKernel` takes the sparse route as soon as `start_pos + t >=
+   budget`, so rows *below* the budget mask off blocks before row 0's full
+   sweep and diverge ~1 token/chain from a dense pass (run-to-run mismatch at
+   ~2,041–2,048 visible tokens in long MTP decodes). Fork had the identical
+   shape: `AttentionKernel` picked its route on `mask != nullptr` only.
+
+   Ported 2026-11-02: `dense_extent` (tokens = `indexer_top_k`) threaded
+   through `rocm::Attention` (trailing arg, default 0) into `AttentionKernel`,
+   which nulls the mask row when `n_kv <= dense_extent`, and the executor
+   passes `c.indexer_top_k`. Fork adaptation: no CPU `DenseReference` in the
+   test, so the bit-exact target is the mask-free GPU launch itself — one row
+   at a time versus a budget-crossing 4-row batch; the check also asserts the
+   old route is observable (2 rows differ without the fix), so it cannot rot.
+   Verified: `attention_ops_test` passes on gfx1151 with the serving engine up
+   (exit 0; "budget-crossing batches from 2045 to 2047: rows bitwise-equal to
+   decoding alone (2 rows differ on the mask walk)"), repo clang-format clean.
+   No perf gate needed: rows below the budget sweep the same tile count, only
+   the compaction walk is skipped.
+
+### Not applicable (verified against the fork)
+
+- `0bc453f` #933 (16,384-row lone-prompt passes + `GroupedRasterTile`) —
+  upstream itself reverted the pass size in `abb6aca` #954: 16K-row plans
+  pinned 4.1 GiB of scratch (issue #952). Fork prefill chunking is
+  option-driven and has no `kPrefillChunkTokens`; skip both halves until
+  upstream settles.
+- `abb6aca` #954 headroom fix body — keyed on
+  `ReservePrefillCheckpoint`/`cache::Slot`/`continuation_adapter.cpp`, none of
+  which exist in the fork (continuation store is the fork's own).
+- `eb31391` #914 Windows same-name HIP device-code race — checked
+  `build/release/CMakeFiles/rules.ninja`: the fork's HIP compile rule already
+  ends in `-o $out -x hip -c $in` (no `/Fo`), so the race cannot happen here.
+- `8ab834a` #903, `31c3b3a` #881 — tiered-cache RAM-segment/idle-spill fixes;
+  the fork has no tiered cache (`src/cache` absent).
+- `9b3b1f4` #968, `b911c15` #964 — serve fixes for upstream
+  embeddings/audio/ASR/video routes and upstream session-snapshot capacity
+  accounting; the fork's `/v1/embeddings` is `NotImplemented` and the image
+  route does not refuse unknown fields.
+- `b20b5bd` #930 (IQ2_XS/IQ2_S/IQ3_XXS/IQ1_S/IQ1_M tensors) and the
+  extensions/API-revision framework commits (`6bbb6bb`, `276dd18`, `13f6456`,
+  `385d9a7`, `9d1e7c8`, `f25f474`, `05f0a9a` Qwen-Image Turbo, `eddcfea`) —
+  features, not fixes or perf; no fork gate.
+
+### Conditional (port only if that workload matters on this host)
+
+- `2a9dd9c` #884 read Q8_0 PLE n-gram tables — 74 lines incl. test; fork
+  `ngram.cpp` still expects F16/F32 tables. Only helps GGUFs exported with
+  Q8_0 n-gram tables (memory, load time).
+- DS4: `bdf800d` #897 decode perf + top-p + unaligned resumed prefill (large,
+  deferred as with #874: no DS4 GGUF on this host, byte-identity gate cannot
+  run); `b6336a3` #946 default served ctx to GGUF native length (small fix);
+  `6246d77` #691 keep caller text out of DeepSeek control tokens (small fix).
+- `6ab4569` #915 `usage.completion_tokens_details.reasoning_tokens` — small
+  serve feature if chat clients need it.
+
+Next sweep from `9b3b1f4`.

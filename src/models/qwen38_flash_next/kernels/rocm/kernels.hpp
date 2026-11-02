@@ -500,14 +500,18 @@ void SelectBlocks(const float* q, const __half* blocks, std::uint32_t* mask,
 /// mask at ratio 4, each row's selected blocks are first compacted once into
 /// `lists`; `list_capacity` is the selection budget (blocks per row). The
 /// output is bitwise identical to the mask walk. Null lists use the mask walk.
+/// `dense_extent` (tokens) is the block-budget boundary of the selection
+/// policy (the indexer top-k): rows whose sweep stays inside it ignore the
+/// mask and take the dense route, exactly like a mask-free call, so a batch
+/// that crosses the boundary matches a run entirely below it token for token.
 void Attention(const float* q, const __half* k_cache, const __half* v_cache,
                const std::uint32_t* mask, std::uint32_t mask_words, float* out,
                float* partials, std::uint32_t splits, std::uint32_t n_tokens,
                const std::uint32_t* start_pos, std::uint32_t heads,
                std::uint32_t kv_heads, std::uint32_t d, std::uint32_t ratio,
                hipStream_t stream, std::uint32_t* lists = nullptr,
-               std::uint32_t* counts = nullptr,
-               std::uint32_t list_capacity = 0);
+               std::uint32_t* counts = nullptr, std::uint32_t list_capacity = 0,
+               std::uint32_t dense_extent = 0);
 
 /// Fused causal attention on the WMMA cores for wide batches: scores, online
 /// softmax, PV and the sigmoid output gate in one launch. `mask` follows

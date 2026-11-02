@@ -503,11 +503,99 @@ void CheckPositionPastMask() {
             << " mask bits: walk and lists ignore the following words\n";
 }
 
+/// Rows below the selection budget (token index `indexer_top_k`) must take the
+/// dense route inside a budget-crossing batch, so their rounding matches
+/// decoding alone with no mask at all (upstream #876). The mask keeps every
+/// block below the boundary, so the bit-exact target is the mask-free launch.
+void CheckBudgetRows() {
+  constexpr std::uint32_t kBudget = 512;  // blocks = indexer_top_k / ratio
+  constexpr std::uint32_t kTopK = kBudget * kRatio;
+  constexpr std::uint32_t kFirst = 2045;  // rows 2045..2047: three complete,
+                                          // then the first sparse one
+  constexpr std::uint32_t kChain = 4;
+  constexpr std::uint32_t kSplits = 8;
+  constexpr std::uint32_t mask_words = kBudget / 32;
+  const std::uint32_t n_kv = kFirst + kChain;
+  const std::size_t kv_count = static_cast<std::size_t>(n_kv) * kKvWidth;
+  const std::size_t q_count = static_cast<std::size_t>(kChain) * kQWidth;
+  const auto qv = MakeValues(q_count, 0xC0FFEEU, 4.0F);
+  std::vector<__half> kh(kv_count);
+  std::vector<__half> vh(kv_count);
+  {
+    const auto kf = MakeValues(kv_count, 0x5EED1234U, 1.0F);
+    const auto vf = MakeValues(kv_count, 0xABCD7777U, 1.0F);
+    for (std::size_t i = 0; i < kv_count; ++i) {
+      kh[i] = __float2half(kf[i]);
+      vh[i] = __float2half(vf[i]);
+    }
+  }
+  // Every complete block below kTopK is visible, which is what the selection
+  // writes there; the route difference is dense tiles versus mask walk.
+  std::vector<std::uint32_t> mask(static_cast<std::size_t>(kChain) * mask_words,
+                                  0xFFFFFFFFU);
+  HipBuffer<float> d_q(q_count);
+  HipBuffer<__half> d_k(kv_count);
+  HipBuffer<__half> d_v(kv_count);
+  HipBuffer<std::uint32_t> d_mask(mask.size());
+  HipBuffer<std::uint32_t> d_pos(1);
+  HipBuffer<float> d_out(q_count);
+  HipBuffer<float> d_partials(static_cast<std::size_t>(kChain) * kHeads *
+                              kSplits * (kDim + 2));
+  HipBuffer<std::uint32_t> d_lists(static_cast<std::size_t>(kChain) * kBudget);
+  HipBuffer<std::uint32_t> d_counts(kChain);
+  Upload(&d_q, qv);
+  Upload(&d_k, kh);
+  Upload(&d_v, vh);
+  Upload(&d_mask, mask);
+  std::size_t walk_differs = 0;
+  // One row per launch, as a chain of single-token decode steps: the target.
+  for (std::uint32_t t = 0; t < kChain; ++t) {
+    Upload(&d_pos, std::vector<std::uint32_t>{kFirst + t});
+    q::Attention(d_q.get() + std::size_t{t} * kQWidth, d_k.get(), d_v.get(),
+                 nullptr, mask_words, d_out.get() + std::size_t{t} * kQWidth,
+                 d_partials.get(), kSplits, 1, d_pos.get(), kHeads, kKvHeads,
+                 kDim, kRatio, nullptr);
+    CheckHip(hipDeviceSynchronize(), "dense budget row");
+  }
+  const auto alone = Download(&d_out, q_count);
+  const auto batch = [&](bool masked, std::uint32_t dense_extent) {
+    Upload(&d_pos, std::vector<std::uint32_t>{kFirst});
+    q::Attention(
+        d_q.get(), d_k.get(), d_v.get(), masked ? d_mask.get() : nullptr,
+        mask_words, d_out.get(), d_partials.get(), kSplits, kChain, d_pos.get(),
+        kHeads, kKvHeads, kDim, kRatio, nullptr,
+        masked ? d_lists.get() : nullptr, masked ? d_counts.get() : nullptr,
+        masked ? kBudget : 0, dense_extent);
+    CheckHip(hipDeviceSynchronize(), "budget-crossing batch");
+    return Download(&d_out, q_count);
+  };
+  const auto chained = batch(true, kTopK);
+  const auto walk = batch(true, 0);
+  for (std::uint32_t t = 0; t < kChain; ++t) {
+    const auto at = std::size_t{t} * kQWidth;
+    if (std::memcmp(alone.data() + at, chained.data() + at,
+                    kQWidth * sizeof(float)) != 0)
+      throw std::runtime_error(
+          "attention row " + std::to_string(kFirst + t) +
+          " differs between a budget-crossing batch and decoding alone");
+    walk_differs += std::memcmp(alone.data() + at, walk.data() + at,
+                                kQWidth * sizeof(float)) != 0;
+  }
+  // Rows with an incomplete tail block below the budget take another tile
+  // partition on the mask walk; the check must be able to see that.
+  if (walk_differs == 0)
+    throw std::runtime_error("the budget check cannot tell the routes apart");
+  std::cout << "budget-crossing batches from " << kFirst << " to " << kTopK - 1
+            << ": rows bitwise-equal to decoding alone (" << walk_differs
+            << " rows differ on the mask walk)\n";
+}
+
 }  // namespace
 
 int main() {
   try {
     CheckPositionPastMask();
+    CheckBudgetRows();
     CheckChunks(136, 94);
     CheckChunks(2048, 1025);
     CheckPreparation(1, 0, 64);
