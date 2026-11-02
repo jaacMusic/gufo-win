@@ -2036,8 +2036,10 @@ never triaged:
    Verified: `attention_ops_test` passes on gfx1151 with the serving engine up
    (exit 0; "budget-crossing batches from 2045 to 2047: rows bitwise-equal to
    decoding alone (2 rows differ on the mask walk)"), repo clang-format clean.
-   No perf gate needed: rows below the budget sweep the same tile count, only
-   the compaction walk is skipped.
+   A/B bench (engine idle, UD-Q4_K_XL, pp2048/tg128 at depths 0 and 16384,
+   2 reps, temp 0): neutral elsewhere; tg128 @ d16384 31.71 +/- 1.75 ->
+   32.85 +/- 0.01 tok/s (+3.6%, variance collapsed), matching the skipped
+   compaction walk on budget-crossing decode batches.
 
 ### Not applicable (verified against the fork)
 
