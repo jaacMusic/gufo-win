@@ -2029,7 +2029,14 @@ never triaged:
    upstream-measured ones recorded in
    `docs/models/qwen3.8-flash-next/EXPERIMENTS.md`; quiet-GPU `gufo bench` A/B
    done 2026-11-02: pp2048 +4.5%, pp16384 +3.8%, tg neutral (two reps, old
-   binary rebuilt from `1a931bf1` in a scratch worktree).
+   binary rebuilt from `1a931bf1` in a scratch worktree). Quality gates
+   against that same pre-port binary: `--validate-prefill 64` and `512` are
+   bit-identical (rmse 0.684315 / 0.784478, cosine 0.974165 / 0.977355, max
+   3.60681 / 4.63813 on both), and the greedy haiku is byte-identical apart
+   from the `[Model Load]` line. Note the validate-prefill numbers sit below
+   the CLI's own 0.979 cosine gate on *both* binaries, i.e. pre-existing and
+   not this port; they do not match the 0.39 / 0.99 recorded for earlier
+   commits, so that gap is still unexplained.
 2. `[x]` **`eb1d52e` #894 one-launch decode HC mixer** — `HcMixQ8Fused` runs a
    decode batch's combine + Q8_0 down/up + SiLU + epilogue in one launch
    (1–8 rows): mixer T1 47.8→44.5 µs, AR decode 28.8→29.7 (+3%), C4 MTP wall
