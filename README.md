@@ -37,15 +37,15 @@ Against Bubo 0.1.1 (haloforge-labs release binary, same model snapshot, same
 `bench` calls through `tools/windows/bench-flash-next-context.ps1`, greedy,
 two repetitions, 2026-11-01):
 
-| Context | Gufo pp | Bubo pp | Gufo AR | Bubo AR | Gufo MTP | Bubo MTP |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 8,192 | 1,688.9 | 1,661.3 | 33.6 | 28.1 | 52.0 | 35.0 |
-| 32,768 | 1,642.6 | 1,592.5 | 32.0 | 28.7 | 99.4 | 96.4 |
-| 131,072 | 1,582.4 | 1,523.6 | 29.3 | 27.9 | 94.4 | 92.1 |
-| 262,144 | 1,516.2 | 1,454.7 | 27.4 | 27.0 | 90.1 | 86.8 |
+| Context | Gufo pp | Bubo pp | Δ | Gufo AR | Bubo AR | Δ | Gufo MTP | Bubo MTP | Δ |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 8,192 | **1,688.9** | 1,661.3 | **+1.7%** | **33.6** | 28.1 | **+19.8%** | **52.0** | 35.0 | **+48.6%** |
+| 32,768 | **1,642.6** | 1,592.5 | **+3.1%** | **32.0** | 28.7 | **+11.4%** | **99.4** | 96.4 | **+3.1%** |
+| 131,072 | **1,582.4** | 1,523.6 | **+3.9%** | **29.3** | 27.9 | **+5.1%** | **94.4** | 92.1 | **+2.5%** |
+| 262,144 | **1,516.2** | 1,454.7 | **+4.2%** | **27.4** | 27.0 | **+1.3%** | **90.1** | 86.8 | **+3.8%** |
 
-Gufo leads every cell: prefill +1.7–4.2%, AR +1.3–19.8%, MTP +2.5–48.6% (the
-8K AR cell ends the turn after 28 generated tokens). Bubo's serving stack
+Gufo leads every cell (bold; Δ = Gufo ÷ Bubo − 1). The 8K AR cell ends the
+turn after 28 generated tokens. Bubo's serving stack
 keeps conversation KV resident for a faster cached first token
 ([TTFT comparison](docs/models/qwen3.8-flash-next/BENCHMARKS.md)); as of the
 same date Gufo's tokenization memoization cut its cached turn to ~54 ms at
