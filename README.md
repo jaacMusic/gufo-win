@@ -33,6 +33,24 @@ verbatim (drafts accepted 100%). Realistic mixed-prompt MTP decode at depth is
 with error bars and settings:
 [context sweep](docs/models/qwen3.8-flash-next/bench-context.html).
 
+Against Bubo 0.1.1 (haloforge-labs release binary, same model snapshot, same
+`bench` calls through `tools/windows/bench-flash-next-context.ps1`, greedy,
+two repetitions, 2026-11-01):
+
+| Context | Gufo pp | Bubo pp | Gufo AR | Bubo AR | Gufo MTP | Bubo MTP |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 8,192 | 1,688.9 | 1,661.3 | 33.6 | 28.1 | 52.0 | 35.0 |
+| 32,768 | 1,642.6 | 1,592.5 | 32.0 | 28.7 | 99.4 | 96.4 |
+| 131,072 | 1,582.4 | 1,523.6 | 29.3 | 27.9 | 94.4 | 92.1 |
+| 262,144 | 1,516.2 | 1,454.7 | 27.4 | 27.0 | 90.1 | 86.8 |
+
+Gufo leads every cell: prefill +1.7–4.2%, AR +1.3–19.8%, MTP +2.5–48.6% (the
+8K AR cell ends the turn after 28 generated tokens). Bubo's serving stack
+keeps conversation KV resident for a faster cached first token
+([TTFT comparison](docs/models/qwen3.8-flash-next/BENCHMARKS.md)); as of the
+same date Gufo's tokenization memoization cut its cached turn to ~54 ms at
+32K.
+
 Against upstream 0.24.0 (the stock `gufo` release binary, same files, same
 direct `gufo bench` calls, greedy, 32-token budget, three repetitions, one
 process per mode, NPU off, 2026-10-27; AR cells remeasured 2026-10-31 with
@@ -117,9 +135,7 @@ on by default. Long-context sweep, same protocol as above:
 | pp2048, 8K context | 1,626.37 tok/s | 1,637.48 | +0.7% |
 
 The Q4_1 copies change decode numerics; `GUFO_DECODE_COPY=off` restores the
-exact Q8_0 path, and `GUFO_DECODE_COPY_CLASSES` names the classes to copy
-(`ssm_in,ssm_out,attn_qkv,shexp` by default). Adding `lm_head` copies the
-output matrix too: 4.8% faster AR decode at d0, different generated text.
+exact Q8_0 path.
 
 Windows decode switches stay high-speed and bit-identical: with every Windows
 switch on, logit dumps are bit-identical at all 4,418 positions and seeded
