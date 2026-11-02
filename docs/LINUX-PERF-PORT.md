@@ -2027,8 +2027,9 @@ never triaged:
    `CheckPassRoutes` bit-identity over 16/48/128 tiles, paired vs separate,
    1/7/9/33/95/96-row passes); `routed_gemm_bench` runs. Perf numbers are the
    upstream-measured ones recorded in
-   `docs/models/qwen3.8-flash-next/EXPERIMENTS.md` (quiet GPU, alternating
-   medians); quiet-GPU `gufo bench` pp16384 A/B still owed (engine serving).
+   `docs/models/qwen3.8-flash-next/EXPERIMENTS.md`; quiet-GPU `gufo bench` A/B
+   done 2026-11-02: pp2048 +4.5%, pp16384 +3.8%, tg neutral (two reps, old
+   binary rebuilt from `1a931bf1` in a scratch worktree).
 2. `[x]` **`eb1d52e` #894 one-launch decode HC mixer** — `HcMixQ8Fused` runs a
    decode batch's combine + Q8_0 down/up + SiLU + epilogue in one launch
    (1–8 rows): mixer T1 47.8→44.5 µs, AR decode 28.8→29.7 (+3%), C4 MTP wall
