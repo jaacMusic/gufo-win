@@ -209,6 +209,27 @@ repeat out of three still pays a 70-280 ms queue transition at both sizes
 (90.7 and 231.7 ms above); that time is outside `cache_restore_ms` and is not
 measured yet. Harness: `%TEMP%\opencode\ttft-claim.py`.
 
+Warm-turn anatomy (2026-11-02, `--sessions 1`, MTP on, same harness with
+`cache_snapshot_ms`/`cache_shared_prefix_ms` read out): a follow-up turn that
+appends 47 tokens spends almost all its wait on checkpoint capture, not on
+prefill or restore. At 32K the turn measured 615 ms TTFT = 17.7 queue + 17.0
+restore + 253.8 own-boundary snapshot (2.03 GB D2H) + 133.5 shared-prefix
+checkpoint (1.01 GB D2H) + ~30 ms of actual delta prefill; at 100K it was
+1,164 ms = 26.8 + 25.8 + 650.3 (own) + 399.0 (shared) + ~60 ms prefill. The
+captures are the fixed per-turn cost that earlier delta sweeps measured as
+~770 ms at 32K; they scale with payload bytes, not delta tokens. Running with
+`--speculative off` leaves the prefill wait unchanged (479 ms for the same
+47-token delta), so MTP catch-up is not a factor. Pinning the snapshot buffers
+with `hipHostMalloc` cut the 32K restore to 10.5 ms and the exact-repeat TTFT
+to 8.5 ms, but a 100K request failed with a 500 once ~5.9 GB of pinned
+snapshots were retained against 7.4 GB of available host memory, so that
+change was reverted; a pinned staging path with a size cap is the safe
+variant if 32K cached TTFT ever needs to drop below ~20 ms. The next real win
+is skipping the shared-prefix capture when this request's own stable-boundary
+snapshot already retains a prefix within `shared_prefix_min_tokens` (128) of
+the divergence point: today both copies of nearly the same 32.5K-token prefix
+are written every turn.
+
 ## Multiple users, autoregressive
 
 Same pp2048 prose prompt as single-user d0, tg128, context 4096 per user.
