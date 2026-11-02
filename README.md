@@ -1,15 +1,15 @@
-# Gufo Windows: the Strix Halo inference engine
+# Gufo-win: the Strix Halo inference engine
 
 <p align="center">
   <img src="assets/gufo-logo.jpg" alt="Gufo logo" width="180">
 </p>
 
-Gufo is a vertical local inference engine specifically built and optimized for
-the AMD Strix Halo hardware: Ryzen AI MAX+ 395 systems with Radeon 8060S
-(`gfx1151`), up to 128 GiB of unified memory. This fork builds and runs it
-natively on Windows 11 x64 against AMD's TheRock ROCm — no WSL, no
-containers. The Linux original lives at
-[upstream gufo](https://github.com/gufo-org/gufo), and the port details are in
+Gufo-win is jaacMusic's Windows port of
+[Gufo](https://github.com/gufo-org/gufo), a vertical local inference engine
+specifically built and optimized for the AMD Strix Halo hardware: Ryzen AI
+MAX+ 395 systems with Radeon 8060S (`gfx1151`), up to 128 GiB of unified
+memory. This port builds and runs it natively on Windows 11 x64 against AMD's
+TheRock ROCm — no WSL, no containers. The port details are in
 [docs/WINDOWS.md](docs/WINDOWS.md).
 
 ## Headline results
