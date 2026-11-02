@@ -153,9 +153,24 @@ int main(int argc, char** argv) {
                 "persistent restore");
 
     // Restoring over a session that already decoded discards its state.
+    start = std::chrono::steady_clock::now();
     Require(origin->RestoreSnapshot(*at_prompt, &error), error);
+    const double reuse_ms = Millis(start);
     RequireSame(expected, Decode(*origin, kTokens, config, 8),
                 "restore over a used session");
+
+    // A session whose history starts with other tokens has no reusable cache
+    // rows, so the restore falls back to the host copy.
+    std::vector<std::int32_t> other = prompt;
+    for (std::size_t i = 0; i < other.size(); i += 7)
+      other[i] = pattern[(i + 3) % pattern.size()];
+    Require(origin->Sync(other, &error), error);
+    start = std::chrono::steady_clock::now();
+    Require(origin->RestoreSnapshot(*at_prompt, &error), error);
+    std::cout << "restore_reuse_ms=" << reuse_ms
+              << " restore_other_prefix_ms=" << Millis(start) << "\n";
+    RequireSame(expected, Decode(*origin, kTokens, config, 8),
+                "restore over another prefix");
 
     // Single-token decoding from a restored session also matches.
     Require(origin->RestoreSnapshot(*at_prompt, &error), error);

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -38,6 +39,10 @@
 
 namespace gufo::models::qwen38_flash_next {
 namespace {
+
+// Process-local session identity for snapshot lineage. In-memory snapshots
+// never cross a process, so a counter is enough.
+std::atomic<std::uint64_t> next_session_id{1};
 
 // Sampled drafting stops once the chain is unlikely to survive: each
 // proposal multiplies an acceptance estimate looked up from the draft head's
@@ -434,6 +439,7 @@ Session::Session(std::shared_ptr<Model> model,
                  std::unique_ptr<rocm::Session> session)
     : model_(std::move(model)),
       session_(std::move(session)),
+      id_(next_session_id.fetch_add(1)),
       draft_length_(model_->options_.max_draft_tokens,
                     model_->DecodeConcurrency()),
       draft_vocab_(kMtpDraftExtraRows - model_->draft_specials_) {
@@ -488,6 +494,7 @@ void Session::Reset() {
   hidden_base_ = 0;
   draft_length_.Reset();
   model_->executor_->MtpRewind(*session_, 0);
+  ++epoch_;
   valid_ = true;
 }
 
@@ -550,6 +557,8 @@ std::unique_ptr<SessionSnapshot> Session::SaveSnapshot(
       token_count, model_->VocabSize(), identity.size());
   std::unique_ptr<SessionSnapshot> snapshot(
       new SessionSnapshot(host_bytes + executor_bytes));
+  snapshot->source_id_ = id_;
+  snapshot->source_epoch_ = epoch_;
   std::uint8_t* out = snapshot->data_.get();
   const SessionSnapshotHeader header{
       .magic = kSessionSnapshotMagic,
@@ -584,11 +593,20 @@ std::unique_ptr<SessionSnapshot> Session::SaveSnapshot(
 
 bool Session::RestoreSnapshot(const SessionSnapshot& snapshot,
                               std::string* error_msg) {
-  return RestoreSnapshot(snapshot.bytes(), error_msg);
+  // Resident rows are bit-identical only for the session that wrote them:
+  // another session decodes with a different batch shape and rounding.
+  const bool same_lineage =
+      valid_ && snapshot.source_id_ == id_ && snapshot.source_epoch_ == epoch_;
+  return RestorePayload(snapshot.bytes(), same_lineage, error_msg);
 }
 
 bool Session::RestoreSnapshot(std::span<const std::uint8_t> payload,
                               std::string* error_msg) {
+  return RestorePayload(payload, false, error_msg);
+}
+
+bool Session::RestorePayload(std::span<const std::uint8_t> payload,
+                             bool allow_reuse, std::string* error_msg) {
   if (!EnsureFrontier(error_msg)) {
     return false;
   }
@@ -636,6 +654,12 @@ bool Session::RestoreSnapshot(std::span<const std::uint8_t> payload,
   std::memcpy(logits.data(), in, logits.size() * sizeof(float));
   in += logits.size() * sizeof(float);
 
+  // The live session keeps every cache row behind a token prefix it already
+  // holds; the restore then copies only the mutable state. Set before
+  // ConfigureVision, which may reset a session that carried images.
+  const bool prefix_matches =
+      allow_reuse && valid_ && tokens.size() <= tokens_.size() &&
+      std::equal(tokens.begin(), tokens.end(), tokens_.begin());
   if (image_identity.empty())
     ConfigureVision(nullptr);
   valid_ = false;
@@ -656,7 +680,7 @@ bool Session::RestoreSnapshot(std::span<const std::uint8_t> payload,
           *session_,
           std::span<const std::uint8_t>(
               in, static_cast<std::size_t>(header.executor_bytes)),
-          &info, error_msg, next_drafts)) {
+          &info, error_msg, next_drafts, prefix_matches)) {
     Reset();
     return false;
   }
@@ -681,6 +705,9 @@ bool Session::RestoreSnapshot(std::span<const std::uint8_t> payload,
   draft_token_ = 0;
   draft_length_ = restored_policy;
   stats_ = {};
+  // A copying restore rewrote the resident rows with another path's bytes.
+  if (!info.reused_rows)
+    ++epoch_;
   valid_ = true;
   return true;
 }

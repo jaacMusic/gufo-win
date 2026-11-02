@@ -290,6 +290,9 @@ private:
   friend class Model;
   Session(std::shared_ptr<Model> model, std::unique_ptr<rocm::Session> session);
 
+  /// `allow_reuse` keeps appended cache rows the caller proved unchanged.
+  bool RestorePayload(std::span<const std::uint8_t> payload, bool allow_reuse,
+                      std::string* error_msg);
   bool Feed(std::span<const std::int32_t> tokens, std::string* error_msg,
             bool prefill = false, std::span<const std::int32_t> after = {});
   /// Trunk rows the draft block may still read: [hidden_base_, size).
@@ -330,6 +333,10 @@ private:
 
   std::shared_ptr<Model> model_;
   std::unique_ptr<rocm::Session> session_;
+  /// Snapshot lineage: only this session's own rows are bit-identical to the
+  /// copy it saved. Epoch changes whenever the engine rewrites them.
+  std::uint64_t id_{0};
+  std::uint64_t epoch_{0};
   std::vector<std::int32_t> tokens_;
   mutable std::vector<float> logits_;
   /// A sampled cycle's rollback left the frontier row in flight (see
@@ -385,6 +392,9 @@ private:
 
   std::unique_ptr<std::uint8_t[]> data_;
   std::uint64_t size_{0};
+  /// Session that wrote this snapshot; never serialized.
+  std::uint64_t source_id_{0};
+  std::uint64_t source_epoch_{0};
 
   friend class Session;
 };

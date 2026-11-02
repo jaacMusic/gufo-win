@@ -333,6 +333,8 @@ public:
   struct SnapshotInfo {
     std::uint32_t position{0};
     std::uint32_t hidden_rows{0};
+    /// The restore kept the resident cache rows instead of copying them.
+    bool reused_rows{false};
   };
   [[nodiscard]] std::uint64_t SnapshotBytes(const Session& session,
                                             std::uint32_t hidden_rows) const;
@@ -343,10 +345,13 @@ public:
   /// Reuse at most the rollback rows needed by the restored operation;
   /// restoration never grows scratch. Callers derive this bound from the
   /// restored policy (or the concrete verifier width in a diagnostic).
+  /// `reuse_resident_rows` lets a session that still holds the payload's token
+  /// prefix keep its appended caches instead of copying them back from host.
   [[nodiscard]] bool RestoreSnapshot(Session& session,
                                      std::span<const std::uint8_t> payload,
                                      SnapshotInfo* info, std::string* error_msg,
-                                     std::uint32_t next_drafts = 0) const;
+                                     std::uint32_t next_drafts = 0,
+                                     bool reuse_resident_rows = false) const;
 
   /// Rewinds the draft block's own context.
   void MtpRewind(Session& session, std::uint32_t position) const noexcept {

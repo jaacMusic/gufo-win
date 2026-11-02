@@ -181,26 +181,33 @@ weaker Bubo numbers (Bubo pp 1293.86-1540.60, MTP 33.96-67.36).
 
 Bubo's release notes claim a follow-up request's first token arrives in 527 ms
 at 32K context and 515 ms at 100K, with queue wait falling to 7-8 ms. Measured
-here on 2026-11-01 with both engines on the same server path
-(`/v1/chat/completions`, sessions 1, context 131072, greedy, 16-token replies,
-same filler prompt and snapshot; one cold pass then three cached repeats).
-Token counts differ slightly between engines (32542 vs 32584, 99259 vs 99301)
-because the tokenizers differ; output was byte-identical cold vs cached on
-both.
+here with both engines on the same server path (`/v1/chat/completions`,
+sessions 1, context 131072, greedy, 16-token replies, same filler prompt and
+snapshot; one cold pass then three cached repeats). Token counts differ slightly
+between engines (32542 vs 32584, 99259 vs 99301) because the tokenizers differ;
+output was byte-identical cold vs cached on both. Gufo rows are from the
+2026-11-02 build (tokenization memoization plus resident-row reuse); the Bubo
+rows are the 2026-11-01 measurement.
 
 | prompt chars | Gufo cold | Gufo cached TTFT | Bubo cold | Bubo cached TTFT |
 | ---: | ---: | ---: | ---: | ---: |
-| 168,800 (~32K) | 19,833 ms | 113-132 ms | 20,572 ms | 8.6-9.0 ms |
-| 515,000 (~100K) | 62,815 ms | 363-373 ms | 46,542 ms | 102-113 ms |
+| 168,800 (~32K) | 20,672 ms | 21-23 ms | 20,572 ms | 8.6-9.0 ms |
+| 515,000 (~100K) | 65,352 ms | 27-30 ms | 46,542 ms | 102-113 ms |
 
-Bubo 0.1.1's real cached first-token wait is far better than its own claim
-and better than Gufo's at both sizes (about 12x at 32K, 3.5x at 100K). Its
-keep-alive path serves a resident session directly (queue 7-18 ms, matching
-the claim) while Gufo snapshots and restores per request: restore costs about
-50 ms at 32K and 142 ms at 100K and the rest is admission. The 100K Bubo pass
-also prefills about 92 ms of delta tokens. Closing this gap is a serve-path
-project, not a kernel one; see docs/AGENT-SESSION.md for the same pattern at
-longer horizons. Harness: `%TEMP%\opencode\ttft-claim.py`.
+Gufo leads the cached first token at 100K by about 4x and trails at 32K. Bubo
+0.1.1's keep-alive path serves a resident session directly (queue 7-18 ms,
+matching its claim), so its cached turn never touches a snapshot. Gufo restores
+per request; for an exact repeat the request returns to the session that wrote
+the checkpoint, so only the ~240 MB of mutable recurrent state is copied and
+the resident K/V rows stay in place (`Executor::RestoreSnapshot` with
+`reuse_resident_rows`, gated on session identity and epoch). That took 32K from
+57-66 ms to 21-23 ms and 100K from 152-170 ms to 27-30 ms; the earlier 113-132
+and 363-373 ms figures were pre-memoization and, at 100K, a second-repeat
+outlier. The 32K remainder is the mutable copy crossing pageable host memory at
+~11 GB/s; a pinned or device-resident checkpoint would remove it. One cached
+repeat out of three still pays a 70-280 ms queue transition at both sizes
+(90.7 and 231.7 ms above); that time is outside `cache_restore_ms` and is not
+measured yet. Harness: `%TEMP%\opencode\ttft-claim.py`.
 
 ## Multiple users, autoregressive
 
