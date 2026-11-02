@@ -424,3 +424,60 @@ names its own numbers. Halving per-session bytes (fp8/Q8 KV, ~5.2 GiB at
 262144) is the only path to 4 sessions at 262K; everything else (paged or
 shared cross-session KV, growable arena) is upstream work (#740).
 
+## Kernel-level re-review (2026-11-01, static, engine resident — no benches run)
+
+Second static pass over `qwen38_flash_next` kernels + the trace corpus, hunting
+outside the previously reviewed set. Findings with per-phase numbers are from
+`bench-trace.log` (MTP decode bench; w255 rows there are pp2048-scale passes,
+w16 rows are warm/16-token prefix passes per the 2026-10-30 note).
+
+### Decode AR (26.93 ms/token, weight-traffic-bound, GPU 99.8 % busy)
+
+Per-token phase totals (w1, 247 cycles): routed MoE 7.7 ms, GDN proj 4.3,
+head 4.63, HC mix 4.3, attn proj 1.3, shared 1.4, router 1.0, scan 1.1,
+combines 1.0, attn core 2.9.
+
+- **LM-head Q4_1 decode copy already exists** (commit `d6c667e4`): class
+  `lm_head` in `device_model.cpp` (`wants("lm_head")` → `add(m->output_, ...)`),
+  off in the default class set because logits numerics change. Remaining work is
+  measurement only: `GUFO_DECODE_COPY_CLASSES=ssm_in,ssm_out,attn_qkv,shexp,lm_head`
+  interleaved tg128 A/B + greedy replay. Est. −1.2–1.5 ms/token (head GEMV reads
+  the full untied Q8_0 output matrix every cycle).
+- **`q4` copy classes are live but not default**: `GUFO_DECODE_COPY=q4` adds
+  `attn_out` + `hc` (zero code). HC mix + combines are ~5.3 ms/token still on
+  Q8_0. No doc records why `q4` is off-default; same A/B gate decides it.
+- **MTP per-row cost is expert-set growth, closed**: w1 hits 4 expert slices,
+  w3 ~10 distinct experts (+~3.3 ms/row of the +5.4); `SmallGemmKernel` and
+  `GdnKernel` already batch rows on one weight read and rollback snapshots use
+  rank-1 factors for t>0. No kernel lever; only draft selection overlap helps.
+  This explains the earlier "uniform 0.10 ms/row/layer" note.
+
+### Prefill (pp2048 ≈ 1259 ms; >10 % buckets confirmed at probe ceilings)
+
+- **LM head runs ~24 TFLOP/s vs ~35 for sibling GEMMs** (66 ms/pass, 5.2 %,
+  skipped only by the 10 % rule). Same Q8→F16 WMMA mechanism, so the tile is
+  the suspect. Recipe: standalone shape sweep (151936×2560×2048) over
+  `DenseF16GEMMKernel` tile/rowgrp variants, `tools/bench/build.sh` + the
+  dense_blaslt_sweep pattern. Bit-exact gate. Est. −15–20 ms (+1.4 %).
+- **`head` bucket unresolved at prefill width**: decode head with ~1–2 logit
+  rows is 4.63 ms, but `head w255` is 65.5 ms per pp2048-scale pass. If the
+  bench `n_logits` is small, the vocab GEMV cannot fill it; the bucket's split
+  (last-layer HC tail vs `Dense(output)` vs download) has no marks. First move:
+  two extra `MarkPhase` splits around `Dense(output, ...)` in
+  `executor.cpp` prefill-logits block, then re-trace idle.
+- **Router chain: 18 ms/pass (~3 TF/s, 14 launches/layer, m=128 rows)**.
+  Fused logits+top-k could reclaim ~10 ms (+1 %); lowest priority, after LM head.
+
+### Checked and already tight (do not re-derive)
+
+`SmallGemmKernel` batches tokens on one weight read; `GdnKernel` loads state
+once/token-loop/write-once; `DenseF16GEMMKernel` tiles were swept per shape with
+measured ms comments (LM head is the exception, above); HC combines at 92 % BW;
+routed tier at 95 % of the 198 GB/s gather probe. The "35 → 55 TFLOP/s" WMMA gap
+is sustained clock/power sharing, not a kernel defect.
+
+Lesson recorded: `lm_head` decode-copy class was committed (d6c667e4) but absent
+from every doc — a `Select-String` over `src/models/qwen38_flash_next` for the
+class name would have prevented the duplicate implementation attempt.
+
+
