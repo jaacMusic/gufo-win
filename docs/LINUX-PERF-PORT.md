@@ -1990,7 +1990,7 @@ pp2048 1650 ± 11 → 1671 ± 9 tok/s at d0 (+1.3%), 1468 → 1482 at d16384
 (+1.0%), tg128 unchanged. Upstream's -18% is GDN-kernel-only; GDN is one
 slice of end-to-end prefill.
 
-Next: `9fbe751` #890 (register-resident routed prefill experts).
+Next: quiet-GPU `gufo bench` A/B for #890; then `#758` item 3 (side-stream overlap).
 
 ## Upstream sweep 2026-11-02: `a6c53a6..9b3b1f4` (plus `192b75a..a6c53a6` misses)
 
@@ -2000,7 +2000,7 @@ never triaged:
 
 ### Port candidates, ranked
 
-1. `[ ]` **`9fbe751` #890 register-resident routed prefill experts** (already
+1. `[x]` **`9fbe751` #890 register-resident routed prefill experts** (already
    the standing "next"). Upstream (measured on a production fork at 4,096 /
    26,541 rows): routed down Q5_1 21.1→23.8 / 25.1→30.6 TFLOPS, Q8_0
    17.8→20.4 / 23.6→29.0; gate/up Q4_K 26.7→28.3 / 32.6→33.1. End to end
@@ -2011,6 +2011,24 @@ never triaged:
    128-token map) is a hand merge, ~1,000 lines into a diverged
    `kernels.hip.cpp`. Gates exist: `routed_wmma_ops` bit-identity
    (`CheckPassRoutes` to add) + greedy haiku. Largest remaining prefill item.
+
+   Ported 2026-11-02: `kernels.hip.cpp` routed region taken from upstream
+   (RoutedF16GEMMKernel, RoutedDownF16Kernel, RoutedPairF16Kernel, wrappers,
+   `LaunchRoutedF16` 128 dispatch); fork-only kernels around them
+   (RequantQ8ToQ4_1, ExpandQ8_0) untouched. Executor: `RouteHints` builds one
+   128-token map for wide batches (`routed_wide_tiles_`; the fork's 64/128
+   pair heuristic and `routed_pair_*`/`routed_64_tiles_` members removed),
+   `MoeExperts` runs `RoutedGatedF16Gemm` and the down projection over the
+   shared map (`tile_rows` 128, no offset). `RoutedGatedF16Gemm` drops the
+   fork's `tile_rows` argument. Tests: `routed_wmma_ops_test.cpp` taken from
+   upstream (two `std::size_t{...}` narrowings relaxed for Windows clang),
+   `routed_gemm_bench.cpp` + CMake target added (EXCLUDE_FROM_ALL, mirrors
+   hc_mix_bench). Gates: `routed_wmma_ops` passes on gfx1151 (incl.
+   `CheckPassRoutes` bit-identity over 16/48/128 tiles, paired vs separate,
+   1/7/9/33/95/96-row passes); `routed_gemm_bench` runs. Perf numbers are the
+   upstream-measured ones recorded in
+   `docs/models/qwen3.8-flash-next/EXPERIMENTS.md` (quiet GPU, alternating
+   medians); quiet-GPU `gufo bench` pp16384 A/B still owed (engine serving).
 2. `[x]` **`eb1d52e` #894 one-launch decode HC mixer** — `HcMixQ8Fused` runs a
    decode batch's combine + Q8_0 down/up + SiLU + epilogue in one launch
    (1–8 rows): mixer T1 47.8→44.5 µs, AR decode 28.8→29.7 (+3%), C4 MTP wall

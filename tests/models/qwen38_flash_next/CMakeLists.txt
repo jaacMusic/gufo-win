@@ -51,4 +51,9 @@ if (ENGINE_ENABLE_HIP)
   add_executable(qwen38_flash_next_hc_mix_bench EXCLUDE_FROM_ALL hc_mix_bench.cpp)
   target_link_libraries(qwen38_flash_next_hc_mix_bench PRIVATE
     gufo_qwen38_flash_next hip::host)
+
+  add_executable(qwen38_flash_next_routed_gemm_bench EXCLUDE_FROM_ALL
+    routed_gemm_bench.cpp)
+  target_link_libraries(qwen38_flash_next_routed_gemm_bench PRIVATE
+    gufo_qwen38_flash_next hip::host)
 endif()
