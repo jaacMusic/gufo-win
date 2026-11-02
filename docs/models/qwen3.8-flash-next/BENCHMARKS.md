@@ -151,26 +151,31 @@ Run notes for future sweeps:
 
 ### Bubo comparison
 
-Bubo `0.1.0` (`bubo-engine` 0.10.0, revision `3ff74dce`) on the same snapshot
-and bench command: greedy, one process at a time, two timed repetitions after
-one untimed pass. The 256K row uses the same 262,143 prompt and 262,015 depth.
+Bubo `0.1.1` (`bubo-engine` 0.10.0, revision `0cb4bd87`) against Gufo at
+`4800ce14`, both re-run on 2026-11-01 on the same snapshot and bench command:
+greedy, one process at a time, two timed repetitions after one untimed pass.
+The 256K row uses the same 262,143 prompt and 262,015 depth. Bubo 0.1.1's
+`bench` now runs MTP with prompt lookup and the auto draft vocabulary (the
+serve defaults), so the MTP column matches Gufo's bench defaults.
 
 <!-- bench:bubo-context-sweep -->
 | Flash-Next Q4<br>Context (tokens) | Bubo pp | Gufo pp | Bubo AR | Gufo AR | Bubo MTP | Gufo MTP |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 8,192 | 1540.60 ± 6.52 | 1626.37 ± 1.83 | 27.81 ± 0.08 | 28.51 ± 0.38 | 33.96 ± 0.21 | 45.66 ± 1.45 |
-| 32,768 | 1479.29 ± 3.27 | 1578.44 ± 0.82 | 27.52 ± 0.10 | 27.49 ± 0.23 | 67.36 ± 0.96 | 78.81 ± 2.43 |
-| 131,072 | 1381.13 ± 1.22 | 1512.60 ± 0.69 | 26.59 ± 0.04 | 25.23 ± 0.21 | 64.33 ± 0.65 | 75.03 ± 2.27 |
-| 262,144 | 1293.86 ± 1.87 | 1449.18 ± 0.86 | 25.74 ± 0.04 | 24.21 ± 0.15 | 61.84 ± 0.75 | 72.10 ± 2.01 |
+| 8,192 | 1661.34 ± 14.33 | 1688.89 ± 1.65 | 28.08 ± 1.37 | 33.63 ± 0.46 | 34.97 ± 0.41 | 51.97 ± 1.53 |
+| 32,768 | 1592.46 ± 1.85 | 1642.57 ± 5.30 | 28.66 ± 0.07 | 31.95 ± 0.34 | 96.36 ± 1.81 | 99.36 ± 3.90 |
+| 131,072 | 1523.60 ± 0.72 | 1582.37 ± 0.03 | 27.91 ± 0.09 | 29.34 ± 0.15 | 92.10 ± 1.81 | 94.39 ± 3.25 |
+| 262,144 | 1454.68 ± 0.43 | 1516.19 ± 0.34 | 26.99 ± 0.07 | 27.35 ± 0.16 | 86.84 ± 1.61 | 90.08 ± 3.07 |
 <!-- /bench -->
 
-All values are tok/s. Bubo prefill is 5.3-10.7% lower, AR decode is 2.5%
-lower to 6.3% higher, and MTP decode is 14.2-25.6% lower than Gufo across the
-sweep. The
-256K MTP run accepted 111/111 drafts (100%), so the repeated-text caveat above
-applies to both engines. Bubo's serving launcher also enables survival, Latin
-draft vocabulary, lookup and vision; these direct bench numbers do not.
-One-page report: [bench-context-bubo.html](bench-context-bubo.html).
+All values are tok/s. Against Bubo 0.1.1, Gufo prefill is 1.7-4.2% higher, AR
+decode is 1.3-19.8% higher (19.8% at 8K; 8K AR ends the turn after 28 tokens on
+Gufo, so treat that row loosely), and MTP decode is 2.5-48.6% higher (48.6% at
+8K, where Bubo's lookup acceptance is weak; from 32K both repeat the pattern
+verbatim at ~100% acceptance and Gufo leads 2.5-3.7%). Bubo's serving launcher
+also enables survival and vision; these direct bench numbers do not. Logs:
+`artifacts\bench-context-bubo-011` and `artifacts\bench-context-1101`
+(git-ignored). The 0.1.0 comparison of 2026-10-21 showed the same ranking with
+weaker Bubo numbers (Bubo pp 1293.86-1540.60, MTP 33.96-67.36).
 
 ## Multiple users, autoregressive
 
