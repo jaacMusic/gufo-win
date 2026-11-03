@@ -209,6 +209,18 @@ records only make sense behind a byte budget, which their defaults do
    when porting #470 (`docs/LINUX-PERF-PORT.md`), and its disk half is inert
    with `--cache-disk` off. Revisit only if capture ever exceeds a few percent
    of a cold TTFT.
+8. **Production flags measured on 2026-11-02.** The fan-out hold was re-measured
+   at `--sessions 1 --context 131072`, the configuration actually served: four
+   simultaneous requests sharing a 2,383-token prompt took 3.62/3.48/3.50 s
+   total without the hold and 3.70/3.63/3.46 s with it, both restoring 2,369
+   tokens for three of the four. With one execution slot the followers queue
+   behind the resident anyway, so `ShareQueuedPrefixes` already covers this
+   case; the hold only pays once capacity exceeds one. `--cache-disk` is the
+   larger lever and needs no code: a checkpoint restored across a restart cost
+   652 ms TTFT against 7,058 ms cold at 11,733 tokens (441 MB record, 354 ms
+   restore) and 813 ms against 11,237 ms at 18,509 tokens (628 MB, 505 ms
+   restore), while the cold request paid 0.02–0.5 ms to queue the write. Serve
+   with `--cache-disk <dir>` to keep the RAM cache across restarts.
 
 ## Correction to the earlier Bubo verdict
 
