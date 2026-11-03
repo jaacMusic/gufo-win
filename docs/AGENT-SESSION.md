@@ -187,9 +187,18 @@ records only make sense behind a byte budget, which their defaults do
    (`1b8ad798`, #773) was reverted the same day, so keep the fake-runner test
    with any change here.
 6. **Leader/follower waiting** for fan-out: subagents started from one system
-   prompt currently each prefill the shared prefix, and prefill is serial, so
-   the copies cost their sum. Concurrent requests still re-prefill the shared
-   part; only the sequential sibling case above is served by RAM checkpoints.
+   prompt used to each prefill the shared prefix, and prefill is serial, so the
+   copies cost their sum. `ShareQueuedPrefixes` asked a resident prefill to
+   stop at the shared boundary, but admission let every sibling in before that
+   prefill started, so only queue-backed runs benefited. `Admit` now holds a
+   queued request that shares at least 512 tokens with the resident prefill
+   until that prefill passes the shared position. Measured with four
+   simultaneous requests sharing one system prompt: at 2,383 tokens total wall
+   8.9–9.3 s → 3.3–3.4 s and slowest TTFT 8.2–8.6 s → 2.3–2.4 s; at 11,734
+   tokens total 32.0 s → 9.0 s and slowest TTFT 31.6 s → 7.9 s, with three of
+   four requests restoring 2,368 and 11,719 tokens. A lone cold request is
+   unchanged (1,681 → 1,550 ms TTFT). The fake-runner scheduler test covers
+   the hold.
 7. **In-pass boundary capture** last: it is a runner change (per-model state
    borrowing) for roughly one prefill chunk per turn, not a scheduling win.
 

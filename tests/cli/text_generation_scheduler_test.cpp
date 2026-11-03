@@ -1605,6 +1605,37 @@ void TestShutdownCancelsRunnerAcquisition() {
   stopped.get();
 }
 
+void TestQueuedFollowerRestoresTheResidentPrefix() {
+  auto control = std::make_shared<FakeControl>();
+  control->snapshot_callback = [] {};
+  control->max_context = 2048;
+  control->prefill_capacity = 128;
+  control->block_prefill_label = 5;
+  auto scheduler = MakeScheduler(control, 2);
+
+  std::vector<TextRunnerToken> system(600, 5);
+  const auto conversation = [&](TextRunnerToken turn) {
+    auto prompt = system;
+    prompt.push_back(turn);
+    return prompt;
+  };
+
+  auto leader = scheduler->Submit(conversation(100), 2, 0.0F);
+  control->WaitForPrefill(5);
+  auto follower = scheduler->Submit(conversation(200), 2, 0.0F);
+  control->ReleasePrefill();
+
+  const auto leader_result = leader.Wait();
+  const auto follower_result = follower.Wait();
+  Expect(leader_result.prefill_tokens == 601,
+         "the resident prefills its complete prompt");
+  Expect(
+      follower_result.cache_hit && follower_result.cached_prompt_tokens == 600,
+      "a queued peer restores the prefix the resident published");
+  Expect(follower_result.prefill_tokens == 1,
+         "the peer prefills only its own turn");
+}
+
 int main() {
   TestStopSequenceChunkBoundaries();
   TestStopSequencesPreserveExecutedState();
@@ -1663,6 +1694,7 @@ int main() {
   TestModelOwnedBatchMetrics();
   TestBatchFailureIsolation();
   TestMultiResidentPrefillUsesBoundedWorkUnits();
+  TestQueuedFollowerRestoresTheResidentPrefix();
   TestArrivalDoesNotWaitForAnotherLongChunk();
   TestLongPrefillsKeepWideFairTurns();
   TestShortArrivalBehindWaitingPrefill();

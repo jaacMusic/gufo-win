@@ -267,6 +267,14 @@ struct TextGenerationScheduler::Impl {
     return request;
   }
 
+  [[nodiscard]] std::shared_ptr<ScheduledRequest> PeekQueued() const {
+    const std::lock_guard<std::mutex> lock(queue_mutex);
+    if (queued_clients.empty()) {
+      return {};
+    }
+    return queued_clients.front().requests.front();
+  }
+
   [[nodiscard]] bool RemoveQueued(
       const std::shared_ptr<ScheduledRequest>& request) {
     const std::lock_guard<std::mutex> lock(queue_mutex);
@@ -460,6 +468,30 @@ struct TextGenerationScheduler::Impl {
     }
   }
 
+  /// A queued request that shares a prefix with the resident prefill waits
+  /// until that prefill reaches the shared position and publishes a checkpoint
+  /// there, instead of reading the same tokens a second time. Admission
+  /// resumes once the resident is past the position, so a refused capture only
+  /// costs the wait.
+  [[nodiscard]] bool WaitsForResidentPrefix(
+      const std::deque<std::shared_ptr<ScheduledRequest>>& prefilling) const {
+    if (prefilling.empty() ||
+        prefilling.front()->runner_request.prefill_complete()) {
+      return false;
+    }
+    const auto request = PeekQueued();
+    if (request == nullptr || !request->cache_prompt) {
+      return false;
+    }
+    const auto prompt = prefilling.front()->runner_request.prompt_span();
+    const auto common =
+        std::mismatch(prompt.begin(), prompt.end(), request->prompt.begin(),
+                      request->prompt.end());
+    const auto shared = static_cast<std::size_t>(common.first - prompt.begin());
+    return shared >= kSharedPrefixMinTokens &&
+           prefilling.front()->runner_request.prefill_position() < shared;
+  }
+
   void Admit(std::deque<std::shared_ptr<ScheduledRequest>>& prefilling,
              std::deque<std::shared_ptr<ScheduledRequest>>& decoding,
              std::size_t capturing, const std::stop_token& stop_token) {
@@ -467,6 +499,9 @@ struct TextGenerationScheduler::Impl {
     while (!stop_token.stop_requested() &&
            prefilling.size() + decoding.size() + capturing <
                runner_pool->capacity()) {
+      if (WaitsForResidentPrefix(prefilling)) {
+        return;
+      }
       auto request = PopQueued();
       if (request == nullptr) {
         return;
