@@ -221,6 +221,27 @@ records only make sense behind a byte budget, which their defaults do
    restore) and 813 ms against 11,237 ms at 18,509 tokens (628 MB, 505 ms
    restore), while the cold request paid 0.02–0.5 ms to queue the write. Serve
    with `--cache-disk <dir>` to keep the RAM cache across restarts.
+9. **Disk staging, not the flag, decides whether long prompts persist.** The
+   automatic staging limit is `min(capacity, 1 GiB, host budget / 4)`, and a
+   record larger than it is dropped with `event=disk_cache action=skipped
+   reason=staging_capacity`. On-disk records cost about 31 KB per token, so the
+   automatic 1 GiB stops at roughly 34k tokens: the 58,198-token prompts this
+   machine actually serves produce 1.72 GB records and were skipped on every
+   turn. `--cache-disk-staging-bytes 2147483648` stores a 30,191-token record
+   (948 MB) in 1.09 s, and after a restart it restores in 760 ms for 1,125 ms
+   TTFT against 18,386 ms cold, a 16x cut. Staging also bounds each disk read,
+   so it has to cover the largest prompt you expect to reuse.
+10. **Vision restores stay correct.** Two 155-token image prompts sharing one
+    text prefix, asked cold, warm, and after a restart: RAM restores took 12–28
+    ms and disk restores 100 ms, every answer matched its own image, and no
+    restore crossed images. The identity check rejects a shared text prefix
+    whose image differs.
+11. **A second session buys nothing.** At `--context 65536` four simultaneous
+    requests sharing a 2,383-token prompt took 3.15–3.27 s total with one
+    session and 3.04–3.21 s with two. Prefill is serial, so extra slots do not
+    overlap the pass; they only let a second request in early, and the hold
+    already makes that request restore instead of re-reading. The 2.7x seen at
+    `--sessions 4` came from the hold, not from the extra slots.
 
 ## Correction to the earlier Bubo verdict
 
