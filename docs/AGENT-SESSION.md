@@ -199,8 +199,16 @@ records only make sense behind a byte budget, which their defaults do
    four requests restoring 2,368 and 11,719 tokens. A lone cold request is
    unchanged (1,681 → 1,550 ms TTFT). The fake-runner scheduler test covers
    the hold.
-7. **In-pass boundary capture** last: it is a runner change (per-model state
-   borrowing) for roughly one prefill chunk per turn, not a scheduling win.
+7. **In-pass boundary capture** — measured on 2026-11-02 and closed as not
+   worth it. Captures already run on a worker thread, so the whole cost it
+   would remove is `cache_snapshot_ms` from `usage.gufo.metrics`: 94.8 ms of a
+   4,482 ms TTFT at 7,421 prompt tokens, 134.5 of 7,000 at 11,733, 167.6 of
+   11,502 at 18,509 — 1.5–2.1% of a cold TTFT, and nothing at all on a reused
+   prompt (53 ms TTFT, 29.5 ms restore). The port would re-add the
+   `PrefillThrough`/`SyncThrough` capture stack this fork deliberately dropped
+   when porting #470 (`docs/LINUX-PERF-PORT.md`), and its disk half is inert
+   with `--cache-disk` off. Revisit only if capture ever exceeds a few percent
+   of a cold TTFT.
 
 ## Correction to the earlier Bubo verdict
 
