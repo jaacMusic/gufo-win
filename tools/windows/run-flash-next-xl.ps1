@@ -57,7 +57,22 @@ param(
   [switch]$NoVision,
   # gufo rejects requests whose model string != --served-model-name; default matches
   # the existing OpenCode config entry so the SAME model id works with both engines.
-  [string]$ServedName = "unsloth/Qwen3.8-Flash-Next-GGUF:UD-Q4_K_XL"
+  [string]$ServedName = "unsloth/Qwen3.8-Flash-Next-GGUF:UD-Q4_K_XL",
+  # Restart-safe disk continuation cache (gufo --cache-disk). "on" keeps the
+  # checkpoints in %LOCALAPPDATA%\gufo-cache across restarts, a path puts them
+  # anywhere, "off" disables. A restored 30k-token prompt is 1.1 s against 18.4 s
+  # cold, which is the largest serving win this build has.
+  [string]$CacheDisk = "on",
+  # Directory cap (gufo --cache-disk-bytes); 0 = engine default (8 GiB).
+  [long]$CacheDiskBytes = 34359738368,
+  # Staging bounds the queued write and each disk read, so it has to cover the
+  # largest prompt you reuse: records run ~31 KB/token, so 3 GiB ~ 100k tokens.
+  # 0 = engine automatic (min(capacity, 1 GiB, host/4)), which drops 34k+ prompts.
+  [long]$CacheDiskStagingBytes = 3221225472,
+  # RAM snapshot-cache budget in bytes (gufo --cache-ram-gb); 0 = engine auto.
+  [long]$CacheRamBytes = 0,
+  # Print the exact engine command and exit, without starting anything.
+  [switch]$DryRun
 )
 $ErrorActionPreference = "Stop"
 $bin = Join-Path $PSScriptRoot "..\..\build\release"
@@ -70,7 +85,7 @@ if (-not (Test-Path "$bin\gufo.exe")) {
 # One engine at a time: the weights do not fit twice in unified memory, and the
 # second process dies in hipMalloc instead of saying why.
 $running = @(Get-Process gufo -ErrorAction SilentlyContinue)
-if ($running) { throw "gufo already running (PID $($running.Id -join ', ')); stop it before $Mode" }
+if ($running -and -not $DryRun) { throw "gufo already running (PID $($running.Id -join ', ')); stop it before $Mode" }
 
 if (-not $ModelFile) {
   $ModelFile = "UD-Q4_K_XL\Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf"
@@ -144,6 +159,15 @@ if ($Mode -eq "serve") {
   if ($PrefillChunk -gt 0) { $arguments += @("--prefill-chunk", "$PrefillChunk") }
   if ($PrefillBatch -gt 0) { $arguments += @("--prefill-batch", "$PrefillBatch") }
   if ($Mmproj) { $arguments += @("--mmproj", $Mmproj) }
+  if ($CacheDisk -and $CacheDisk -ne "off") {
+    $cacheDir = if ($CacheDisk -eq "on") { Join-Path $env:LOCALAPPDATA "gufo-cache" } else { $CacheDisk }
+    $arguments += @("--cache-disk", $cacheDir)
+    if ($CacheDiskBytes -gt 0) { $arguments += @("--cache-disk-bytes", "$CacheDiskBytes") }
+    if ($CacheDiskStagingBytes -gt 0) {
+      $arguments += @("--cache-disk-staging-bytes", "$CacheDiskStagingBytes")
+    }
+  }
+  if ($CacheRamBytes -gt 0) { $arguments += @("--cache-ram-gb", "$([long]($CacheRamBytes / 1GB))") }
 } else {
   # Same shape as upstream's single-user table: pp2048/tg128 per depth.
   # (bench has no thinking switch; -Think only picks the sampler here.)
@@ -162,6 +186,7 @@ Write-Host "gufo $($arguments -join ' ')'"
 # script/tee die on the first line. Merge stderr at cmd level instead: PS sees
 # plain stdout strings only. Args with spaces get cmd-style quoting.
 $ErrorActionPreference = 'Continue'
+if ($DryRun) { Write-Host "`nDryRun - nothing started." -ForegroundColor Cyan; exit 0 }
 $cmdline = ($arguments | ForEach-Object { if ($_ -match '\s') { '"{0}"' -f $_ } else { $_ } }) -join ' '
 cmd /c "`"$bin\gufo.exe`" $cmdline 2>&1"
 exit $LASTEXITCODE
