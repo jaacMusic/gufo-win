@@ -1990,7 +1990,8 @@ pp2048 1650 ± 11 → 1671 ± 9 tok/s at d0 (+1.3%), 1468 → 1482 at d16384
 (+1.0%), tg128 unchanged. Upstream's -18% is GDN-kernel-only; GDN is one
 slice of end-to-end prefill.
 
-Next: quiet-GPU `gufo bench` A/B for #890; then `#758` item 3 (side-stream overlap).
+Next: nothing ranked left from the `9b3b1f4` triage — #890 ported, #758 item 3
+measured and rejected (item 4). Re-fetch upstream before picking the next item.
 
 ## Upstream sweep 2026-11-02: `a6c53a6..9b3b1f4` (plus `192b75a..a6c53a6` misses)
 
@@ -2068,6 +2069,28 @@ never triaged:
    2 reps, temp 0): neutral elsewhere; tg128 @ d16384 31.71 +/- 1.75 ->
    32.85 +/- 0.01 tok/s (+3.6%, variance collapsed), matching the skipped
    compaction walk on budget-crossing decode batches.
+4. `[x]` **`538e2fd7` #758 item 3 side-stream overlaps** — tried and rejected
+   (2026-11-02). Ported upstream tip's post-gate design by hand: a
+   `side_stream_` with `side_start_`/`side_done_` events, `JoinSide()` plus a
+   `JoinGuard` so every exit orders the main stream, the shared expert (Q8_0
+   only) forked onto it beside the routed experts, and the SSM projection's Z
+   rows launched as a second disjoint row-tile grid on it (new trailing
+   `first_row_tile` on `DenseF16GEMMKernel`, `z_stream`/`z_start` on
+   `DenseF16SsmGemm`; the fork's `#ifdef GUFO_NPU` paths keep the main stream
+   and the existing NPU tail logic). Gates passed: `--validate-prefill 64` and
+   `512` bit-identical (0.684315 / 0.784478), greedy haiku byte-identical
+   apart from `[Model Load]`. Perf did not: same-session A/B against the
+   pre-port binary (UD-Q4_K_XL, 2 reps, temp 0) gave pp512 1,224.61 ± 29.13 ->
+   1,172.69 ± 36.54, pp2048 1,759.11 ± 6.08 -> 1,731.11 ± 13.77, pp16384
+   1,718.37 ± 1.11 -> 1,710.11 ± 0.83, tg64 34.74 ± 0.28 -> 34.38 ± 1.19
+   (decode runs neither overlap, so that is noise). Halves measured
+   separately: shared-expert overlap alone pp512 1,191.27 / pp2048 1,740.95 /
+   pp16384 1,705.13; Z split alone 1,224.89 / 1,743.29 / 1,710.08. Neither
+   half wins anywhere, so the port was reverted. Upstream's +3.3% pp512 did
+   not carry over: #890 already made the routed prefill experts
+   register-resident, so the shared expert no longer fills a bandwidth stall
+   there, and both GEMMs are compute bound on the same CUs — a second stream
+   only adds launch and tail overhead on this unified-memory part.
 
 ### Not applicable (verified against the fork)
 

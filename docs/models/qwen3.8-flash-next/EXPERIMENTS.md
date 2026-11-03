@@ -387,3 +387,31 @@ CU placement saves on this serial scan. Reverted. Larger windows (`kGdnWindow`
 needs four more staged float4 per window per thread, and the 96-block grid
 cannot spread further without more q/k re-reads. The scan stays at 2.70 ms per
 GDN layer (97 ms per pass, 8%), latency-bound on the token recurrence.
+
+## Side-stream overlaps (#758 item 3) (November 2, 2026)
+
+Upstream `538e2fd7` overlaps two independent GPU phases on a second stream:
+the shared expert runs beside the routed experts, and the SSM projection's Z
+rows are launched as a second row-tile grid beside the QKV tiles. Ported by
+hand on top of the #890 register-resident routed experts (new `first_row_tile`
+on `DenseF16GEMMKernel`, `z_stream`/`z_start` on `DenseF16SsmGemm`, a
+`side_stream_` plus `JoinSide`/`JoinGuard`/`ZJoin` in the executor; the NPU
+paths stay on the main stream).
+
+Correctness held: `--validate-prefill 64`/`512` bit-identical and the greedy
+haiku byte-identical. Perf did not (UD-Q4_K_XL, 2 reps, temp 0, same session,
+against the pre-port binary):
+
+| Config | pp512 | pp2048 | pp16384 | tg64 |
+| --- | --- | --- | --- | --- |
+| baseline | 1,224.6 ± 29.1 | 1,759.1 ± 6.1 | 1,718.4 ± 1.1 | 34.74 ± 0.28 |
+| both overlaps | 1,172.7 ± 36.5 | 1,731.1 ± 13.8 | 1,710.1 ± 0.8 | 34.38 ± 1.19 |
+| shared expert only | 1,191.3 ± 12.4 | 1,741.0 ± 1.8 | 1,705.1 ± 0.4 | 34.80 ± 0.37 |
+| Z rows only | 1,224.9 ± 0.4 | 1,743.3 ± 14.4 | 1,710.1 ± 1.2 | 34.77 ± 0.36 |
+
+Neither half wins at any width, so it was reverted. Upstream's +3.3% pp512
+does not transfer: after #890 the routed prefill experts keep their weights in
+registers instead of stalling on weight traffic, so the shared expert no
+longer fills an idle window, and two compute-bound GEMMs on one unified-memory
+part just add launch and tail overhead. Decode is unaffected either way (both
+overlaps are prefill-only); the tg64 spread is noise.
