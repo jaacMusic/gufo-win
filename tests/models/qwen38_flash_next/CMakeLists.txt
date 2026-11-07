@@ -13,6 +13,7 @@ function(add_qwen38_flash_next_test name library labels)
 endfunction()
 
 add_qwen38_flash_next_test(config gufo_qwen38_flash_next "cpu")
+add_qwen38_flash_next_test(wide_verification wide_verification_test "hip;gpu;gfx1151")
 add_qwen38_flash_next_test(ngram gufo_qwen38_flash_next "cpu")
 add_qwen38_flash_next_test(mtp_sampling gufo_core "cpu")
 add_qwen38_flash_next_test(draft_vocab gufo_core "cpu")
@@ -50,10 +51,5 @@ if (ENGINE_ENABLE_HIP)
 
   add_executable(qwen38_flash_next_hc_mix_bench EXCLUDE_FROM_ALL hc_mix_bench.cpp)
   target_link_libraries(qwen38_flash_next_hc_mix_bench PRIVATE
-    gufo_qwen38_flash_next hip::host)
-
-  add_executable(qwen38_flash_next_routed_gemm_bench EXCLUDE_FROM_ALL
-    routed_gemm_bench.cpp)
-  target_link_libraries(qwen38_flash_next_routed_gemm_bench PRIVATE
     gufo_qwen38_flash_next hip::host)
 endif()

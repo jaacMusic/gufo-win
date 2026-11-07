@@ -1,12 +1,5 @@
 # Qwen3.8 Flash-Next experiments
 
-## Routed prefill experts (October 23, 2026)
-
-| Experiment | Outcome |
-| --- | --- |
-| Register-resident routed down projection over 128-token tiles (`RoutedDownF16Kernel`, Q5_1/Q8_0) and a rewritten paired gate/up (`RoutedPairF16Kernel`, Q4_K/Q5_K) sharing one 128-token map | Retained. gfx1151 WMMA reads row r's A operand from one lane only (r for even rows, r + 16 for odd; the other copy is ignored, verified with garbage in the unread lanes), so each lane decodes one K16 half and one `v_permlanex16` per dword supplies the other: no duplicate decode, no selects. Down keeps each wave's 16 rows' codes in registers (activations are the only LDS stage, 155 VGPRs); the pair loads superblocks raw and decodes them at commit, removing a full memory wait every fourth stage. Loop VALU per WMMA: down 11 â†’ 4.6, pair 6.8 â†’ 3.9. Every row is bit-identical across 16/48/128-row tiles, paired vs separate, and 1/7/9/33/95/96-row passes (`CheckPassRoutes`). `routed_gemm_bench` (synthetic skewed top-10, Q4_K gate/up, Q5_1 down) on main `34ebb5fe`, two rounds, ms per layer at 4,096 / 26,541 rows: gate/up 10.61, 11.06 â†’ 10.30, 10.34 / 54.43, 59.42 â†’ 52.30, 56.35; down 6.58, 6.77 â†’ 5.72, 6.16 / 32.83, 37.83 â†’ 28.29, 31.50. On the production fork (quiet GPU, alternating medians), TFLOPS at 4,096 / 26,541 rows: down Q5_1 21.1 â†’ 23.8 / 25.1 â†’ 30.6, Q8_0 17.8 â†’ 20.4 / 23.6 â†’ 29.0; gate/up Q4_K 26.7 â†’ 28.3 / 32.6 â†’ 33.1, Q5_K 24.1 â†’ 25.3 / 30.2 â†’ 30.7. The GPU runs these kernels power-limited near 1.9 GHz (~110 W), so the measured WMMA ceiling is about 39â€“48 TFLOPS. `gufo bench` UD-Q4_K_XL pp16384, two rounds: 1,590 / 1,583 â†’ 1,624 / 1,629 tok/s. Fork A/B re-measured 2026-11-02 (quiet GPU, same session, `release` binaries at `1a931bf1` vs the port, two reps): pp2048 1,675.6 Â± 19.2 â†’ 1,751.1 Â± 4.3 (+4.5%), pp16384 1,659.2 Â± 0.5 â†’ 1,722.1 Â± 0.5 (+3.8%), tg64 34.5 â†’ 34.9 (noise). Same-conditions quality gates against the pre-port binary: `--validate-prefill 64`/`512` bit-identical (rmse 0.684315/0.784478, cosine 0.974165/0.977355) and greedy haiku byte-identical; those validate-prefill values are below the CLI's 0.979 cosine gate on both binaries, a pre-existing gap. Rejected (all exact): prefetching two stages ahead, the next token tile's B fragments (199 VGPRs), double-buffered activation stages with one barrier (BK 1 or 2), and 256-row Ã— 64-token down tiles; none beat the version kept. Ablation at 26.5K rows: without WMMA the down kernel takes 16 of 30 ms, without decode âˆ’5%, without B fragment reads âˆ’3%, without stores âˆ’2%. |
-| Weighted top-10 combine folded into the down epilogue | Not done: a token's ten slot rows come from ten experts' tiles spread over the whole launch, so an exact slot-order sum needs every partial first; integer atomics would be order-independent but cost more than the 51 KB/token read and would change every route. The combine already streams about 190 GB/s. |
-
 ## Prefill route independence (October 23, 2026)
 
 A prompt restored from a checkpoint and finished by a short prefill pass must
@@ -387,31 +380,3 @@ CU placement saves on this serial scan. Reverted. Larger windows (`kGdnWindow`
 needs four more staged float4 per window per thread, and the 96-block grid
 cannot spread further without more q/k re-reads. The scan stays at 2.70 ms per
 GDN layer (97 ms per pass, 8%), latency-bound on the token recurrence.
-
-## Side-stream overlaps (#758 item 3) (November 2, 2026)
-
-Upstream `538e2fd7` overlaps two independent GPU phases on a second stream:
-the shared expert runs beside the routed experts, and the SSM projection's Z
-rows are launched as a second row-tile grid beside the QKV tiles. Ported by
-hand on top of the #890 register-resident routed experts (new `first_row_tile`
-on `DenseF16GEMMKernel`, `z_stream`/`z_start` on `DenseF16SsmGemm`, a
-`side_stream_` plus `JoinSide`/`JoinGuard`/`ZJoin` in the executor; the NPU
-paths stay on the main stream).
-
-Correctness held: `--validate-prefill 64`/`512` bit-identical and the greedy
-haiku byte-identical. Perf did not (UD-Q4_K_XL, 2 reps, temp 0, same session,
-against the pre-port binary):
-
-| Config | pp512 | pp2048 | pp16384 | tg64 |
-| --- | --- | --- | --- | --- |
-| baseline | 1,224.6 ± 29.1 | 1,759.1 ± 6.1 | 1,718.4 ± 1.1 | 34.74 ± 0.28 |
-| both overlaps | 1,172.7 ± 36.5 | 1,731.1 ± 13.8 | 1,710.1 ± 0.8 | 34.38 ± 1.19 |
-| shared expert only | 1,191.3 ± 12.4 | 1,741.0 ± 1.8 | 1,705.1 ± 0.4 | 34.80 ± 0.37 |
-| Z rows only | 1,224.9 ± 0.4 | 1,743.3 ± 14.4 | 1,710.1 ± 1.2 | 34.77 ± 0.36 |
-
-Neither half wins at any width, so it was reverted. Upstream's +3.3% pp512
-does not transfer: after #890 the routed prefill experts keep their weights in
-registers instead of stalling on weight traffic, so the shared expert no
-longer fills an idle window, and two compute-bound GEMMs on one unified-memory
-part just add launch and tail overhead. Decode is unaffected either way (both
-overlaps are prefill-only); the tg64 spread is noise.

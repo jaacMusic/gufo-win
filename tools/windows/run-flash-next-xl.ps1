@@ -156,6 +156,7 @@ if ($Mode -eq "serve") {
     "--context", "$Context", "--max-output-bytes", "8388608",
     "--think", $Think) + $sampling + $speculative
   if ($ReasoningEffort -ne "auto") { $arguments += @("--reasoning-effort", $ReasoningEffort) }
+  if ($MaxPendingPerClient) { $arguments += @("--max-pending-per-client", "$MaxPendingPerClient") }
   if ($PrefillChunk -gt 0) { $arguments += @("--prefill-chunk", "$PrefillChunk") }
   if ($PrefillBatch -gt 0) { $arguments += @("--prefill-batch", "$PrefillBatch") }
   if ($Mmproj) { $arguments += @("--mmproj", $Mmproj) }

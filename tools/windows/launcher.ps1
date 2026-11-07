@@ -99,7 +99,14 @@ function Start-Plan($Plan) {
     Write-Host ("gufo is already running (PID {0}) and holds GPU memory; close it first for the full memory." -f ($running.Id -join ", ")) -ForegroundColor Yellow
   }
   # Diagnostic switches from the shell must not leak into a normal start.
+  # The NPU prefill lane is a runtime feature env (the console sets it), so it
+  # survives the strip.
+  $npuEnv = @{}
+  foreach ($name in @("GUFO_NPU_PREFILL", "GUFO_NPU_DIR")) {
+    if (Test-Path "Env:$name") { $npuEnv[$name] = (Get-Item "Env:$name").Value }
+  }
   foreach ($variable in Get-GufoEnvSwitches) { Remove-Item "Env:$($variable.Name)" -ErrorAction SilentlyContinue }
+  foreach ($name in $npuEnv.Keys) { Set-Item "Env:$name" $npuEnv[$name] }
   foreach ($property in $Plan.Env.PSObject.Properties) { Set-Item "Env:$($property.Name)" $property.Value }
   $shown = ($gufoArgs | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join " "
   $envText = ($Plan.Env.PSObject.Properties | ForEach-Object { "set $($_.Name)=$($_.Value) && " }) -join ""

@@ -238,6 +238,29 @@ public:
   [[nodiscard]] bool SelectBatchLogits(std::uint32_t offset, std::uint32_t rows,
                                        float* logits,
                                        std::string* error_msg) const;
+  /// Rows a single session may verify at once when every proposal after the
+  /// anchor is copied from its history (ForwardWide), or 0 without MTP.
+  static constexpr std::uint32_t kWideRows = 64;
+  [[nodiscard]] std::uint32_t max_copy_rows() const noexcept {
+    return has_mtp() ? std::min({kWideRows, options_.max_batch, copy_rows_cap_})
+                     : 0;
+  }
+  /// Caps max_copy_rows() before any session is created, so the wide
+  /// rollback rows fit beside the sessions.
+  void LimitCopyRows(std::uint32_t rows) noexcept { copy_rows_cap_ = rows; }
+  /// Verifies one session's chain of up to max_copy_rows() tokens in one
+  /// pass. The shared projections read their weights once for every row;
+  /// recurrent state, attention and PLE run as consecutive segments of at
+  /// most eight rows, so every row has the arithmetic of an ordinary
+  /// verification. Logit rows are selected as after ForwardBatch, and
+  /// Rollback() cuts the chain back to any kept prefix.
+  [[nodiscard]] bool ForwardWide(Session& session,
+                                 std::span<const std::int32_t> tokens,
+                                 std::string* error_msg) const;
+  /// Moves kept trunk hidden row `row` to row 0 (the draft block caught up
+  /// to it, so the rows before it are no longer needed).
+  [[nodiscard]] bool KeepHiddenRow(Session& session, std::uint32_t row,
+                                   std::string* error_msg) const;
 
   /// Keeps the first `keep` (1..n) tokens of the last speculative batch and
   /// discards the rest. If `logits` is supplied, copies the kept frontier
@@ -694,6 +717,29 @@ private:
   mutable GdnBatchItem* batch_gdn_host_{nullptr};
   mutable GdnBatchItem* batch_gdn_{nullptr};
   mutable std::uint32_t batch_rows_{0};
+  /// Rollback rows of a wide verification's later segments. Only one wide
+  /// pass is pending at a time (Forward/Rollback of the session decoding
+  /// alone), so the executor owns them. Segment s >= 1 keeps the state at
+  /// its start (restored when every row before it is kept) and its own
+  /// snapshot rows.
+  struct WideSegment {
+    std::vector<RollbackRows> conv;   ///< per layer, linear layers only
+    std::vector<RollbackRows> state;  ///< per layer, linear layers only
+    std::vector<float*> conv_start;   ///< per layer
+    std::vector<float*> state_start;  ///< per layer
+    RollbackRows ple;
+    float* ple_start{nullptr};
+  };
+  mutable std::vector<WideSegment> wide_segments_;
+  mutable std::vector<float*> wide_allocations_;
+  mutable Session::Control* wide_controls_{nullptr};
+  /// Rows of the pending wide verification, or 0.
+  mutable std::uint32_t wide_rows_{0};
+  std::uint32_t copy_rows_cap_{kWideRows};
+  bool EnsureWideSegments(std::uint32_t segments, std::string* error) const;
+  [[nodiscard]] std::size_t WideSegmentFloats() const;
+  bool ForwardBatchImpl(std::span<const BatchItem> items, bool wide,
+                        std::string* error) const;
   mutable const float* selected_logits_{nullptr};
   [[nodiscard]] const float* VerificationLogits() const {
     return selected_logits_ != nullptr ? selected_logits_ : s_.logits;
@@ -731,10 +777,13 @@ private:
   Session::Control* control_host_{nullptr};
   std::int32_t* tokens_host_{nullptr};
   std::uint32_t* counts_host_{nullptr};
-  std::int32_t* tiles_host_{nullptr};           ///< routed tile map staging
-  mutable std::uint32_t routed_max_rows_{0};    ///< 0 = no readback yet
-  mutable std::uint32_t routed_n_tiles_{0};     ///< routed_tile_rows_ tiles
-  mutable std::uint32_t routed_wide_tiles_{0};  ///< prefill 128-row tiles
+  std::int32_t* tiles_host_{nullptr};         ///< routed tile map staging
+  mutable std::uint32_t routed_max_rows_{0};  ///< 0 = no readback yet
+  mutable std::uint32_t routed_n_tiles_{0};   ///< down projection tiles
+  mutable std::uint32_t routed_64_tiles_{0};  ///< appended 64-token tiles
+  mutable std::uint32_t routed_pair_offset_{0};
+  mutable std::uint32_t routed_pair_tiles_{0};
+  mutable std::uint32_t routed_pair_rows_{64};
   mutable std::uint32_t routed_tile_rows_{48};  ///< token rows per tile
   mutable int routed_tile_cols_{0};
   float* logits_host_{nullptr};

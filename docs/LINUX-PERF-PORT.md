@@ -1990,8 +1990,7 @@ pp2048 1650 ± 11 → 1671 ± 9 tok/s at d0 (+1.3%), 1468 → 1482 at d16384
 (+1.0%), tg128 unchanged. Upstream's -18% is GDN-kernel-only; GDN is one
 slice of end-to-end prefill.
 
-Next: nothing ranked left from the `9b3b1f4` triage — #890 ported, #758 item 3
-measured and rejected (item 4). Re-fetch upstream before picking the next item.
+Next: `9fbe751` #890 (register-resident routed prefill experts).
 
 ## Upstream sweep 2026-11-02: `a6c53a6..9b3b1f4` (plus `192b75a..a6c53a6` misses)
 
@@ -2001,7 +2000,7 @@ never triaged:
 
 ### Port candidates, ranked
 
-1. `[x]` **`9fbe751` #890 register-resident routed prefill experts** (already
+1. `[ ]` **`9fbe751` #890 register-resident routed prefill experts** (already
    the standing "next"). Upstream (measured on a production fork at 4,096 /
    26,541 rows): routed down Q5_1 21.1→23.8 / 25.1→30.6 TFLOPS, Q8_0
    17.8→20.4 / 23.6→29.0; gate/up Q4_K 26.7→28.3 / 32.6→33.1. End to end
@@ -2012,32 +2011,6 @@ never triaged:
    128-token map) is a hand merge, ~1,000 lines into a diverged
    `kernels.hip.cpp`. Gates exist: `routed_wmma_ops` bit-identity
    (`CheckPassRoutes` to add) + greedy haiku. Largest remaining prefill item.
-
-   Ported 2026-11-02: `kernels.hip.cpp` routed region taken from upstream
-   (RoutedF16GEMMKernel, RoutedDownF16Kernel, RoutedPairF16Kernel, wrappers,
-   `LaunchRoutedF16` 128 dispatch); fork-only kernels around them
-   (RequantQ8ToQ4_1, ExpandQ8_0) untouched. Executor: `RouteHints` builds one
-   128-token map for wide batches (`routed_wide_tiles_`; the fork's 64/128
-   pair heuristic and `routed_pair_*`/`routed_64_tiles_` members removed),
-   `MoeExperts` runs `RoutedGatedF16Gemm` and the down projection over the
-   shared map (`tile_rows` 128, no offset). `RoutedGatedF16Gemm` drops the
-   fork's `tile_rows` argument. Tests: `routed_wmma_ops_test.cpp` taken from
-   upstream (two `std::size_t{...}` narrowings relaxed for Windows clang),
-   `routed_gemm_bench.cpp` + CMake target added (EXCLUDE_FROM_ALL, mirrors
-   hc_mix_bench). Gates: `routed_wmma_ops` passes on gfx1151 (incl.
-   `CheckPassRoutes` bit-identity over 16/48/128 tiles, paired vs separate,
-   1/7/9/33/95/96-row passes); `routed_gemm_bench` runs. Perf numbers are the
-   upstream-measured ones recorded in
-   `docs/models/qwen3.8-flash-next/EXPERIMENTS.md`; quiet-GPU `gufo bench` A/B
-   done 2026-11-02: pp2048 +4.5%, pp16384 +3.8%, tg neutral (two reps, old
-   binary rebuilt from `1a931bf1` in a scratch worktree). Quality gates
-   against that same pre-port binary: `--validate-prefill 64` and `512` are
-   bit-identical (rmse 0.684315 / 0.784478, cosine 0.974165 / 0.977355, max
-   3.60681 / 4.63813 on both), and the greedy haiku is byte-identical apart
-   from the `[Model Load]` line. Note the validate-prefill numbers sit below
-   the CLI's own 0.979 cosine gate on *both* binaries, i.e. pre-existing and
-   not this port; they do not match the 0.39 / 0.99 recorded for earlier
-   commits, so that gap is still unexplained.
 2. `[x]` **`eb1d52e` #894 one-launch decode HC mixer** — `HcMixQ8Fused` runs a
    decode batch's combine + Q8_0 down/up + SiLU + epilogue in one launch
    (1–8 rows): mixer T1 47.8→44.5 µs, AR decode 28.8→29.7 (+3%), C4 MTP wall
@@ -2069,28 +2042,6 @@ never triaged:
    2 reps, temp 0): neutral elsewhere; tg128 @ d16384 31.71 +/- 1.75 ->
    32.85 +/- 0.01 tok/s (+3.6%, variance collapsed), matching the skipped
    compaction walk on budget-crossing decode batches.
-4. `[x]` **`538e2fd7` #758 item 3 side-stream overlaps** — tried and rejected
-   (2026-11-02). Ported upstream tip's post-gate design by hand: a
-   `side_stream_` with `side_start_`/`side_done_` events, `JoinSide()` plus a
-   `JoinGuard` so every exit orders the main stream, the shared expert (Q8_0
-   only) forked onto it beside the routed experts, and the SSM projection's Z
-   rows launched as a second disjoint row-tile grid on it (new trailing
-   `first_row_tile` on `DenseF16GEMMKernel`, `z_stream`/`z_start` on
-   `DenseF16SsmGemm`; the fork's `#ifdef GUFO_NPU` paths keep the main stream
-   and the existing NPU tail logic). Gates passed: `--validate-prefill 64` and
-   `512` bit-identical (0.684315 / 0.784478), greedy haiku byte-identical
-   apart from `[Model Load]`. Perf did not: same-session A/B against the
-   pre-port binary (UD-Q4_K_XL, 2 reps, temp 0) gave pp512 1,224.61 ± 29.13 ->
-   1,172.69 ± 36.54, pp2048 1,759.11 ± 6.08 -> 1,731.11 ± 13.77, pp16384
-   1,718.37 ± 1.11 -> 1,710.11 ± 0.83, tg64 34.74 ± 0.28 -> 34.38 ± 1.19
-   (decode runs neither overlap, so that is noise). Halves measured
-   separately: shared-expert overlap alone pp512 1,191.27 / pp2048 1,740.95 /
-   pp16384 1,705.13; Z split alone 1,224.89 / 1,743.29 / 1,710.08. Neither
-   half wins anywhere, so the port was reverted. Upstream's +3.3% pp512 did
-   not carry over: #890 already made the routed prefill experts
-   register-resident, so the shared expert no longer fills a bandwidth stall
-   there, and both GEMMs are compute bound on the same CUs — a second stream
-   only adds launch and tail overhead on this unified-memory part.
 
 ### Not applicable (verified against the fork)
 
@@ -2118,9 +2069,12 @@ never triaged:
 
 ### Conditional (port only if that workload matters on this host)
 
-- `2a9dd9c` #884 read Q8_0 PLE n-gram tables — 74 lines incl. test; fork
-  `ngram.cpp` still expects F16/F32 tables. Only helps GGUFs exported with
-  Q8_0 n-gram tables (memory, load time).
+- `[x]` **`2a9dd9c` #884 read Q8_0 PLE n-gram tables** — ported 2026-11-06 for
+  the Dynamic v3.1 `engram/` tables and the Q8_0 table bundled by UD-Q5_K_XL
+  and UD-Q6_K_XL. `ngram.cpp` takes `kQ8_0` (32-value/34-byte blocks) and
+  decodes it through `quant::DequantizeQ8_0`; the `weights.cpp` binding
+  whitelists it. Gate: `qwen38_flash_next_ngram_test` passes with a synthetic
+  Q8_0 table; the end-to-end run needs a staged UD-Q5_K_XL/UD-Q6_K_XL.
 - DS4: `bdf800d` #897 decode perf + top-p + unaligned resumed prefill (large,
   deferred as with #874: no DS4 GGUF on this host, byte-identity gate cannot
   run); `b6336a3` #946 default served ctx to GGUF native length (small fix);
@@ -2128,4 +2082,82 @@ never triaged:
 - `6ab4569` #915 `usage.completion_tokens_details.reasoning_tokens` — small
   serve feature if chat clients need it.
 
-Next sweep from `9b3b1f4`.
+## Upstream sweep 2026-11-03: `9b3b1f4..56ed8f4d` (8 commits)
+
+- `[x]` **`67dd6354` #950 widen BF16 HC inject rows to F32 + keep the mixer's
+  F32 rows beside a separate inject projection** — ported 2026-11-03. The
+  fork's `CopyF32` was upstream's pre-fix shape, so a GGUF storing
+  `hc_*_inject` as BF16 was uploaded as 16-bit rows the fused F32 inject
+  kernel read as floats, and on the wide HC route a separate 16-bit inject
+  projection shared the half staging buffer with the mixed row while
+  `no_f32` dropped its F32 copy. Port: `HcInjectUploadFor`/`WidenBF16` in
+  `device_model.hpp`, `CopyF32` switch + `UploadWidened` (host-side
+  `bits << 16`, exact, `CopyQ6KAsQ8_0`-style hipMalloc/hipMemcpy bookkeeping)
+  in `device_model.cpp`, and the `separate_inject`/`no_f32` hunk in
+  `Executor::HcMix`. Test: `hc_route_ops` now runs a BF16-inject chain
+  (`InjectRows`, `CheckInjectLogits` double reference). Gates:
+  `qwen38_flash_next_hc_route_ops_test` passes on gfx1151 — F32 routes 1619/
+  1549 unchanged, BF16 1619 exact, 0 logits beyond the 2^-10 bound; no
+  end-to-end A/B run: the served UD-Q4_K_XL's inject rows are F32, so both
+  changed branches are dead code for it (the executor hunk is inert while
+  `fused_inject` holds).
+- `[ ]` **`96c9a0f5` #961 verify long prompt-lookup copies in one wide pass**
+  — the big perf item, not yet ported. Upstream measured downstream (a fork
+  like this one): 2,222-token Python rename greedy 124.1 → 187.9 tok/s with
+  verifications 280 → 53; docstrings 122 → 187, return hints 124 → 194,
+  1,675-token C++ header 124 → 186; SEARCH/REPLACE 106 → 120; prose and
+  8-way concurrent unchanged; every greedy output byte-identical. ~390
+  production lines (`Executor::ForwardWide`, `WideSegment` rollback rows,
+  `KeepHiddenRow`, `batch.cpp` segment walk, `engine.cpp` copy-streak width
+  rule, `runner.cpp` memory-narrowing loop) + a 457-line
+  `wide_verification_test`. Fork plan is greedy-only (the fork never ported
+  `CanCompactMtpVerification`/`SampledMtpCandidates`; sampled requests keep
+  today's width), and `Tuning::recorded_rollback` must be bypassed or keyed
+  per segment for wide rollbacks because the captured graph's source
+  pointers differ per segment at the same `keep`. Costs ~270 MiB per segment
+  past the first (1.9 GiB at 64 rows), lazily allocated and counted in
+  `DeferredScratchBytes`. Port on a clean executor tree (the working tree
+  currently reverts #890).
+- Not applicable: `56ed8f4d` #990 (IQ4 small-batch stepping — the Qwen 27B
+  path; the fork has `src/models/qwen/hip/kernels/small_batch_wave64.hip` to
+  map it onto, but no 27B GGUF on this host), `49eeada6` #988 (Qwen27B
+  DFlash2 draft head, same gate problem as #874), `159f2b84` #984 and
+  `6b583876` #983 (TTS features/fixes), `108ade27` #981 (nix CI),
+  `9bd24d26` #957 (serve: drops API-key auth — the fork's auth is opt-in;
+  `GET /` health and model aliases in every modality are 10-line
+  conveniences if clients ever need them).
+
+Next sweep from `0fb50ce4`.
+
+## Upstream sweep 2026-11-07 (`56ed8f4d..0fb50ce4`, v0.29–0.31)
+
+- Port candidate (perf): `80786f73` #1048 overlaps the shared expert with
+  routed experts on decode (`n_tokens <= kVecBatch`), extending #758's
+  side-stream machinery (`side_start_/side_done_/side_pending_`, fork/join
+  around `RunMoE`). The fork has none of #758 item 3 (`side_stream_` count 0
+  in executor), so the port = `538e2fd7` #758 side streams (doc measured
+  +3.3% pp512, neutral pp2048, +0.4% pp4096 upstream) **plus** #1048's decode
+  fork/join (adds `capturing_` guard for graph-record membership). Must port on
+  a clean executor tree (HC routes / NPU divergence) and A/B decode+prefill.
+- Port candidate (fix, trivial): `805c9421` #993 counts the draft block's
+  hidden row in `SessionBytes` (`max(max_speculative, max_copy_rows) + 1`
+  rows × HcDim). Pure accounting arithmetic, perf-neutral; port alongside the
+  next executor change.
+- Verify-then-port (fix): `186a507d` #1016 ends capacity-limited prefill steps
+  on a selection block (`StepTokens` clamps `count -= (offset+count) % ratio`).
+  The fork's step sizing in `engine.cpp` (Prefill loop, ~line 841) has no
+  alignment clamp; confirm the misaligned-frontier bug exists in the fork's
+  executor/batch walk before porting. Host arithmetic only, perf-neutral.
+- Maybe (fix): `118b7c63` #1021 GGUF tensorless split shards (10 lines in
+  `gguf_reader.cpp`, open path only) — port only if multi-shard GGUFs are
+  served here. `b7cf081d` #1041 probe expert-format gate rides the extension
+  framework the fork lacks; equivalent weight-load check in `weights.cpp`
+  only if unsupported expert formats are a real risk.
+- Not applicable: `f07fd2fe` (grammar), `de29d6a7`/`0f251d4a`/`da04ba52`/
+  `1175eebe` (no strict JSON-schema validator in fork), `0d12f7b7` (component
+  cache), `ce617610` (no vision sidecar), `e28fef40` (YaRN, rejected with
+  #854), `0e2cab6c`/`800eb68d`/`211dba49`/`61c0de89`/`794972d6` (ds4, no
+  weights), `1c75887b` (K-quant Qwen27B, no GGUF — same gate as #990),
+  `c2292921` (Rust PNG dep), `5d2bf02f` (upstream test-only), extension
+  framework / cache migration / release-CI commits (architecture the fork
+  does not share).

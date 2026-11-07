@@ -367,6 +367,10 @@ Executor::~Executor() {
     (void)ngram_->WaitRead();
   }
   (void)hipFree(batch_logits_);
+  (void)hipFree(wide_controls_);
+  for (float* p : wide_allocations_) {
+    (void)hipFree(p);
+  }
   (void)hipFree(verification_penalties_);
   (void)hipHostFree(batch_gdn_host_);
   (void)hipHostFree(batch_controls_);
@@ -830,9 +834,13 @@ std::unique_ptr<Session> Executor::CreateSession(core::SessionMode mode,
   }
   s->control_ = Alloc<Session::Control>(a, 1, error_msg, &s->allocated_bytes_);
   if (s->mtp_enabled_) {
-    s->mtp_.target_hidden = Alloc<float>(
-        a, static_cast<std::size_t>(options_.max_speculative) * c.HcDim(),
-        error_msg, &s->allocated_bytes_);
+    // Wide copy verification keeps every row for the draft catch-up.
+    s->mtp_.target_hidden =
+        Alloc<float>(a,
+                     static_cast<std::size_t>(
+                         std::max(options_.max_speculative, max_copy_rows())) *
+                         c.HcDim(),
+                     error_msg, &s->allocated_bytes_);
     s->mtp_.k_cache =
         Alloc<__half>(a, static_cast<std::size_t>(max_context) * kv_row,
                       error_msg, &s->allocated_bytes_);
@@ -986,6 +994,85 @@ bool Executor::EnsureRollback(Session& session, std::uint32_t depth,
   return true;
 }
 
+std::size_t Executor::WideSegmentFloats() const {
+  const auto& c = config();
+  const std::size_t conv =
+      std::size_t{c.ssm_conv_kernel - 1} * c.SsmConvChannels();
+  const std::size_t full = GdnRollbackRowFloats(
+      0, c.ssm_num_k_heads, c.ssm_num_v_heads, c.ssm_head_dim);
+  const std::size_t ple =
+      c.ple_layer >= 0 ? std::size_t{c.PleConvHistory()} * c.HcDim() : 0;
+  constexpr std::uint32_t kRows =
+      static_cast<std::uint32_t>(sizeof(RollbackRows::rows) / sizeof(float*));
+  std::size_t floats = ple * (kRows + 1);
+  for (std::uint32_t il = 0; il < c.num_layers; ++il) {
+    if (!c.IsLinearLayer(il))
+      continue;
+    floats += conv * (kRows + 1) + full;
+    for (std::uint32_t row = 0; row < kRows; ++row)
+      floats += GdnRollbackRowFloats(row, c.ssm_num_k_heads,
+                                     c.ssm_num_v_heads, c.ssm_head_dim);
+  }
+  return floats;
+}
+
+bool Executor::EnsureWideSegments(std::uint32_t segments,
+                                  std::string* error_msg) const {
+  if (wide_controls_ == nullptr &&
+      !Check(hipMalloc(&wide_controls_, std::size_t{kWideRows / 8} *
+                                            sizeof(Session::Control)),
+             "wide verification controls", error_msg))
+    return false;
+  const auto& c = config();
+  const std::size_t conv =
+      std::size_t{c.ssm_conv_kernel - 1} * c.SsmConvChannels();
+  const std::size_t full = GdnRollbackRowFloats(
+      0, c.ssm_num_k_heads, c.ssm_num_v_heads, c.ssm_head_dim);
+  const std::size_t ple =
+      c.ple_layer >= 0 ? std::size_t{c.PleConvHistory()} * c.HcDim() : 0;
+  constexpr std::uint32_t kRows =
+      static_cast<std::uint32_t>(sizeof(RollbackRows::rows) / sizeof(float*));
+  while (wide_segments_.size() < segments) {
+    const std::size_t floats = WideSegmentFloats();
+    float* allocation = nullptr;
+    if (!Check(hipMalloc(&allocation, floats * sizeof(float)),
+               "wide rollback allocation", error_msg))
+      return false;
+    wide_allocations_.push_back(allocation);
+    WideSegment seg;
+    seg.conv.resize(c.num_layers);
+    seg.state.resize(c.num_layers);
+    seg.conv_start.resize(c.num_layers, nullptr);
+    seg.state_start.resize(c.num_layers, nullptr);
+    auto* next = allocation;
+    for (std::uint32_t il = 0; il < c.num_layers; ++il) {
+      if (!c.IsLinearLayer(il))
+        continue;
+      seg.conv_start[il] = next;
+      next += conv;
+      seg.state_start[il] = next;
+      next += full;
+      for (std::uint32_t row = 0; row < kRows; ++row) {
+        seg.conv[il].rows[row] = next;
+        next += conv;
+        seg.state[il].rows[row] = next;
+        next += GdnRollbackRowFloats(row, c.ssm_num_k_heads,
+                                     c.ssm_num_v_heads, c.ssm_head_dim);
+      }
+    }
+    if (ple != 0) {
+      seg.ple_start = next;
+      next += ple;
+      for (std::uint32_t row = 0; row < kRows; ++row) {
+        seg.ple.rows[row] = next;
+        next += ple;
+      }
+    }
+    wide_segments_.push_back(std::move(seg));
+  }
+  return true;
+}
+
 static_assert(kNpuRetryRegionsPerLaunch == kCopyRegionsPerLaunch);
 
 bool Executor::CopyNpuRetryState(Session& session, bool save,
@@ -1123,8 +1210,9 @@ std::size_t Executor::SessionBytes(
          attention * (kv + index) + sizeof(Session::Control) +
          (mode == core::SessionMode::kSpeculative
               ? kv + index +
-                    std::size_t{options_.max_speculative + 1} * c.HcDim() *
-                        sizeof(float) +
+                    std::size_t{std::max(options_.max_speculative + 1,
+                                         max_copy_rows())} *
+                        c.HcDim() * sizeof(float) +
                     (model_->draft_output().empty()
                          ? 0
                          : std::size_t{kMtpDraftExtraRows} *
@@ -1141,6 +1229,11 @@ std::size_t Executor::DeferredScratchBytes() const {
                                 std::min(8U, options_.max_logit_rows) *
                                 c.vocab_size * sizeof(float)
                           : 0;
+  // Rollback rows of a wide copy verification's later segments.
+  const std::size_t wide_segments = max_copy_rows() / 8;
+  if (wide_segments > 1 + wide_segments_.size())
+    bytes += (wide_segments - 1 - wide_segments_.size()) *
+             WideSegmentFloats() * sizeof(float);
   return bytes;
 }
 
@@ -1429,8 +1522,10 @@ bool Executor::RouteHints(std::uint32_t n_tokens,
   // that download while the shared expert continues on the same stream.
   const Config& c = config();
   routed_max_rows_ = 0;
-  routed_n_tiles_ = 0;
-  routed_wide_tiles_ = 0;
+  routed_64_tiles_ = 0;
+  routed_pair_tiles_ = 0;
+  routed_pair_offset_ = 0;
+  routed_pair_rows_ = 64;
   if (!ExpertMatrixRows(n_tokens)) {
     return true;
   }
@@ -1439,32 +1534,47 @@ bool Executor::RouteHints(std::uint32_t n_tokens,
   }
   // The F16 expert GEMM launches one block per (expert, row tile of its
   // 16-padded bucket): the map is built here and uploaded ahead of the
-  // launches on the same stream. Tile heights are multiples of 16, so a
-  // bucket's tile count follows from its unpadded rows.
+  // launches on the same stream.
   std::uint32_t max_rows = 0;
   std::uint32_t n_tiles = 0;
   routed_tile_rows_ = RoutedTileRows(
       static_cast<std::size_t>(n_tokens) * c.num_experts_used, c);
   for (std::uint32_t e = 0; e < c.num_experts; ++e) {
+    const std::uint32_t padded = (counts_host_[e] + 15u) / 16u * 16u;
     max_rows = std::max(max_rows, counts_host_[e]);
+    for (std::uint32_t j = 0;
+         j < (padded + routed_tile_rows_ - 1) / routed_tile_rows_; ++j) {
+      tiles_host_[n_tiles++] = static_cast<std::int32_t>(e | (j << 16));
+    }
   }
   routed_max_rows_ = std::max<std::uint32_t>(1, max_rows);
-  const auto append = [&](std::uint32_t tile_rows) {
+  routed_n_tiles_ = n_tiles;
+  // Append the 64-token map for gate/up and eligible down projections.
+  // Prefill expert buckets also get a 128-token gate/up map: it amortizes
+  // weight decoding, while short buckets retain the cheaper 64-token tile.
+  if (WidePrefill(n_tokens)) {
     for (std::uint32_t e = 0; e < c.num_experts; ++e) {
-      for (std::uint32_t j = 0;
-           j < (counts_host_[e] + tile_rows - 1) / tile_rows; ++j) {
+      const std::uint32_t padded = (counts_host_[e] + 15u) / 16u * 16u;
+      for (std::uint32_t j = 0; j < (padded + 63u) / 64u; ++j)
         tiles_host_[n_tiles++] = static_cast<std::int32_t>(e | (j << 16));
+    }
+    routed_64_tiles_ = n_tiles - routed_n_tiles_;
+    routed_pair_offset_ = routed_n_tiles_;
+    routed_pair_tiles_ = routed_64_tiles_;
+    std::uint32_t tiles_128 = 0;
+    for (std::uint32_t e = 0; e < c.num_experts; ++e) {
+      tiles_128 += (counts_host_[e] + 127u) / 128u;
+    }
+    if (tiles_128 * 4 <= routed_64_tiles_ * 3) {
+      routed_pair_rows_ = 128;
+      routed_pair_offset_ = n_tiles;
+      routed_pair_tiles_ = tiles_128;
+      for (std::uint32_t e = 0; e < c.num_experts; ++e) {
+        for (std::uint32_t j = 0; j < (counts_host_[e] + 127u) / 128u; ++j) {
+          tiles_host_[n_tiles++] = static_cast<std::int32_t>(e | (j << 16));
+        }
       }
     }
-  };
-  if (WidePrefill(n_tokens)) {
-    // Prefill batches: one map of 128-token tiles serves the paired gate/up
-    // and the down projections.
-    append(128);
-    routed_wide_tiles_ = n_tiles;
-  } else {
-    append(routed_tile_rows_);
-    routed_n_tiles_ = n_tiles;
   }
   routed_tile_cols_ = qfn_mmq_routed_tile_cols_for_counts(
       counts_host_, static_cast<int>(c.num_experts));
@@ -1810,10 +1920,13 @@ bool Executor::HcMix(const DeviceMixer& m, const float* res, bool normed,
                            inject_fused_ != nullptr &&
                            inject_fused_ == m.inject.f32();
   inject_fused_ = nullptr;
-  // A separate inject projection can overwrite the cached half input. Keep
-  // the full mixed row available for the following projection in that case.
-  half_only =
-      half_only && (inject == nullptr || m.inject.empty() || fused_inject);
+  // A separate inject projection (BF16 or F16 rows) narrows its own input
+  // into the cached half buffer. Keep the full mixed row available for the
+  // projections that follow in that case: they narrow it again.
+  const bool separate_inject =
+      inject != nullptr && !m.inject.empty() && !fused_inject;
+  half_only = half_only && !separate_inject;
+  no_f32 = no_f32 && !separate_inject;
   const float* xn = s_.xn;
   const bool vectorized =
       xn_half_ ||
@@ -2673,12 +2786,12 @@ bool Executor::MoeExperts(const DeviceLayer& l, const float* x, float* out,
                                      ? WeightType::kQ5_K
                                      : WeightType::kQ4_K;
     const bool gated_ok =
-        routed_wide_tiles_ != 0
-            ? RoutedGatedF16Gemm(l.ffn_gate_exps.data, l.ffn_up_exps.data,
-                                 gate_type, x_half, s_.routed_tiles,
-                                 routed_wide_tiles_, s_.routed_bounds,
-                                 s_.rows_token, s_.rows_slot, up_half,
-                                 c.expert_ff, c.hidden_size, stream_)
+        routed_64_tiles_ != 0
+            ? RoutedGatedF16Gemm(
+                  l.ffn_gate_exps.data, l.ffn_up_exps.data, gate_type, x_half,
+                  s_.routed_tiles + routed_pair_offset_, routed_pair_tiles_,
+                  routed_pair_rows_, s_.routed_bounds, s_.rows_token,
+                  s_.rows_slot, up_half, c.expert_ff, c.hidden_size, stream_)
             : (RoutedF16Gemm(l.ffn_gate_exps.data, gate_type, x_half,
                              s_.routed_tiles, routed_n_tiles_,
                              routed_tile_rows_, s_.routed_bounds, s_.rows_token,
@@ -2696,15 +2809,15 @@ bool Executor::MoeExperts(const DeviceLayer& l, const float* x, float* out,
     const WeightType down_type = l.ffn_down_exps.type == GgmlType::kQ8_0
                                      ? WeightType::kQ8_0
                                      : WeightType::kQ5_1;
-    // Prefill takes the gate/up map's 128-token tiles: each wave decodes its
-    // rows' weights once for up to 128 tokens.
-    const bool wide_down = routed_wide_tiles_ != 0;
+    // Prefill takes the 64-token down tiles: they decode each expert's
+    // weights over more rows, also where narrower tiles would be fewer.
+    const bool wide_down = routed_64_tiles_ != 0;
     // The down projection's rows are F16 too: the epilogue reads half the
     // bytes of the largest routed intermediate.
     if (!RoutedF16Gemm(l.ffn_down_exps.data, down_type, up_half,
-                       s_.routed_tiles,
-                       wide_down ? routed_wide_tiles_ : routed_n_tiles_,
-                       wide_down ? 128 : routed_tile_rows_, s_.routed_bounds,
+                       s_.routed_tiles + (wide_down ? routed_n_tiles_ : 0),
+                       wide_down ? routed_64_tiles_ : routed_n_tiles_,
+                       wide_down ? 64 : routed_tile_rows_, s_.routed_bounds,
                        s_.rows_slot, s_.rows_slot, nullptr, nullptr,
                        reinterpret_cast<__half*>(s_.down_e), c.hidden_size,
                        c.expert_ff, stream_)) {
@@ -2741,6 +2854,23 @@ bool Executor::MoeExperts(const DeviceLayer& l, const float* x, float* out,
                 c.num_experts + 1, out, n_tokens, used, c.hidden_size, stream_);
   }
   return true;
+}
+
+bool Executor::KeepHiddenRow(Session& session, std::uint32_t row,
+                             std::string* error_msg) const {
+  if (!session.mtp_enabled_ || session.owner_ != this ||
+      row >= std::max(options_.max_speculative, max_copy_rows())) {
+    AssignError(error_msg, "invalid kept trunk hidden row");
+    return false;
+  }
+  if (row == 0)
+    return true;
+  const auto dim = std::size_t{config().HcDim()};
+  return Check(
+      hipMemcpyAsync(session.mtp_.target_hidden,
+                     session.mtp_.target_hidden + row * dim,
+                     dim * sizeof(float), hipMemcpyDeviceToDevice, stream_),
+      "kept hidden row", error_msg);
 }
 
 bool Executor::CopyTrunkHidden(const Session& session, std::span<float> hidden,
@@ -2914,6 +3044,7 @@ bool Executor::Forward(Session& session, std::span<const std::int32_t> tokens,
   const bool speculative = mode == ForwardMode::kVerify;
   PrefillPhase phase(mode == ForwardMode::kPrefill);
   selected_logits_ = nullptr;
+  wide_rows_ = 0;
   DropReadyQ8();
   const Config& c = config();
   const auto n = static_cast<std::uint32_t>(tokens.size());
@@ -3354,36 +3485,77 @@ bool Executor::Rollback(Session& session, std::uint32_t keep,
     const std::size_t conv_elems =
         static_cast<std::size_t>(c.ssm_conv_kernel - 1) * c.SsmConvChannels();
     const std::size_t slot = keep - 1;
+    // A wide verification (ForwardWide) ran consecutive segments of at most
+    // eight rows. Cut back within the segment holding the last kept row;
+    // keeping a whole segment restores the next one's starting state.
+    constexpr std::uint32_t kSegment =
+        static_cast<std::uint32_t>(sizeof(RollbackRows::rows) /
+                                   sizeof(float*)) +
+        1;
+    const std::uint32_t segment = (keep - 1) / kSegment;
+    const std::uint32_t local = keep - segment * kSegment;
+    const bool whole = local == std::min(kSegment, n - segment * kSegment);
+    if ((segment != 0 || whole) &&
+        (n <= kSegment || wide_segments_.size() < (n - 1) / kSegment)) {
+      AssignError(error_msg, "rollback outside the wide verification");
+      return false;
+    }
+    const WideSegment* start = whole ? &wide_segments_[segment] : nullptr;
+    const WideSegment* rows =
+        !whole && segment != 0 ? &wide_segments_[segment - 1] : nullptr;
+    const std::size_t wide_slot = local - 1;
     const auto restore = [&] {
-      for (auto& l : session.linear_) {
+      for (std::size_t il = 0; il < session.linear_.size(); ++il) {
+        auto& l = session.linear_[il];
         if (l.state == nullptr) {
           continue;
         }
-        RestoreGdnState(l.state, l.state_snapshots, keep, c.ssm_num_k_heads,
+        if (start != nullptr) {
+          if (!CopyFloats(start->state_start[il], l.state,
+                          GdnRollbackRowFloats(0, c.ssm_num_k_heads,
+                                               c.ssm_num_v_heads,
+                                               c.ssm_head_dim),
+                          stream_, "state rollback", error_msg) ||
+              !CopyFloats(start->conv_start[il], l.conv_state, conv_elems,
+                          stream_, "conv rollback", error_msg)) {
+            return false;
+          }
+          continue;
+        }
+        const auto& state_rows = rows ? rows->state[il] : l.state_snapshots;
+        const auto& conv_rows = rows ? rows->conv[il] : l.conv_snapshots;
+        RestoreGdnState(l.state, state_rows, local, c.ssm_num_k_heads,
                         c.ssm_num_v_heads, stream_);
         if (!Check(hipGetLastError(), "state rollback", error_msg) ||
-            !CopyFloats(l.conv_snapshots.rows[slot], l.conv_state, conv_elems,
+            !CopyFloats(conv_rows.rows[wide_slot], l.conv_state, conv_elems,
                         stream_, "conv rollback", error_msg)) {
           return false;
         }
       }
-      return session.ple_history_ == nullptr ||
-             CopyFloats(
-                 session.ple_snapshots_.rows[slot], session.ple_history_,
-                 static_cast<std::size_t>(c.PleConvHistory()) * c.HcDim(),
-                 stream_, "PLE rollback", error_msg);
+      if (session.ple_history_ == nullptr) {
+        return true;
+      }
+      const float* source = start  ? start->ple_start
+                            : rows ? rows->ple.rows[wide_slot]
+                                   : session.ple_snapshots_.rows[slot];
+      return CopyFloats(source, session.ple_history_,
+                        static_cast<std::size_t>(c.PleConvHistory()) *
+                            c.HcDim(),
+                        stream_, "PLE rollback", error_msg);
     };
     // Tuning::recorded_rollback: ~2 operations per linear layer issued one
     // by one cost ~9 ms on Windows, so they replay as one graph per kept
     // length (the snapshot rows they read stay put until TrimRollback drops
-    // such graphs).
-    if (Tune().recorded_rollback ? !Run(session, kRollbackKey | keep, true,
-                                        restore, error_msg, false)
-                                 : !restore()) {
+    // such graphs). A wide pass reads executor-owned rows that differ per
+    // width at the same keep, so it always restores inline.
+    if ((start == nullptr && rows == nullptr && Tune().recorded_rollback)
+            ? !Run(session, kRollbackKey | keep, true, restore, error_msg,
+                   false)
+            : !restore()) {
       return false;
     }
     if (session.ple_history_ != nullptr) {
-      session.ngram_ = session.ngram_snapshots_[slot];
+      session.ngram_ = session.ngram_snapshots_[keep - 1];
     }
     session.position_ = session.spec_base_ + keep;
     // Pooled block keys past the kept prefix are stale; they are rebuilt
@@ -3783,6 +3955,25 @@ bool Executor::GreedyMtpPredictions(std::span<ArgmaxCandidate> predictions,
                                     std::span<const std::int32_t> drafts,
                                     std::string* error_msg) const {
   const auto rows = predictions.size();
+  if (rows > 7 && rows < wide_rows_ && drafts.size() == rows &&
+      selected_logits_ != nullptr) {
+    // A wide copy verification: rows of at most seven at a time, each with
+    // the penalty history of the drafts before it.
+    const float* logits = selected_logits_;
+    auto tentative = sampler;
+    bool ok = true;
+    for (std::size_t first = 0; ok && first < rows; first += 7) {
+      const auto count = std::min<std::size_t>(7, rows - first);
+      selected_logits_ = logits + first * config().vocab_size;
+      ok = GreedyMtpPredictions(predictions.subspan(first, count),
+                                tentative, drafts.subspan(first, count),
+                                error_msg);
+      for (std::size_t i = first; ok && i < first + count; ++i)
+        tentative.Accept(static_cast<sampling::TokenId>(drafts[i]));
+    }
+    selected_logits_ = logits;
+    return ok;
+  }
   if (rows == 0 || rows > options_.max_logit_rows || rows > 7 ||
       drafts.size() != rows || s_.mtp_ids == nullptr) {
     AssignError(error_msg, "invalid greedy MTP verification request");
@@ -3935,7 +4126,9 @@ bool Executor::MtpForward(Session& session,
   if (n == 0 || n > options_.max_batch || (hidden_row < 0 && n != 1) ||
       (hidden_row >= 0 &&
        static_cast<std::uint32_t>(hidden_row) + n >
-           (hidden_source ? options_.max_batch : options_.max_speculative))) {
+           (hidden_source ? options_.max_batch
+                          : std::max(options_.max_speculative,
+                                     max_copy_rows())))) {
     AssignError(error_msg, "MTP batch outside the kept hidden rows");
     return false;
   }

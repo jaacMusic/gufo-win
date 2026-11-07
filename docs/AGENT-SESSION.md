@@ -187,61 +187,11 @@ records only make sense behind a byte budget, which their defaults do
    (`1b8ad798`, #773) was reverted the same day, so keep the fake-runner test
    with any change here.
 6. **Leader/follower waiting** for fan-out: subagents started from one system
-   prompt used to each prefill the shared prefix, and prefill is serial, so the
-   copies cost their sum. `ShareQueuedPrefixes` asked a resident prefill to
-   stop at the shared boundary, but admission let every sibling in before that
-   prefill started, so only queue-backed runs benefited. `Admit` now holds a
-   queued request that shares at least 512 tokens with the resident prefill
-   until that prefill passes the shared position. Measured with four
-   simultaneous requests sharing one system prompt: at 2,383 tokens total wall
-   8.9–9.3 s → 3.3–3.4 s and slowest TTFT 8.2–8.6 s → 2.3–2.4 s; at 11,734
-   tokens total 32.0 s → 9.0 s and slowest TTFT 31.6 s → 7.9 s, with three of
-   four requests restoring 2,368 and 11,719 tokens. A lone cold request is
-   unchanged (1,681 → 1,550 ms TTFT). The fake-runner scheduler test covers
-   the hold.
-7. **In-pass boundary capture** — measured on 2026-11-02 and closed as not
-   worth it. Captures already run on a worker thread, so the whole cost it
-   would remove is `cache_snapshot_ms` from `usage.gufo.metrics`: 94.8 ms of a
-   4,482 ms TTFT at 7,421 prompt tokens, 134.5 of 7,000 at 11,733, 167.6 of
-   11,502 at 18,509 — 1.5–2.1% of a cold TTFT, and nothing at all on a reused
-   prompt (53 ms TTFT, 29.5 ms restore). The port would re-add the
-   `PrefillThrough`/`SyncThrough` capture stack this fork deliberately dropped
-   when porting #470 (`docs/LINUX-PERF-PORT.md`), and its disk half is inert
-   with `--cache-disk` off. Revisit only if capture ever exceeds a few percent
-   of a cold TTFT.
-8. **Production flags measured on 2026-11-02.** The fan-out hold was re-measured
-   at `--sessions 1 --context 131072`, the configuration actually served: four
-   simultaneous requests sharing a 2,383-token prompt took 3.62/3.48/3.50 s
-   total without the hold and 3.70/3.63/3.46 s with it, both restoring 2,369
-   tokens for three of the four. With one execution slot the followers queue
-   behind the resident anyway, so `ShareQueuedPrefixes` already covers this
-   case; the hold only pays once capacity exceeds one. `--cache-disk` is the
-   larger lever and needs no code: a checkpoint restored across a restart cost
-   652 ms TTFT against 7,058 ms cold at 11,733 tokens (441 MB record, 354 ms
-   restore) and 813 ms against 11,237 ms at 18,509 tokens (628 MB, 505 ms
-   restore), while the cold request paid 0.02–0.5 ms to queue the write. Serve
-   with `--cache-disk <dir>` to keep the RAM cache across restarts.
-9. **Disk staging, not the flag, decides whether long prompts persist.** The
-   automatic staging limit is `min(capacity, 1 GiB, host budget / 4)`, and a
-   record larger than it is dropped with `event=disk_cache action=skipped
-   reason=staging_capacity`. On-disk records cost about 31 KB per token, so the
-   automatic 1 GiB stops at roughly 34k tokens: the 58,198-token prompts this
-   machine actually serves produce 1.72 GB records and were skipped on every
-   turn. `--cache-disk-staging-bytes 2147483648` stores a 30,191-token record
-   (948 MB) in 1.09 s, and after a restart it restores in 760 ms for 1,125 ms
-   TTFT against 18,386 ms cold, a 16x cut. Staging also bounds each disk read,
-   so it has to cover the largest prompt you expect to reuse.
-10. **Vision restores stay correct.** Two 155-token image prompts sharing one
-    text prefix, asked cold, warm, and after a restart: RAM restores took 12–28
-    ms and disk restores 100 ms, every answer matched its own image, and no
-    restore crossed images. The identity check rejects a shared text prefix
-    whose image differs.
-11. **A second session buys nothing.** At `--context 65536` four simultaneous
-    requests sharing a 2,383-token prompt took 3.15–3.27 s total with one
-    session and 3.04–3.21 s with two. Prefill is serial, so extra slots do not
-    overlap the pass; they only let a second request in early, and the hold
-    already makes that request restore instead of re-reading. The 2.7x seen at
-    `--sessions 4` came from the hold, not from the extra slots.
+   prompt currently each prefill the shared prefix, and prefill is serial, so
+   the copies cost their sum. Concurrent requests still re-prefill the shared
+   part; only the sequential sibling case above is served by RAM checkpoints.
+7. **In-pass boundary capture** last: it is a runner change (per-model state
+   borrowing) for roughly one prefill chunk per turn, not a scheduling win.
 
 ## Correction to the earlier Bubo verdict
 
