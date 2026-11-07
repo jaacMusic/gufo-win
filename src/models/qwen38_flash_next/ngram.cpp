@@ -79,9 +79,15 @@ std::unique_ptr<NgramTable> NgramTable::Open(
     int file_descriptor, std::uint64_t file_offset, std::uint64_t rows,
     std::uint32_t row_dim, core::GgmlType type, std::string* error_msg) {
   std::unique_ptr<NgramTable> t(new NgramTable());
-  const std::size_t block = type == core::GgmlType::kIQ4_NL ? 32 : 1;
-  const std::size_t block_bytes = type == core::GgmlType::kIQ4_NL ? 18 : 2;
-  if ((type != core::GgmlType::kIQ4_NL && type != core::GgmlType::kBF16) ||
+  // Unsloth swaps this table between BF16, Q8_0 and IQ4_NL (engram/ in the
+  // UD repo); Q8_0 is also what UD-Q5_K_XL and UD-Q6_K_XL bundle.
+  const bool block32 =
+      type == core::GgmlType::kIQ4_NL || type == core::GgmlType::kQ8_0;
+  const std::size_t block = block32 ? 32 : 1;
+  const std::size_t block_bytes =
+      type == core::GgmlType::kIQ4_NL ? 18 : (block32 ? 34 : 2);
+  if ((type != core::GgmlType::kIQ4_NL && type != core::GgmlType::kQ8_0 &&
+       type != core::GgmlType::kBF16) ||
       row_dim == 0 || row_dim % block != 0) {
     if (error_msg != nullptr) {
       *error_msg = "unsupported n-gram table format";
@@ -135,6 +141,8 @@ std::unique_ptr<NgramTable> NgramTable::Open(
 void NgramTable::DecodeRow(const std::uint8_t* src, float* dst) const {
   if (type_ == core::GgmlType::kIQ4_NL) {
     gufo::quant::DequantizeIQ4_NL(src, dst, row_dim_);
+  } else if (type_ == core::GgmlType::kQ8_0) {
+    gufo::quant::DequantizeQ8_0(src, dst, row_dim_);
   } else {
     for (std::uint32_t i = 0; i < row_dim_; ++i) {
       std::uint16_t bits = 0;

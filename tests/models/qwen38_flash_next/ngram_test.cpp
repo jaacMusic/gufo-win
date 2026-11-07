@@ -278,6 +278,56 @@ void TestQuantizedRows() {
   std::filesystem::remove(path);
 }
 
+// The Q8_0 tables that UD-Q5_K_XL, UD-Q6_K_XL and the engram swap ship must
+// decode with the same five-block geometry the production rows use.
+void TestQ8Rows() {
+  const auto path =
+      std::filesystem::temp_directory_path() / "qwen38_ngram_q8.bin";
+  constexpr std::uint32_t dim = 160;
+  constexpr std::uint32_t rows = 5;
+  constexpr std::uint64_t offset = 4096 + 90;
+  {
+    std::ofstream file(path, std::ios::binary);
+    file.seekp(offset);
+    for (std::uint32_t row = 0; row < rows; ++row) {
+      for (std::uint32_t block = 0; block < dim / 32; ++block) {
+        const std::uint16_t scale = 0x3800;  // 0.5, exact
+        file.write(reinterpret_cast<const char*>(&scale), sizeof(scale));
+        for (std::uint32_t i = 0; i < 32; ++i) {
+          file.put(static_cast<char>(static_cast<std::int8_t>(
+              static_cast<int>((row + block + i) % 32) - 16)));
+        }
+      }
+    }
+    Check(file.good(), "Q8_0 fixture written");
+  }
+  std::string error;
+  auto table =
+      OpenTable(path, offset, rows, dim, gufo::core::GgmlType::kQ8_0, &error);
+  Check(table != nullptr, error.c_str());
+  if (table) {
+    const auto gather = [&](std::span<const std::uint32_t> ids) {
+      std::vector<float> out(ids.size() * dim, -123.0F);
+      Check(table->Read(ids, out), "Q8_0 gather completes");
+      for (std::size_t i = 0; i < ids.size(); ++i) {
+        for (std::uint32_t col = 0; col < dim; ++col) {
+          const int q =
+              static_cast<int>((ids[i] + col / 32 + col % 32) % 32) - 16;
+          Check(out[i * dim + col] == 0.5F * static_cast<float>(q),
+                "Q8_0 exact decoded value");
+        }
+      }
+    };
+    const std::array<std::uint32_t, 5> warm{0, 4, 2, 4, 0};
+    gather(warm);
+    gather(warm);
+    const std::array<std::uint32_t, 3> mixed{4, 1, 3};
+    gather(mixed);
+  }
+  table.reset();
+  std::filesystem::remove(path);
+}
+
 // Widely spaced rows exercise cache eviction, including simultaneous readers
 // whose compressed rows map to the same bounded-cache slot.
 void TestDistantRows() {
@@ -371,6 +421,7 @@ int main() {
   TestHash();
   TestTable();
   TestQuantizedRows();
+  TestQ8Rows();
   TestDistantRows();
   if (failures != 0) {
     std::fprintf(stderr, "%d failures\n", failures);

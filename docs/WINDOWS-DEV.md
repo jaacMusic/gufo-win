@@ -60,6 +60,56 @@ Facts that bite:
 - Design and usage documentation: `docs\npu.md` plus the design notes inside
   the npu directory.
 
+## Model downloads
+
+`hf download` is not usable for a 100 GB pull on a slow link: each attempt
+writes a fresh `<blob>.<random>.incomplete` and deletes it when the transfer
+fails, so every restart begins at zero, and a `.locks` file left by a killed
+run blocks the next attempt until it is removed. `tools\windows\fetch-hf-shards.ps1`
+downloads the same files as independent byte ranges instead, so an interrupted
+run resumes from the chunks it already has.
+
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\windows\fetch-hf-shards.ps1 `
+  -Repo unsloth/Qwen3.8-Flash-Next-GGUF `
+  -Revision d96201194f103c906994f283f504209dc8d2a10c `
+  -Files 'UD-Q4_K_XL/*' 'MTP/*' 'mmproj-BF16.gguf' `
+  -Dest "$env:USERPROFILE\models\qwen38-flash-next-v31"
+```
+
+- `-Files` matches repo paths with `-like` wildcards; `mmproj-BF16.gguf` plus
+  the 4-part `UD-Q4_K_XL` set is the minimum for a bench run. `-Revision`
+  accepts a commit hash, tag or branch, so a repack never silently changes
+  under a resumed download.
+- `-Dest` is a plain directory, not the `hf` cache, and keeps the repo's
+  subdirectories (`UD-Q4_K_XL\...-00001-of-00004.gguf`, `MTP\...`). That layout
+  is what `run-flash-next.ps1 -Snapshot` expects. Sizes and SHA-256 digests are
+  read from the Hub API, so a finished file is verified before it gets its name.
+- Start it inside a Task Scheduler entry so it survives a closed terminal, a
+  killed child or a reboot: an exclusive lock file keeps it to one instance and
+  the next tick resumes the transfer.
+
+  ```
+  schtasks /create /tn gufo-fetch-ud /tr "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"C:\dev\gufo-win\tools\windows\fetch-hf-shards.ps1\" -Repo ... -Revision ... -Files ... -Dest ..." /sc minute /mo 5 /f
+  schtasks /run /tn gufo-fetch-ud
+  ```
+
+  A plain background `Start-Process` dies with the shell that launched it,
+  which is how one run sat idle for 17 hours.
+- Progress and errors land in `<Dest>\.parts\fetch.log`; the periodic line is
+  `HH:mm:ss  <file>: 31.6/46.3 GB  3.16 MB/s  queued=235`. It can stop
+  appending for a while without the transfer stopping — check the byte count in
+  `<Dest>\.parts\<file>\` before assuming a stall.
+- Each file is pulled as 64 MiB chunks by 3 workers. Raising `-Workers` does
+  not add throughput on an ~2 MB/s link (3 streams saturate it, 16 provoked the
+  CDN into leaving sockets open and silent) and the extra sockets only make the
+  watchdog busier.
+- Resume is per chunk: rerunning the same command refetches only missing or
+  short parts. Deleting `<Dest>\.parts\<file>\` retries that file from scratch,
+  which the script does on its own after a SHA-256 mismatch.
+- Assembling a 46 GB file reads every part once and hashes the result; expect a
+  few minutes at the end of each file with no visible progress.
+
 ## Quick benchmark
 
 Benchmarks use the production command line; no thinking switch exists.

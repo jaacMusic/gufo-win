@@ -12,13 +12,28 @@ Q6_K's, so the added rounding is small, but it is not bit-identical).
 `qwen38_flash_next_iq_experts_ops_test` checks those expert paths against a
 double-precision reference.
 
+UD-Q4_K_XL at revision `d9620119` (Dynamic v3.1) keeps
+`per_layer_token_embd.weight` in its own shard (`-00004-of-00004`), so a table
+from the repo's `engram/` folder can be swapped in without downloading the
+weights again. BF16, Q8_0 and IQ4_NL tables are read directly; Q5_1 tables are
+not. Stamp the replacement for the quant's slot with `engram/set_split.py`,
+rename it to that slot's file name, and start the model from shard 1 as usual.
+The bundled IQ4_NL table is 28.8 GB; the Q8_0 (54.4 GB) and BF16 (102.4 GB)
+alternatives cut its relative RMSE from 0.076 to 0.005 and 0.
+
+v3.1 is a repack of the `38bb39ee` weights, not a requant: greedy 256-token
+runs on both revisions are byte-identical, and same-binary pp2048/tg128
+benches at depths 0 and 16384 agree within 1%. Its shard 1 is metadata-only
+and ends at the GGUF header without alignment padding, which the reader only
+accepts since 2026-11-07 (`gguf_reader_test` covers it).
+
 [Benchmarks](BENCHMARKS.md) · [Quality](QUALITY.md) · [Experiments](EXPERIMENTS.md)
 
 ## Load and run
 
 ```sh
 nix develop -c hf download unsloth/Qwen3.8-Flash-Next-GGUF \
-  --revision 38bb39ee97821de2c9009abb7e93950eec396e66 \
+  --revision d96201194f103c906994f283f504209dc8d2a10c \
   --include "UD-Q4_K_XL/*" "MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf" "mmproj-BF16.gguf" \
   --local-dir models/qwen3.8-flash-next
 nix build
@@ -28,6 +43,10 @@ MTP=/path/to/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf
 ./result/bin/gufo serve llm --model "$MODEL" --mtp-model "$MTP" \
   --sessions 2 --context 32768
 ```
+
+On Windows, `tools\windows\fetch-hf-shards.ps1` pulls the same files in
+resumable chunks when `hf download` cannot finish the 100 GB pull; see
+[WINDOWS-DEV.md](../../WINDOWS-DEV.md#model-downloads).
 
 The loader discovers the remaining shards. `serve` selects MTP whenever
 `--mtp-model` is given, as it already does for DSpark with `--dspark-model`;

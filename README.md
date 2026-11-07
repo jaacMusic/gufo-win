@@ -96,7 +96,7 @@ Full guides: [model guide](docs/models/qwen3.8-flash-next/README.md) ·
 
 | Model | Inference modes | Hugging Face weights |
 | --- | --- | --- |
-| Qwen3.8 Flash-Next | Q4, images, AR, MTP | Unsloth [Q4_K_XL](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/tree/38bb39ee97821de2c9009abb7e93950eec396e66/UD-Q4_K_XL) · [MTP Q8_0](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/blob/38bb39ee97821de2c9009abb7e93950eec396e66/MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf) |
+| Qwen3.8 Flash-Next | Q4, images, AR, MTP | Unsloth [Q4_K_XL](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/tree/d96201194f103c906994f283f504209dc8d2a10c/UD-Q4_K_XL) · [MTP Q8_0](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/blob/d96201194f103c906994f283f504209dc8d2a10c/MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf) |
 
 A hybrid recurrent/QSA mixture-of-experts text/image model. Point the server
 at the first `UD-Q4_K_XL` shard and the loader discovers the rest; the MTP
