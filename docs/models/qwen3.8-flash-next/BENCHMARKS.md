@@ -86,7 +86,10 @@ within 1%, so the shared head is the right default.
 `gufo bench`, greedy, one process at a time (the 96 GB carve holds one Q4 model
 and its state). Unsloth `UD-Q4_K_XL` + shared-Q8_0 MTP, revision
 `38bb39ee97821de2c9009abb7e93950eec396e66`. Two timed repetitions after one
-untimed pass. Prefill and AR decode use an autoregressive session; MTP decode
+untimed pass. Re-measured on the re-pinned Dynamic v3.1 revision
+(`d9620119`) on November 7, 2026 (pp2048/tg128, depths 0 and 16,384, one
+repetition): pp 1609.5/1441.7, tg 35.5/33.0 — within single-run noise of
+the values below, as expected for a repack with identical quantization bytes. Prefill and AR decode use an autoregressive session; MTP decode
 uses adaptive MTP (7 draft tokens, minimum 1).
 
 The 256K row prefill is 262,143 tokens and decode depth is 262,015: the
