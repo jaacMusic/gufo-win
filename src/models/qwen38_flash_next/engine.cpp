@@ -374,6 +374,16 @@ std::uint32_t Model::PrefillCapacity() const noexcept {
   return std::min(options_.prefill_chunk_tokens, options_.max_context);
 }
 
+std::size_t Model::ClampPrefillStep(std::size_t offset, std::size_t count,
+                                    std::size_t remaining) const noexcept {
+  const std::size_t ratio =
+      std::max<std::uint32_t>(1, weights_->config.compress_ratio);
+  if (const auto over = (offset + count) % ratio;
+      count < remaining && count > over)
+    count -= over;
+  return count;
+}
+
 bool Model::HasMtp() const noexcept {
   return device_->has_mtp();
 }
@@ -839,7 +849,8 @@ bool Session::Feed(std::span<const std::int32_t> tokens, std::string* error_msg,
     // A lane takes whole 4096-token groups, so a chunk keeps the wider GPU
     // batching and the lane takes every group in it (up to four).
     const std::size_t room = std::min<std::size_t>(capacity, remaining);
-    const std::size_t n = npu_on && room > 4096 ? room - room % 4096 : room;
+    std::size_t n = npu_on && room > 4096 ? room - room % 4096 : room;
+    n = model_->ClampPrefillStep(off, n, remaining);
     const auto chunk = tokens.subspan(off, n);
     if (MtpEnabled() && !tokens_.empty() &&
         !DraftCatchUp(chunk[0], false, error_msg)) {
