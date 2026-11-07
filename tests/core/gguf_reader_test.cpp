@@ -372,6 +372,69 @@ void TestSplitGgufDiscovery() {
   std::filesystem::remove_all(temp_dir);
 }
 
+// Dynamic v3.1 puts no tensor data in shard 1, and that metadata-only shard is
+// the file users open.
+void TestSplitGgufMetadataOnlyFirstShard() {
+  const auto temp_dir =
+      std::filesystem::temp_directory_path() /
+      ("gufo-gguf-empty-first-" + std::to_string(static_cast<long>(getpid())));
+  std::filesystem::create_directories(temp_dir);
+  const auto first_path = temp_dir / "model-00001-of-00003.gguf";
+  const auto second_path = temp_dir / "model-00002-of-00003.gguf";
+  const auto third_path = temp_dir / "model-00003-of-00003.gguf";
+
+  GgufBuilder first;
+  first.AddMetadataString("general.architecture", "qwen38_flash_next");
+  first.AddMetadataUint32("split.no", 0);
+  first.AddMetadataUint32("split.count", 3);
+  first.AddMetadataInt32("split.tensors.count", 2);
+
+  GgufBuilder second;
+  second.AddMetadataUint32("split.no", 1);
+  second.AddMetadataUint32("split.count", 3);
+  second.AddMetadataInt32("split.tensors.count", 2);
+  second.AddTensor("token_embd.weight", {8, 4}, gufo::core::GgmlType::kBF16, 0);
+
+  GgufBuilder third;
+  third.AddMetadataUint32("split.no", 2);
+  third.AddMetadataUint32("split.count", 3);
+  third.AddMetadataInt32("split.tensors.count", 2);
+  third.AddTensor("per_layer_token_embd.weight", {160, 4},
+                  gufo::core::GgmlType::kIQ4_NL, 0);
+
+  WriteBinaryFile(first_path, first.Build(128));
+  WriteBinaryFile(second_path, second.Build(128));
+  WriteBinaryFile(third_path, third.Build(128));
+
+  std::string err;
+  const auto reader = gufo::core::GgufReader::OpenFile(first_path, &err);
+  Expect(reader != nullptr,
+         "Split reader opens the metadata-only shard: " + err);
+  if (reader) {
+    Expect(reader->GetTensorCount() == 2,
+           "metadata-only shard still merges every tensor");
+    Expect(reader->FindTensor("per_layer_token_embd.weight") != nullptr,
+           "table found in the last shard");
+    Expect(reader->GetMappedRegions().size() == 3,
+           "empty first shard keeps all three mapped regions");
+  }
+
+  // The shipped v3.1 shard 1 stops at the header, without alignment padding.
+  GgufBuilder bare;
+  bare.AddMetadataString("general.architecture", "qwen38_flash_next");
+  const auto bare_path = temp_dir / "bare.gguf";
+  auto bare_bytes = bare.Build(0);
+  while (!bare_bytes.empty() && bare_bytes.back() == 0) {
+    bare_bytes.pop_back();
+  }
+  WriteBinaryFile(bare_path, bare_bytes);
+  err.clear();
+  const auto bare_reader = gufo::core::GgufReader::OpenFile(bare_path, &err);
+  Expect(bare_reader != nullptr,
+         "metadata-only shard without trailing padding opens: " + err);
+  std::filesystem::remove_all(temp_dir);
+}
+
 void TestVisionExclusionValidation() {
   GgufBuilder builder;
   builder.AddMetadataString("general.architecture", "qwen35");
@@ -645,6 +708,7 @@ int main() {
   TestBasicGgufParsing();
   TestQwen38_27BParsing();
   TestSplitGgufDiscovery();
+  TestSplitGgufMetadataOnlyFirstShard();
   TestVisionExclusionValidation();
   TestQuantizationLabel();
   TestMalformedGgufRejection();

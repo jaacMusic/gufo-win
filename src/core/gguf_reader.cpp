@@ -737,11 +737,12 @@ bool GgufReader::ParseHeaders(std::string* error_msg) {
     tensors_.push_back(std::move(info));
   }
 
-  // Align data payload base to alignment boundary
+  // Align data payload base to alignment boundary. A metadata-only shard may
+  // end at the header: Unsloth's v3.1 shard 1 omits the trailing padding.
   const auto padding = (alignment_ - offset % alignment_) % alignment_;
-  if (offset > size_ || padding > size_ - offset)
+  if (offset > size_ || (padding > size_ - offset && !tensors_.empty()))
     return false;
-  const std::size_t data_base = offset + padding;
+  const std::size_t data_base = std::min(offset + padding, size_);
   for (auto& tensor : tensors_) {
     if (tensor.offset % alignment_ != 0 || tensor.offset > size_ - data_base ||
         tensor.size_bytes > size_ - data_base - tensor.offset) {
