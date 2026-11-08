@@ -194,12 +194,10 @@ void CheckRollbackReuse(const std::shared_ptr<qfn::Model>& model) {
   const auto before_full = session->AllocatedBytes();
   const auto full = session->SaveSnapshot(&error);
   Require(full && session->RestoreSnapshot(*full, &error), error);
-  Require(session->AllocatedBytes() ==
-              (keep_rows ? before_full : empty_bytes),
+  Require(session->AllocatedBytes() == (keep_rows ? before_full : empty_bytes),
           "restore kept or freed rollback rows against the tuning switch");
   session->Reset();
-  Require(session->AllocatedBytes() ==
-              (keep_rows ? before_full : empty_bytes),
+  Require(session->AllocatedBytes() == (keep_rows ? before_full : empty_bytes),
           keep_rows ? "reset dropped the kept rollback rows"
                     : "explicit reset retained rollback");
   std::cout
@@ -225,7 +223,9 @@ void CheckImageSnapshotAttachment(const std::shared_ptr<qfn::Model>& model) {
     for (std::size_t i = blue ? 2 : 0; i < pixels.pixels.size(); i += 3)
       pixels.pixels[i] = 255;
     prompt->images.push_back(
-        {std::make_shared<const gufo::core::Image>(std::move(pixels)), grid, {}});
+        {std::make_shared<const gufo::core::Image>(std::move(pixels)),
+         grid,
+         {}});
     prompt->images.back().prefix_identity.fill(blue ? 2 : 1);
     prompt->cache_identity.assign(32, blue ? 2 : 1);
     return prompt;

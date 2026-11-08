@@ -41,8 +41,8 @@ int main() {
     auto exec = builder.Build();
 
     // Create a session with wide verification width
-    auto session = exec->CreateSession(
-        core::SessionMode::kAutoregressive, 4096, nullptr);
+    auto session =
+        exec->CreateSession(core::SessionMode::kAutoregressive, 4096, nullptr);
 
     // Test tokens for verification
     std::vector<std::int32_t> tokens = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
@@ -72,7 +72,8 @@ int main() {
 
     // Test that we can verify the wide rows give consistent logits
     // (This is a basic sanity check; full verification requires model weights)
-    std::cout << "wide_verification_test: basic forward/keep test passed" << std::endl;
+    std::cout << "wide_verification_test: basic forward/keep test passed"
+              << std::endl;
 
     return 0;
   } catch (const std::exception& e) {

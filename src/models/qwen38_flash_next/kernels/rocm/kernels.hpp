@@ -333,9 +333,9 @@ bool DenseF16SsmGemm(const void* w, const __half* x, const float* conv_w,
                      ,
                      std::uint32_t gpu_rows = 0
 #endif
-                      ,
-                      hipStream_t z_stream = nullptr,
-                      hipEvent_t z_start = nullptr);
+                     ,
+                     hipStream_t z_stream = nullptr,
+                     hipEvent_t z_start = nullptr);
 
 /// Routed expert GEMMs. RoutedCompact sorts the (token, slot) assignments
 /// by expert into `rows_token`/`rows_slot` (RoutedCompactRows(slots,

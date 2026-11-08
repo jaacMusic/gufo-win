@@ -107,9 +107,9 @@ public:
   [[nodiscard]] std::uint32_t PrefillCapacity() const noexcept;
   /// Ends a non-final prefill step on a selection-block boundary so the next
   /// step resumes from an aligned frontier, the way Sync's single pass does.
-  [[nodiscard]] std::size_t ClampPrefillStep(std::size_t offset,
-                                             std::size_t count,
-                                             std::size_t remaining) const noexcept;
+  [[nodiscard]] std::size_t ClampPrefillStep(
+      std::size_t offset, std::size_t count,
+      std::size_t remaining) const noexcept;
   [[nodiscard]] std::uint32_t MaxContext() const noexcept {
     return options_.max_context;
   }

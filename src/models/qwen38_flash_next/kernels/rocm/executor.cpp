@@ -1024,8 +1024,8 @@ std::size_t Executor::WideSegmentFloats() const {
       continue;
     floats += conv * (kRows + 1) + full;
     for (std::uint32_t row = 0; row < kRows; ++row)
-      floats += GdnRollbackRowFloats(row, c.ssm_num_k_heads,
-                                     c.ssm_num_v_heads, c.ssm_head_dim);
+      floats += GdnRollbackRowFloats(row, c.ssm_num_k_heads, c.ssm_num_v_heads,
+                                     c.ssm_head_dim);
   }
   return floats;
 }
@@ -1033,8 +1033,8 @@ std::size_t Executor::WideSegmentFloats() const {
 bool Executor::EnsureWideSegments(std::uint32_t segments,
                                   std::string* error_msg) const {
   if (wide_controls_ == nullptr &&
-      !Check(hipMalloc(&wide_controls_, std::size_t{kWideRows / 8} *
-                                            sizeof(Session::Control)),
+      !Check(hipMalloc(&wide_controls_,
+                       std::size_t{kWideRows / 8} * sizeof(Session::Control)),
              "wide verification controls", error_msg))
     return false;
   const auto& c = config();
@@ -1070,8 +1070,8 @@ bool Executor::EnsureWideSegments(std::uint32_t segments,
         seg.conv[il].rows[row] = next;
         next += conv;
         seg.state[il].rows[row] = next;
-        next += GdnRollbackRowFloats(row, c.ssm_num_k_heads,
-                                     c.ssm_num_v_heads, c.ssm_head_dim);
+        next += GdnRollbackRowFloats(row, c.ssm_num_k_heads, c.ssm_num_v_heads,
+                                     c.ssm_head_dim);
       }
     }
     if (ple != 0) {
@@ -1247,8 +1247,8 @@ std::size_t Executor::DeferredScratchBytes() const {
   // Rollback rows of a wide copy verification's later segments.
   const std::size_t wide_segments = max_copy_rows() / 8;
   if (wide_segments > 1 + wide_segments_.size())
-    bytes += (wide_segments - 1 - wide_segments_.size()) *
-             WideSegmentFloats() * sizeof(float);
+    bytes += (wide_segments - 1 - wide_segments_.size()) * WideSegmentFloats() *
+             sizeof(float);
   return bytes;
 }
 
@@ -2333,8 +2333,7 @@ bool Executor::LinearAttention(const DeviceLayer& l, Session::LinearState& s,
           l.ssm_in.rows, l.ssm_in.cols, channels, c.ssm_conv_kernel, stream_
 #ifdef GUFO_NPU
           ,
-          npu_work ? l.npu_z->gpu_rows : 0,
-          npu_work ? nullptr : side_stream_,
+          npu_work ? l.npu_z->gpu_rows : 0, npu_work ? nullptr : side_stream_,
           npu_work ? nullptr : side_start_
 #else
           ,
@@ -2358,8 +2357,8 @@ bool Executor::LinearAttention(const DeviceLayer& l, Session::LinearState& s,
       ) {
         // The Z tiles are queued on the side stream; GatedDeltaNet waits for
         // this event before it reads the Z rows.
-        if (!Check(hipEventRecord(side_done_, side_stream_),
-                   "side stream join", error_msg)) {
+        if (!Check(hipEventRecord(side_done_, side_stream_), "side stream join",
+                   error_msg)) {
           if (!capturing_)
             (void)hipStreamSynchronize(side_stream_);
           return false;
@@ -2733,8 +2732,8 @@ bool Executor::Moe(const DeviceLayer& l, const float* x, float* out,
   // side_done_.
   // At n_tokens <= kVecBatch the shared expert is latency-bound, and forking
   // it costs more than the overlap saves (measured -18% decode).
-  bool overlap = ExpertMatrixRows(n_tokens) &&
-                 !last_only && l.shexp_gate.type == GgmlType::kQ8_0 &&
+  bool overlap = ExpertMatrixRows(n_tokens) && !last_only &&
+                 l.shexp_gate.type == GgmlType::kQ8_0 &&
                  l.shexp_up.type == GgmlType::kQ8_0 &&
                  l.shexp_down.type == GgmlType::kQ8_0;
 #ifdef GUFO_NPU
@@ -3126,9 +3125,8 @@ bool Executor::Run(Session& session, std::uint64_t key, bool graph,
       }
       capturing_ = true;
       const bool ok = run_body();
-      const bool ended =
-          Check(hipStreamEndCapture(stream_, &captured), "graph capture end",
-                error_msg);
+      const bool ended = Check(hipStreamEndCapture(stream_, &captured),
+                               "graph capture end", error_msg);
       capturing_ = false;
       if (!ended || !ok) {
         if (captured != nullptr) {
@@ -3427,9 +3425,8 @@ bool Executor::RunLayerHook(Session& session, std::string* error_msg) const {
   // about to be parked and handed to a decode.
   if (!Check(hipStreamSynchronize(primary_stream_), "layer hook sync",
              error_msg) ||
-      (alt_stream_ != nullptr &&
-       !Check(hipStreamSynchronize(alt_stream_), "layer hook sync",
-              error_msg))) {
+      (alt_stream_ != nullptr && !Check(hipStreamSynchronize(alt_stream_),
+                                        "layer hook sync", error_msg))) {
     return false;
   }
   // Everything that carries one layer's output into the next: the scratch
@@ -3519,9 +3516,8 @@ bool Executor::RunLayerHook(Session& session, std::string* error_msg) const {
     // drain both, then resume the pass on the primary stream.
     if (!Check(hipStreamSynchronize(primary_stream_), "layer hook sync",
                error_msg) ||
-        (alt_stream_ != nullptr &&
-         !Check(hipStreamSynchronize(alt_stream_), "layer hook sync",
-                error_msg))) {
+        (alt_stream_ != nullptr && !Check(hipStreamSynchronize(alt_stream_),
+                                          "layer hook sync", error_msg))) {
       return false;
     }
     stream_ = primary_stream_;
@@ -3869,11 +3865,11 @@ bool Executor::Rollback(Session& session, std::uint32_t keep,
           continue;
         }
         if (start != nullptr) {
-          if (!CopyFloats(start->state_start[il], l.state,
-                          GdnRollbackRowFloats(0, c.ssm_num_k_heads,
-                                               c.ssm_num_v_heads,
-                                               c.ssm_head_dim),
-                          stream_, "state rollback", error_msg) ||
+          if (!CopyFloats(
+                  start->state_start[il], l.state,
+                  GdnRollbackRowFloats(0, c.ssm_num_k_heads, c.ssm_num_v_heads,
+                                       c.ssm_head_dim),
+                  stream_, "state rollback", error_msg) ||
               !CopyFloats(start->conv_start[il], l.conv_state, conv_elems,
                           stream_, "conv rollback", error_msg)) {
             return false;
@@ -3896,10 +3892,10 @@ bool Executor::Rollback(Session& session, std::uint32_t keep,
       const float* source = start  ? start->ple_start
                             : rows ? rows->ple.rows[wide_slot]
                                    : session.ple_snapshots_.rows[slot];
-      return CopyFloats(source, session.ple_history_,
-                        static_cast<std::size_t>(c.PleConvHistory()) *
-                            c.HcDim(),
-                        stream_, "PLE rollback", error_msg);
+      return CopyFloats(
+          source, session.ple_history_,
+          static_cast<std::size_t>(c.PleConvHistory()) * c.HcDim(), stream_,
+          "PLE rollback", error_msg);
     };
     // Tuning::recorded_rollback: ~2 operations per linear layer issued one
     // by one cost ~9 ms on Windows, so they replay as one graph per kept
@@ -4323,9 +4319,8 @@ bool Executor::GreedyMtpPredictions(std::span<ArgmaxCandidate> predictions,
     for (std::size_t first = 0; ok && first < rows; first += 7) {
       const auto count = std::min<std::size_t>(7, rows - first);
       selected_logits_ = logits + first * config().vocab_size;
-      ok = GreedyMtpPredictions(predictions.subspan(first, count),
-                                tentative, drafts.subspan(first, count),
-                                error_msg);
+      ok = GreedyMtpPredictions(predictions.subspan(first, count), tentative,
+                                drafts.subspan(first, count), error_msg);
       for (std::size_t i = first; ok && i < first + count; ++i)
         tentative.Accept(static_cast<sampling::TokenId>(drafts[i]));
     }
@@ -4484,9 +4479,9 @@ bool Executor::MtpForward(Session& session,
   if (n == 0 || n > options_.max_batch || (hidden_row < 0 && n != 1) ||
       (hidden_row >= 0 &&
        static_cast<std::uint32_t>(hidden_row) + n >
-           (hidden_source ? options_.max_batch
-                          : std::max(options_.max_speculative,
-                                     max_copy_rows())))) {
+           (hidden_source
+                ? options_.max_batch
+                : std::max(options_.max_speculative, max_copy_rows())))) {
     AssignError(error_msg, "MTP batch outside the kept hidden rows");
     return false;
   }

@@ -1290,9 +1290,8 @@ struct TextGenerationScheduler::Impl {
           (!due_decoder || assemble_initial_batch)) {
         auto request = std::move(prefilling.front());
         prefilling.pop_front();
-        StepPrefill(request, true, false, [&] {
-          RunYieldRound(decoding, capturing);
-        });
+        StepPrefill(request, true, false,
+                    [&] { RunYieldRound(decoding, capturing); });
         if (!IsTerminal(request)) {
           if (request->runner_request.SnapshotPending()) {
             capturing.push_back(std::move(request));
@@ -1313,8 +1312,7 @@ struct TextGenerationScheduler::Impl {
                       decoding.begin(), decoding.end(),
                       [](const auto& request) { return request->decode_due; }))
                 : decoding.size();
-        (void)RunDecodeUnit(candidate_count, due_decoder, decoding,
-                            capturing);
+        (void)RunDecodeUnit(candidate_count, due_decoder, decoding, capturing);
         continue;
       }
 

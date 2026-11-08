@@ -1103,8 +1103,7 @@ int RunServe(std::span<const char* const> args) {
     }
     if (max_tokens < -1 || max_tokens == 0 ||
         max_tokens > std::numeric_limits<std::uint32_t>::max() ||
-        max_pending_requests == 0 ||
-        max_pending_requests_per_client == 0 ||
+        max_pending_requests == 0 || max_pending_requests_per_client == 0 ||
         max_pending_requests_per_client > max_pending_requests ||
         max_output_bytes == 0 || max_buffered_output_bytes == 0 ||
         max_buffered_output_bytes_total == 0 ||

@@ -1139,9 +1139,9 @@ void TextRunnerPool::Request::PrepareBatchExecution() {
       dynamic_cast<TextRunnerState&>(impl_->lease.state()));
 }
 
-TextPrefillStep TextRunnerPool::Request::Prefill(
-    std::size_t max_input_tokens, std::size_t yield_slice_tokens,
-    std::function<void()> yield) {
+TextPrefillStep TextRunnerPool::Request::Prefill(std::size_t max_input_tokens,
+                                                 std::size_t yield_slice_tokens,
+                                                 std::function<void()> yield) {
   if (!*this) {
     throw std::logic_error("text runner request is empty");
   }

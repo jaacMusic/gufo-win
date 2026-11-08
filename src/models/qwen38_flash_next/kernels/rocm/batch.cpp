@@ -885,8 +885,8 @@ bool Executor::ForwardBatchImpl(std::span<const BatchItem> items, bool wide,
   }
   // A wide chain's later segments roll back through executor-owned rows.
   const auto segment_count =
-      wide ? (static_cast<std::uint32_t>(items[0].tokens.size()) +
-              kDecodeRows - 1) /
+      wide ? (static_cast<std::uint32_t>(items[0].tokens.size()) + kDecodeRows -
+              1) /
                  kDecodeRows
            : 1U;
   if (wide) {
@@ -917,13 +917,11 @@ bool Executor::ForwardBatchImpl(std::span<const BatchItem> items, bool wide,
       return out;
     }
     std::uint32_t blocks = session.blocks_;
-    for (std::uint32_t first = 0, s = 0; first < n;
-         first += kDecodeRows, ++s) {
+    for (std::uint32_t first = 0, s = 0; first < n; first += kDecodeRows, ++s) {
       const auto count = std::min(kDecodeRows, n - first);
       const auto start = session.position_ + first;
       const auto end = start + count;
-      const bool seg_sparse =
-          c.compress_ratio > 0 && end > c.indexer_top_k;
+      const bool seg_sparse = c.compress_ratio > 0 && end > c.indexer_top_k;
       const auto seg_complete =
           c.compress_ratio > 0 ? end / c.compress_ratio : 0;
       auto* control = s == 0 ? session.control_ : wide_controls_ + s;
@@ -1061,8 +1059,8 @@ bool Executor::ForwardBatchImpl(std::span<const BatchItem> items, bool wide,
           UseScratch(RowScratch(base, segs[s].offset));
           bool ok = true;
           if (s == 0) {
-            ok = Ple(l, session, segs[s].count, s_.res, item.speculative,
-                     error, true);
+            ok = Ple(l, session, segs[s].count, s_.res, item.speculative, error,
+                     true);
           } else {
             // The segment starts from the history the previous one left;
             // keep it for a rollback to this segment's first row.
@@ -1183,18 +1181,17 @@ bool Executor::ForwardBatchImpl(std::span<const BatchItem> items, bool wide,
           for (const auto& seg : segments_of(i)) {
             auto seg_view = RowScratch(base, seg.offset);
             if (l.attn_qkv.empty()) {
-              seg_view.qg = base.qg +
-                            std::size_t{seg.offset} * 2 * c.AttentionQDim();
+              seg_view.qg =
+                  base.qg + std::size_t{seg.offset} * 2 * c.AttentionQDim();
             }
             UseScratch(seg_view);
-            const auto pool =
-                seg.sparse && seg.complete > seg.blocks
-                    ? seg.complete - seg.blocks
-                    : 0;
+            const auto pool = seg.sparse && seg.complete > seg.blocks
+                                  ? seg.complete - seg.blocks
+                                  : 0;
             if (!Attention(l, session.attention_[il], s_.mixed, s_.block_out,
                            seg.count, seg.position, seg.first_block, seg.start,
-                           pool, session.max_context_, seg.sparse, error,
-                           false, true, false)) {
+                           pool, session.max_context_, seg.sparse, error, false,
+                           true, false)) {
               return false;
             }
           }
@@ -1287,8 +1284,8 @@ bool Executor::ForwardBatchImpl(std::span<const BatchItem> items, bool wide,
 
 bool Executor::SelectBatchLogits(std::uint32_t offset, std::uint32_t rows,
                                  float* logits, std::string* error) const {
-  if (rows == 0 || rows > std::max(options_.max_logit_rows, wide_rows_) || offset > batch_rows_ ||
-      rows > batch_rows_ - offset) {
+  if (rows == 0 || rows > std::max(options_.max_logit_rows, wide_rows_) ||
+      offset > batch_rows_ || rows > batch_rows_ - offset) {
     return Fail(error, "logit rows outside the completed decode batch");
   }
   const std::size_t vocab = config().vocab_size;
