@@ -165,6 +165,8 @@ public:
 
   /// Token count of raw text (no generation).
   [[nodiscard]] std::size_t count_tokens(std::string_view text) const override;
+  [[nodiscard]] std::optional<std::vector<std::uint32_t>> tokenize(
+      std::string_view text) const override;
   [[nodiscard]] std::optional<sampling::TokenId> token_for_literal(
       std::string_view text) const override;
 

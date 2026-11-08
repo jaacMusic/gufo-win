@@ -2238,9 +2238,14 @@ expected; #740 only changes allocation.
   single-session pp/tg must be re-gated for hook overhead (groups=1 restores
   unsplit). qwen27b `90b9745f` and ds4 `cf68c63f` carry the same feature per
   model; skip unless those run here.
-- `[ ]` **`6d793814` #1082 `/tokenize`** — llama-server-compatible endpoint,
+- `[x]` **`6d793814` #1082 `/tokenize`** — llama-server-compatible endpoint,
   +141 lines in `http_server.cpp`/`inference_backend`. Pure API parity, no
   perf. Cheap; take it only if a client needs it.
+  Ported 2026-11-08: `TextGenerationBackend::tokenize` (default nullopt →
+  `NotImplemented`), `InferenceBackend` override via
+  `runner().Tokenize`, `LlamaTokenize` handler + route, FakeBackend
+  `TestTokenize` in http_server_test (cpu-test, passes). Unsupported
+  `add_special`/`with_pieces` and non-string `content` get 400.
 - `[ ]` **`7e8f75a8` #1089** — 3-line functional test tweak (replay a
   recorded disk-spacing request after restart); the fork has the #348
   spacing logic, so the test is optional.

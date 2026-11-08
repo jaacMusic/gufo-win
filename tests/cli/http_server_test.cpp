@@ -52,6 +52,11 @@ public:
   std::size_t count_tokens(std::string_view text) const override {
     return text.size();
   }
+  std::optional<std::vector<std::uint32_t>> tokenize(
+      std::string_view text) const override {
+    return std::vector<std::uint32_t>{1, 2,
+                                      static_cast<std::uint32_t>(text.size())};
+  }
   Result complete(
       std::string_view prompt, std::size_t limit,
       const gufo::sampling::SamplingConfig& sampling,
@@ -787,6 +792,23 @@ void TestExpectContinue() {
                413);
 }
 
+void TestTokenize() {
+  RunningServer server;
+  const auto response = server.Post("/tokenize", R"({"content":"hi"})");
+  ExpectStatus(response, 200);
+  using gufo::json::parse;
+  auto body = parse(response.substr(response.find("\r\n\r\n") + 4));
+  const auto* tokens = body.find("tokens");
+  assert(tokens != nullptr && tokens->size() == 3);
+  const auto& items = tokens->items();
+  assert(items[0].as_size() == 1 && items[1].as_size() == 2 &&
+         items[2].as_size() == 2);
+  // Options llama-server supports but this fork does not are refused.
+  ExpectStatus(
+      server.Post("/tokenize", R"({"content":"hi","add_special":true})"), 400);
+  ExpectStatus(server.Post("/tokenize", R"({"content":1})"), 400);
+}
+
 }  // namespace
 
 int main() {
@@ -803,5 +825,6 @@ int main() {
   TestPeerDisconnect();
   TestStreamingFraming();
   TestSignalShutdown();
+  TestTokenize();
   std::cout << "HTTP transport checks passed.\n";
 }

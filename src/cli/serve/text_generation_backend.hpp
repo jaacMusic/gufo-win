@@ -331,6 +331,15 @@ public:
     (void)text;
     return std::nullopt;
   }
+
+  /// Token ids of raw text as a raw prompt tokenizes: control-token spellings
+  /// become their special tokens and nothing is prepended. Nullopt when the
+  /// backend cannot tell.
+  [[nodiscard]] virtual std::optional<std::vector<std::uint32_t>> tokenize(
+      std::string_view text) const {
+    (void)text;
+    return std::nullopt;
+  }
 };
 
 inline std::shared_ptr<TextGenerationBackend::GenerationRequest>
