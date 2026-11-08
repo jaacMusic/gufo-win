@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "src/cli/serve/inference_backend.hpp"
+#include "src/core/platform/tuning.hpp"
 #include "src/models/qwen38_flash_next/engine.hpp"
 #include "tests/models/qwen27b/sampling_cases.hpp"
 
@@ -24,10 +25,25 @@ void Require(bool condition, const std::string& message) {
 
 void RequireExact(std::span<const float> expected,
                   std::span<const float> actual, const std::string& message) {
-  Require(expected.size() == actual.size() &&
-              std::memcmp(expected.data(), actual.data(),
-                          expected.size_bytes()) == 0,
-          message);
+  if (expected.size() == actual.size() &&
+      std::memcmp(expected.data(), actual.data(), expected.size_bytes()) == 0)
+    return;
+  if (expected.size() != actual.size())
+    throw std::runtime_error(message + " (size " +
+                             std::to_string(expected.size()) + " vs " +
+                             std::to_string(actual.size()) + ")");
+  std::size_t at = 0;
+  float worst = 0.0F;
+  for (std::size_t i = 0; i < expected.size(); ++i) {
+    if (const float diff = std::fabs(expected[i] - actual[i]); diff > worst) {
+      worst = diff;
+      at = i;
+    }
+  }
+  throw std::runtime_error(message + " (max |diff|=" + std::to_string(worst) +
+                           " at " + std::to_string(at) + ": " +
+                           std::to_string(expected[at]) + " vs " +
+                           std::to_string(actual[at]) + ")");
 }
 
 void CheckSnapshotDuringGraphCapture(const std::shared_ptr<qfn::Model>& model) {
@@ -172,13 +188,20 @@ void CheckRollbackReuse(const std::shared_ptr<qfn::Model>& model) {
   RequireExact(logits, session->Logits(), "reused rollback changed logits");
   while (session->Position() < context)
     Require(session->Evaluate(prompt.front(), &error), error);
+  // The Windows default keep_rollback_rows keeps the scratch rows through a
+  // restore and a reset (the recorded graphs point at them); upstream frees.
+  const bool keep_rows = gufo::platform::PlatformTuning().keep_rollback_rows;
+  const auto before_full = session->AllocatedBytes();
   const auto full = session->SaveSnapshot(&error);
   Require(full && session->RestoreSnapshot(*full, &error), error);
-  Require(session->AllocatedBytes() == empty_bytes,
-          "restore kept rollback that the restored context cannot use");
+  Require(session->AllocatedBytes() ==
+              (keep_rows ? before_full : empty_bytes),
+          "restore kept or freed rollback rows against the tuning switch");
   session->Reset();
-  Require(session->AllocatedBytes() == empty_bytes,
-          "explicit reset retained rollback");
+  Require(session->AllocatedBytes() ==
+              (keep_rows ? before_full : empty_bytes),
+          keep_rows ? "reset dropped the kept rollback rows"
+                    : "explicit reset retained rollback");
   std::cout
       << "rollback restore is bounded, reuses warm rows and replays exactly\n";
 }
@@ -203,6 +226,7 @@ void CheckImageSnapshotAttachment(const std::shared_ptr<qfn::Model>& model) {
       pixels.pixels[i] = 255;
     prompt->images.push_back(
         {std::make_shared<const gufo::core::Image>(std::move(pixels)), grid, {}});
+    prompt->images.back().prefix_identity.fill(blue ? 2 : 1);
     prompt->cache_identity.assign(32, blue ? 2 : 1);
     return prompt;
   };
