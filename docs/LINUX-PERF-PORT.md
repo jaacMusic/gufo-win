@@ -2131,14 +2131,21 @@ Next sweep from `0fb50ce4`.
 
 ## Upstream sweep 2026-11-07 (`56ed8f4d..0fb50ce4`, v0.29–0.31)
 
-- Port candidate (perf): `80786f73` #1048 overlaps the shared expert with
-  routed experts on decode (`n_tokens <= kVecBatch`), extending #758's
-  side-stream machinery (`side_start_/side_done_/side_pending_`, fork/join
-  around `RunMoE`). The fork has none of #758 item 3 (`side_stream_` count 0
-  in executor), so the port = `538e2fd7` #758 side streams (doc measured
-  +3.3% pp512, neutral pp2048, +0.4% pp4096 upstream) **plus** #1048's decode
-  fork/join (adds `capturing_` guard for graph-record membership). Must port on
-  a clean executor tree (HC routes / NPU divergence) and A/B decode+prefill.
+- Ported (perf): `538e2fd7` #758 item 3 + `80786f73` #1048 side streams
+  (`side_stream_/side_start_/side_done_/side_pending_`, fork/join around
+  `RunMoE`, Z-row GDN projection tiles, `capturing_` guard for graph-record
+  membership). Ported 2026-11-07 (`7d021471`). Upstream measured +3.3% pp512,
+  neutral pp2048, +0.4% pp4096.
+  Fork A/B on gfx1151 (UD-Q4_K_XL, no MTP, `-r 3`): pp512/pp2048/pp4096
+  1157/1570/1624 → 1157/1549/1615 tok/s (neutral, run noise ±3%), but decode
+  tg128 35.68 → 28.99 and MTP 48.46 → 39.89 tok/s (**−18%**).
+  Isolating the shared-expert fork: 35.76 tok/s decode and 1529.9 vs 1529.8
+  pp2048 with it disabled (identical), so the whole loss was forking a
+  latency-bound single-row shared expert 48× per token. Upstream's
+  `n_tokens <= kVecBatch` extension is therefore gated on `ExpertMatrixRows`
+  here: decode is back to 35.56 / 48.75 and prefill is unchanged
+  (1534.97/1532.12/1524.78/1527.40 over A/B/A/B at `-r 10`). The port is
+  neutral on this fork; kept for the shared machinery the Z-row overlap uses.
 - Port candidate (fix, trivial): `805c9421` #993 counts the draft block's
   hidden row in `SessionBytes` (`max(max_speculative, max_copy_rows) + 1`
   rows × HcDim). Pure accounting arithmetic, perf-neutral; port alongside the

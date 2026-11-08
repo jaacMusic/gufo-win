@@ -2716,7 +2716,9 @@ bool Executor::Moe(const DeviceLayer& l, const float* x, float* out,
   // join below must stay inside the capture region: side_stream_ joins the
   // capture through side_start_, and the main stream joins back through
   // side_done_.
-  bool overlap = (ExpertMatrixRows(n_tokens) || n_tokens <= kVecBatch) &&
+  // At n_tokens <= kVecBatch the shared expert is latency-bound, and forking
+  // it costs more than the overlap saves (measured -18% decode).
+  bool overlap = ExpertMatrixRows(n_tokens) &&
                  !last_only && l.shexp_gate.type == GgmlType::kQ8_0 &&
                  l.shexp_up.type == GgmlType::kQ8_0 &&
                  l.shexp_down.type == GgmlType::kQ8_0;
