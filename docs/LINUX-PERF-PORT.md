@@ -2361,12 +2361,39 @@ ceiling, so the head is ~2 ms of a 1259 ms pass (0.16 %) and there is no tile
 geometry to sweep: −15–20 ms is not available at 1 row, and the 31 vs 35 TFLOP/s
 wide-row gap sits on a shape nothing calls. Nothing to port, nothing to change.
 
-Still open, and not the head: the trace's `head w255` bucket is 65.5 ms while
-`Dense(output)` is ~2 ms of it, so ~63 ms is the last layer's own tail plus the
-download. `PERF-REVIEW-PLAN.md` already names the next move — two extra
-`MarkPhase` splits around the prefill-logits `Dense(output, ...)` and around the
-`logits_host_` copy, then re-trace idle — which is a tracing change, not a
-kernel one.
+Closed 2026-11-08, see the next section: the bucket's non-head time is the
+last layer's routed experts, and that is host memory placement, not a kernel.
+
+## Closed 2026-11-08: `head w255` is the last layer's experts reading paged weights
+
+Three phase marks were added to make the bucket readable (kept):
+`kPhPle` around the PLE gather, `kPhHeadMix`/`kPhHeadProj`/`kPhHeadCopy`
+around the output head's mixer, projection and logits download. With those,
+the head itself is 3.32 ms of the 70.55 ms `head w255` bucket (0.09 + 3.20 +
+0.03); the rest is the last layer's body, which the bucket folds in because
+its `kLayerMark` is the last one before `kVerifyEnd`.
+
+A temporary per-layer phase key (report every phase as `ph-<name><NN>`,
+reverted after use) attributed it: `ph-moe47 w255` — the last layer's routed
+experts — is 57.6–65.3 ms while every other layer sits at 8.6–12.5 ms. It is
+row-count independent (61.5 ms at the 128-row tail scratch, 60.8 ms with the
+skip removed at 2048 rows), i.e. weight-bandwidth-bound: ~35 GB/s where
+sibling layers stream their ~2 GiB of expert weights at ~190 GB/s. Removing
+the last-layer row skip A/B *regressed* pp2048 (1567 vs ~1585 same-day), so
+the skip stays.
+
+The cause is host memory capacity, not a code path. This Windows/WDDM host
+cannot hold the model in the dedicated segment: a mid-bench GPU perf-counter
+sample of the live gufo process shows 81.47 GB dedicated + 0.37 GB shared
+against a 103.69 GiB model plus workspace, so the tail of the weight
+allocations is transparently paged and streams from system memory each
+prefill pass. Decode is unaffected (`ph-moe47 w1` 0.17 ms, same as every
+layer): a decode token touches ~8 experts that stay resident, while a
+2048-row prefill touches all of them. Nothing to port: on the Linux gfx1151
+production host `hipMalloc` spans the full unified memory (a second model
+copy fails to allocate), and the check is one traced `gufo bench` — if
+`ph-headmix+ph-headproj+ph-headcopy` ≈ `head w255` minus a normal ~27 ms
+layer body there, the placement artifact is confirmed gone.
 
 ## Measured 2026-11-08: the `lm_head` Q4_1 decode copy is +4.9 % decode
 

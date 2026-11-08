@@ -464,12 +464,16 @@ combines 1.0, attn core 2.9.
   with `tests/models/qwen38_flash_next/lm_head_bench.cpp`). `DenseF16Gemm` at
   255 rows is 6.38 ms / 31 TFLOP/s but the head never reaches it. See
   `LINUX-PERF-PORT.md`, "the LM-head tile sweep has no shape to win".
-- **`head` bucket unresolved at prefill width**: decode head with ~1–2 logit
-  rows is 4.63 ms, but `head w255` is 65.5 ms per pp2048-scale pass while
-  `Dense(output)` is only ~2 ms of it. The bucket's split (last-layer HC tail vs
-  `Dense(output)` vs download) has no marks. First move: two extra `MarkPhase`
-  splits around `Dense(output, ...)` in `executor.cpp` prefill-logits block and
-  around the `logits_host_` copy, then re-trace idle.
+- **`head` bucket: closed 2026-11-08, host memory placement.** The head marks
+  (`kPhHeadMix`/`kPhHeadProj`/`kPhHeadCopy`, now in the tree) put the head at
+  3.32 ms of the 70.55 ms `head w255` bucket; the rest is the last layer's
+  routed experts (`ph-moe47` 57.6–65.3 ms vs 8.6–12.5 for every other layer,
+  row-count independent). Cause: this Windows host holds only 81.5 GB of the
+  103.69 GiB model in the dedicated segment, so the last-allocated expert
+  tensors stream from paged system memory at ~35 GB/s each prefill pass; decode
+  is unaffected. Not a code path; verify once on Linux via
+  `LINUX-PERF-PORT.md`, "`head w255` is the last layer's experts reading paged
+  weights". Removing the last-layer row skip A/B-regressed and was reverted.
 - **Router chain: 18 ms/pass (~3 TF/s, 14 launches/layer, m=128 rows)**.
   Fused logits+top-k could reclaim ~10 ms (+1 %); lowest priority.
 

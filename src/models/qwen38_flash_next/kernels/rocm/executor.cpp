@@ -3413,9 +3413,10 @@ bool Executor::ForwardBody(Session& session, std::uint32_t n,
     if (!session.CheckCancellation(error_msg))
       return false;
     const DeviceLayer& l = layers[il];
-    if (c.IsPleLayer(il) &&
-        !Ple(l, session, n, s_.res, speculative, error_msg)) {
-      return false;
+    if (c.IsPleLayer(il)) {
+      if (!Ple(l, session, n, s_.res, speculative, error_msg))
+        return false;
+      mark_phase(Timeline::kPhPle, n);
     }
     // Both stacked SSM projections consume the same F16 input. Avoid writing
     // unused F32/Q8 copies when the wide mixer can supply that input directly.
@@ -3537,10 +3538,14 @@ bool Executor::ForwardBody(Session& session, std::uint32_t n,
     const std::size_t skip = static_cast<std::size_t>(n - n_logits);
     const DeviceMixer& head = model_->hc_head();
     if (!HcMix(head, s_.res + skip * c.HcDim(), false, s_.mixed, nullptr,
-               n_logits, error_msg) ||
-        !Dense(model_->output(), s_.mixed, s_.logits, n_logits, error_msg)) {
+               n_logits, error_msg)) {
       return false;
     }
+    MarkPhase(Timeline::kPhHeadMix, n_logits);
+    if (!Dense(model_->output(), s_.mixed, s_.logits, n_logits, error_msg)) {
+      return false;
+    }
+    MarkPhase(Timeline::kPhHeadProj, n_logits);
     if (download_logits &&
         !CopyPinned(
             s_.logits, logits_host_,
@@ -3548,6 +3553,7 @@ bool Executor::ForwardBody(Session& session, std::uint32_t n,
             hipMemcpyDeviceToHost, stream_, "logits download", error_msg)) {
       return false;
     }
+    MarkPhase(Timeline::kPhHeadCopy, n_logits);
     if (candidates_in_body_) {
       // Tuning::verify_graph_candidates: the selection and download
       // VerifyCandidates would otherwise issue after the pass, row by row.

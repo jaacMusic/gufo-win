@@ -61,11 +61,15 @@ public:
     kPhAttnCore,   // inside kPhAttn: causal attention kernel
     kPhMoeRouter,  // inside kPhMoe: router GEMM + top-k
     kPhMoeShared,  // inside kPhMoe: shared expert gate/up/down
+    kPhPle,        // PLE gather in the one PLE layer, before its mixer
+    kPhHeadMix,    // after the last layer: output head HC mixer
+    kPhHeadProj,   // output head projection
+    kPhHeadCopy,   // logits download
   };
   static constexpr const char* kLayerPhaseName[] = {
-      "?",        "mixA",     "attn",      "combA",    "mixF",
-      "moe",      "combF",    "gdnproj",   "gdnscan",  "gdnout",
-      "attnproj", "attncore", "moerouter", "moeshared"};
+      "?",         "mixA",      "attn",    "combA",   "mixF",     "moe",
+      "combF",     "gdnproj",   "gdnscan", "gdnout",  "attnproj", "attncore",
+      "moerouter", "moeshared", "ple",     "headmix", "headproj", "headcopy"};
   static Timeline& Get() {
     static Timeline timeline;
     return timeline;
