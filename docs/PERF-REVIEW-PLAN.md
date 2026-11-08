@@ -439,15 +439,13 @@ combines 1.0, attn core 2.9.
 
 - **LM-head Q4_1 decode copy already exists** (commit `d6c667e4`): class
   `lm_head` in `device_model.cpp` (`wants("lm_head")` → `add(m->output_, ...)`),
-  off in the default class set because logits numerics change. **Measured
-  2026-11-08: +4.9 % decode** (34.99 → 36.70 t/s, −1.33 ms/token) for +0.37 GiB;
-  greedy replay diverges once at a paraphrase and reconverges. Table and replay
-  detail in `LINUX-PERF-PORT.md`. The default is unchanged — flipping it is a
-  quality call, not a measurement one.
+  off in the default class set because logits numerics change. Remaining work is
+  measurement only: `GUFO_DECODE_COPY_CLASSES=ssm_in,ssm_out,attn_qkv,shexp,lm_head`
+  interleaved tg128 A/B + greedy replay. Est. −1.2–1.5 ms/token (head GEMV reads
+  the full untied Q8_0 output matrix every cycle).
 - **`q4` copy classes are live but not default**: `GUFO_DECODE_COPY=q4` adds
   `attn_out` + `hc` (zero code). HC mix + combines are ~5.3 ms/token still on
-  Q8_0. **Measured 2026-11-08: no gain** (35.42 vs 34.99 t/s is drift) for
-  +0.48 GiB, so they stay opt-in.
+  Q8_0. No doc records why `q4` is off-default; same A/B gate decides it.
 - **MTP per-row cost is expert-set growth, closed**: w1 hits 4 expert slices,
   w3 ~10 distinct experts (+~3.3 ms/row of the +5.4); `SmallGemmKernel` and
   `GdnKernel` already batch rows on one weight read and rollback snapshots use
@@ -456,26 +454,19 @@ combines 1.0, attn core 2.9.
 
 ### Prefill (pp2048 ≈ 1259 ms; >10 % buckets confirmed at probe ceilings)
 
-- **LM head: closed 2026-11-08, no tile to sweep.** The earlier "24 TFLOP/s vs
-  ~35 for sibling GEMMs, 66 ms/pass, sweep 151936×2560×2048 tiles" figure is a
-  2048-logit-row shape; production prefill passes `n_logits = 1` per chunk
-  (`engine.cpp:892`, chunk = up to 8192 tokens), so the head is the 1-row Q8_0
-  GEMV: 1.98 ms/pass at 209 GB/s, already at the host stream ceiling (measured
-  with `tests/models/qwen38_flash_next/lm_head_bench.cpp`). `DenseF16Gemm` at
-  255 rows is 6.38 ms / 31 TFLOP/s but the head never reaches it. See
-  `LINUX-PERF-PORT.md`, "the LM-head tile sweep has no shape to win".
-- **`head` bucket: closed 2026-11-08, host memory placement.** The head marks
-  (`kPhHeadMix`/`kPhHeadProj`/`kPhHeadCopy`, now in the tree) put the head at
-  3.32 ms of the 70.55 ms `head w255` bucket; the rest is the last layer's
-  routed experts (`ph-moe47` 57.6–65.3 ms vs 8.6–12.5 for every other layer,
-  row-count independent). Cause: this Windows host holds only 81.5 GB of the
-  103.69 GiB model in the dedicated segment, so the last-allocated expert
-  tensors stream from paged system memory at ~35 GB/s each prefill pass; decode
-  is unaffected. Not a code path; verify once on Linux via
-  `LINUX-PERF-PORT.md`, "`head w255` is the last layer's experts reading paged
-  weights". Removing the last-layer row skip A/B-regressed and was reverted.
+- **LM head runs ~24 TFLOP/s vs ~35 for sibling GEMMs** (66 ms/pass, 5.2 %,
+  skipped only by the 10 % rule). Same Q8→F16 WMMA mechanism, so the tile is
+  the suspect. Recipe: standalone shape sweep (151936×2560×2048) over
+  `DenseF16GEMMKernel` tile/rowgrp variants, `tools/bench/build.sh` + the
+  dense_blaslt_sweep pattern. Bit-exact gate. Est. −15–20 ms (+1.4 %).
+- **`head` bucket unresolved at prefill width**: decode head with ~1–2 logit
+  rows is 4.63 ms, but `head w255` is 65.5 ms per pp2048-scale pass. If the
+  bench `n_logits` is small, the vocab GEMV cannot fill it; the bucket's split
+  (last-layer HC tail vs `Dense(output)` vs download) has no marks. First move:
+  two extra `MarkPhase` splits around `Dense(output, ...)` in
+  `executor.cpp` prefill-logits block, then re-trace idle.
 - **Router chain: 18 ms/pass (~3 TF/s, 14 launches/layer, m=128 rows)**.
-  Fused logits+top-k could reclaim ~10 ms (+1 %); lowest priority.
+  Fused logits+top-k could reclaim ~10 ms (+1 %); lowest priority, after LM head.
 
 ### Checked and already tight (do not re-derive)
 
