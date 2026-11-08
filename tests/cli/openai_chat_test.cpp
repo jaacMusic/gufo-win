@@ -820,6 +820,14 @@ void TestQwenToolBoundariesAndSchema() {
         Case{"<tool_call>\n<function=f>\n<parameter=text>\n\n</parameter>\n"
              "</function>\n</tool_call>",
              1, R"({"text":""})"},
+        // A value starting with </parameter> right after the frame newline
+        // is data (#1102): one call, not a split into several.
+        Case{"<tool_call>\n<function=f>\n<parameter=text>\n</parameter>\n"
+             " is literal\n</parameter>\n</function>\n</tool_call>",
+             1, R"({"text":"</parameter>\n is literal"})"},
+        Case{"<tool_call>\n<function=f>\n<parameter=text>\n</parameter>\n"
+             "</parameter>\n</function>\n</tool_call>",
+             1, R"({"text":"</parameter>"})"},
         Case{"<tool_call>\r\n<function=f>\r\n<parameter=text>\r\n\r\nx\r\n"
              "</parameter>\r\n</function>\r\n</tool_call>",
              1, R"({"text":"\r\nx"})"},

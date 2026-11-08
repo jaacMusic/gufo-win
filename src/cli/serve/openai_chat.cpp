@@ -1012,7 +1012,15 @@ void ParseQwenCalls(std::string_view text,
         const std::string name(Trim(body.substr(0, name_end)));
         body.remove_prefix(name_end + 1);
         // Outer closing tags inside a parameter are data, not structure.
-        const auto close = body.find("</parameter>");
+        // The opening frame newline cannot also begin the closer: a value
+        // starting with </parameter> is data and runs to the next closer,
+        // as in llama.cpp's tool grammar (#1102, upstream 72442dce).
+        const std::size_t frame = body.starts_with("\r\n") ? 2
+                                  : body.starts_with('\n') ? 1
+                                                           : 0;
+        const std::size_t search =
+            body.compare(frame, 12, "</parameter>") == 0 ? frame + 12 : frame;
+        const auto close = body.find("</parameter>", search);
         if (close == std::string_view::npos || body.find(start) < close ||
             name.empty()) {
           valid = false;

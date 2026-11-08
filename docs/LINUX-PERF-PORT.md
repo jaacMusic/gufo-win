@@ -14,7 +14,7 @@ TheRock ROCm 10.0.0 / clang 23 toolchain used for the Windows build.
 
 - Upstream: <https://github.com/gufo-org/gufo>
 - Review clone: `%TEMP%\opencode\gufo-upstream` (bare clone works; fetch +
-  `git show <sha>`). Last swept upstream `4ab04ab8` (2026-10-30) on 2026-10-30,
+  `git show <sha>`). Last swept upstream `718a388d` (2026-11-08) on 2026-11-08,
   see "Upstream sweep 2026-10-30"
 - Local base: upstream `fee9d2a` (PR #314 fix)
 - Local Windows HEAD at review: `c85aada`
@@ -2000,12 +2000,12 @@ never triaged:
 
 ### Port candidates, ranked
 
-1. `[ ]` **`9fbe751` #890 register-resident routed prefill experts** (already
+1. `[x]` **`9fbe751` #890 register-resident routed prefill experts** (already
    the standing "next"). Upstream (measured on a production fork at 4,096 /
    26,541 rows): routed down Q5_1 21.1→23.8 / 25.1→30.6 TFLOPS, Q8_0
    17.8→20.4 / 23.6→29.0; gate/up Q4_K 26.7→28.3 / 32.6→33.1. End to end
    `gufo bench` pp16384 1,590→1,626 (+2.3%). Fork state checked:
-   `executor.cpp` still runs the pre-#890 design (16/48-row
+   Ported 2026-11-06 in `41784aa8` (was: `executor.cpp` still runs the pre-#890 design (16/48-row
    `RoutedF16Gemm`/`RoutedGatedF16Gemm`, per-launch pinned tile map), so the
    whole kernel rewrite (`RoutedDownF16Kernel`, `RoutedPairF16Kernel`, shared
    128-token map) is a hand merge, ~1,000 lines into a diverged
@@ -2101,8 +2101,9 @@ never triaged:
   end-to-end A/B run: the served UD-Q4_K_XL's inject rows are F32, so both
   changed branches are dead code for it (the executor hunk is inert while
   `fused_inject` holds).
-- `[ ]` **`96c9a0f5` #961 verify long prompt-lookup copies in one wide pass**
-  — the big perf item, not yet ported. Upstream measured downstream (a fork
+- `[x]` **`96c9a0f5` #961 verify long prompt-lookup copies in one wide pass**
+  — ported 2026-11-06 in `585cba12` (wide-row verification + routed GEMM
+  rework). Historical: Upstream measured downstream (a fork
   like this one): 2,222-token Python rename greedy 124.1 → 187.9 tok/s with
   verifications 280 → 53; docstrings 122 → 187, return hints 124 → 194,
   1,675-token C++ header 124 → 186; SEARCH/REPLACE 106 → 120; prose and
@@ -2339,3 +2340,16 @@ measured pp 1547-1631 across the day); future A/B gates must use the
 interleaved stash-rebuild method, not these absolute numbers. Multi-session
 reference beside a 17.8k prompt: prompt ~13.3 s, 64-token decoder ~12.6 s,
 greedy decoder hash c74852d38ffcf59.
+## Upstream sweep 2026-11-08 (`17d6fa25..718a388d`)
+
+Three commits. `- [x]` `72442dce` #1102 (tool-call parser: a value starting
+with `</parameter>` right after the frame newline is data, as llama.cpp
+reads it) ported into `ParseQwenCalls`: the closer search starts after the
+frame newline and skips a `</parameter>` at the value start, so one call
+is not split into several. The fork parser keeps its bare-tag closer
+(upstream requires `\n</parameter>`), so the port skips the leading tag
+instead of changing the delimiter; compact closers and CRLF framing are
+unchanged. Two new cases in `openai_chat_test` (literal closer with text,
+bare `</parameter>` value); suite passes. `- [ ]` `718a388d` #1103
+(functional-suite runner) N/A, no `tests/functional` in the fork.
+`c40862ff` release 0.32.0 chore, N/A.
