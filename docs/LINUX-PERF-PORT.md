@@ -2362,3 +2362,38 @@ unchanged. Two new cases in `openai_chat_test` (literal closer with text,
 bare `</parameter>` value); suite passes. `- [ ]` `718a388d` #1103
 (functional-suite runner) N/A, no `tests/functional` in the fork.
 `c40862ff` release 0.32.0 chore, N/A.
+
+## Upstream open PRs triage (2026-11-08)
+
+Fetched the 26 open PRs (`gh api repos/gufo-org/gufo/pulls?state=open`); main
+has nothing new since `718a388d`. None are merged, so nothing enters the
+cherry-pick flow yet. Triage of the ones touching this fork's scope:
+
+- [ ] **gufo-org/gufo#893** — 8-bit K/V (int8 + F16 scale/16, 576 vs 1,024
+  B/row) + VMM-grown K/V rows with `--kv-cache-bytes` for qwen38-flash-next.
+  The one real performance target in the list (multi-session 262K context on
+  Strix Halo). Open, +2,023/-422, changes the production KV format. Do not
+  hand-port while open; revisit when it lands on main or the session-count
+  limit becomes a paid requirement. Needs the full byte-identity + A/B gate.
+- Skip **gufo-org/gufo#910** (DXGI state-capacity admission): the fork already
+  reads the DXGI budget by LUID in `src/core/platform/device_memory.{hpp,cpp}`
+  and feeds serve admission; the PR's remainder is `event=state_capacity`
+  diagnostics on top of that.
+- Skip **gufo-org/gufo#945** (Clang 23 value-style WMMA signatures): both mmq
+  hunks are already `short` in the fork; the remaining `unsigned short`
+  fragments compile on this toolchain. Adopt only if a toolchain bump breaks
+  the build.
+- N/A **gufo-org/gufo#1076** (Windows `ReleaseMappedPages` via
+  `VirtualUnlock`), **#1104** (retention record-turnover eviction),
+  **#934** (disk-only metadata admission): the fork has none of the hosts —
+  no `ReleaseMappedPages`/`#829` host-page release series, no
+  `src/cache/retention.cpp`, no `component_text_cache`. Porting these means
+  porting upstream's architecture first, not the fixes.
+- Skip **gufo-org/gufo#912** (stale MTP backoff recovery) and **#958**/**#969**
+  (HC-pair fusion, batched HC-ready Q8): the fork measured and reverted
+  equivalent work on 2026-11-08 (`66d07011`).
+- Rest are features/docs/other models: #1036 (runtime residual projection),
+  #1105/#1106 (DS4, no weights on this host), #904 (27B verify table, wants
+  the #874 harness run for a model this fork does not serve), #568 (NPU),
+  #682 (gfx1150), #861/#862 (qwen-image), #885/#1050/#1086/#943/#998 (H3,
+  docs, tests, MTP-keep).
