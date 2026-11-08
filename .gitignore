@@ -122,3 +122,7 @@ tests/quality/compsec.json
 /dist/
 haiku_*.txt
 gufo-server-log.txt
+/build_log.txt
+/build_out.txt
+/log.txt
+/out.txt
