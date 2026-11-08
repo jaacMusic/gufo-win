@@ -1061,6 +1061,7 @@ struct Session::PendingDecode {
   std::size_t lookup_start{0};
   bool draft_subset{false};  ///< this cycle drafts through the subset head
   bool sampled_subset_cost{false};
+  bool planned_greedy{false};
   std::uint32_t policy_concurrency{0};
 };
 
@@ -1202,6 +1203,8 @@ bool Session::PrepareDecode(const DecodeRequest& request,
   pending->policy_concurrency = MtpPolicyConcurrency(
       sampler.config().uses_random_sampling(), sampler.config().seed >= 0,
       batch_drafts.has_value(), occupancy);
+  pending->planned_greedy =
+      batch_drafts.has_value() && !sampler.config().uses_random_sampling();
   // Every chain ends after its first proposal below the gate (greedy: the
   // head's confidence, read back with each draft token in every path;
   // sampled: host-side q). An unplanned cycle drafts to its budget; a jointly
@@ -1540,9 +1543,10 @@ bool Session::FinishDecode(const DecodeRequest& request,
   stats_.small_head_cycles += pending.draft_subset;
   // A target stop ends the request; it does not classify the remaining
   // proposals as failed predictions.
-  draft_length_.Observe(
-      observed, result->stop || mtp_all ? observed : mtp_drafts, base,
-      pending.policy_concurrency, pending.sampled_subset_cost);
+  draft_length_.Observe(observed,
+                        result->stop || mtp_all ? observed : mtp_drafts, base,
+                        pending.policy_concurrency, pending.sampled_subset_cost,
+                        pending.planned_greedy);
   // Same per-proposal evidence refines the online accept table. Bin each
   // proposal by its draft top-probability; every drafted MTP proposal up to
   // the kept prefix was accepted, the next one (if drafted) was rejected.

@@ -2180,8 +2180,8 @@ Next sweep from `0fb50ce4`.
 29 open pull requests (`gh pr list -R gufo-org/gufo --state open`) instead of
 new commits — the queue carries work the fork can take before it merges.
 
-- Port candidate (perf, tiny): #912 *recover stale MTP backoff after batch
-  observations* (+7/−3). The fork matches upstream's pre-fix shape exactly
+- Ported (perf, tiny): #912 *recover stale MTP backoff after batch
+  observations* (+7/−3) — see "Port 2026-11-08" below. The fork matches upstream's pre-fix shape exactly
   (`mtp_policy.hpp` `state_.retry_tokens = 16;`, `PendingDecode` carrying
   `sampled_subset_cost` / `policy_concurrency`, `FinishDecode` → `Observe`).
   The fix threads a `planned_greedy` flag through `PendingDecode`/`Observe` and
@@ -2232,6 +2232,39 @@ new commits — the queue carries work the fork can take before it merges.
   #1071 (12 lines, only if a v3.1 shard fails to load), #682 (gfx1150), #904
   (Qwen3.8-27B GEMM table, no weights), #980 (vision) and the ds4 / image /
   audio PRs (same model and framework gates as before).
+
+## Port 2026-11-08: greedy batches clear a stale MTP AR backoff (upstream #912)
+
+`MtpLengthController::Observe` only ever *set* the AR backoff
+(`state_.retry_tokens = 16`) when a cycle stopped being profitable; nothing
+recovered it. A session that backed off while drafting solo kept the interval
+even after a jointly planned greedy batch (`DecodeBatchImpl` →
+`batch_drafts`) proved its drafts profitable, so the next solo cycle drafted
+nothing for up to 16 tokens.
+
+- `mtp_policy.hpp`: `Observe(..., bool recover_backoff = false)` and
+  `else if (recover_backoff) state_.retry_tokens = 0;`. Ordinary, sampled and
+  empty (`drafted == 0`) observations keep their existing interval, and
+  unprofitable evidence still latches the backoff — the new branch only fires
+  where `BestLength(...) != 0`.
+- `engine.cpp`: `PendingDecode::planned_greedy`, set next to
+  `policy_concurrency` as `batch_drafts.has_value() &&
+  !sampler.config().uses_random_sampling()`, passed to the single
+  `draft_length_.Observe(...)` call in `FinishDecode`. Greedy output is
+  width-independent, so no sampling replay changes; with no batch planning the
+  flag is false and behavior is bit-identical to before.
+- `tests/models/qwen38_flash_next/mtp_sampling_test.cpp`:
+  `CheckBatchBackoffRecovery()` (upstream's fixture) — recovery clears only
+  `retry_tokens` and changes no acceptance or exploration history, the restored
+  state reproduces every budget choice, an empty observation keeps the
+  interval, and poor acceptance still sets 16 with `Choose == 0`.
+  `qwen38_flash_next.{mtp_sampling,draft_vocab,config}` pass (3/3,
+  `build/cpu-test`); the new check fails when the branch is disabled.
+- Pending A/B on this host (multi-session greedy MTP, one engine at a time):
+  `gufo bench -ng 2 -md 2 -b 2 -p 128 --mtp-method greedy -ngl 2`. Upstream
+  landed it as a correctness fix for stale policy state, not a throughput win;
+  the gain appears only in serving shapes where a greedy batch and a solo
+  request alternate per session.
 
 ## External engines check 2026-11-08 (llama.cpp, vLLM, bubo)
 
