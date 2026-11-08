@@ -139,6 +139,7 @@ bool Executor::HcMixBatch(const DeviceMixer& m, const float* res, bool normed,
                           std::string* error) const {
   const auto& c = config();
   xn_half_ = false;
+  DropReadyQ8();  // the batched route rewrites xn and mixed unfused
   if (!normed)
     RmsNormRows(res, m.norm.f32(), s_.xn, rows, c.HcDim(), c.hc_count,
                 c.rms_eps, stream_);
@@ -167,12 +168,14 @@ bool Executor::HcMixBatch(const DeviceMixer& m, const float* res, bool normed,
 void Executor::CombineBatch(float* res, const float* gamma,
                             std::uint32_t rows) const {
   const auto& c = config();
+  DropReadyQ8();
   HcCombine(res, s_.block_out, s_.inject, inject_parts_, gamma, s_.xn, rows,
             c.hidden_size, c.hc_count, c.rms_eps, stream_, true);
 }
 
 bool Executor::MtpForwardBatch(std::span<const MtpBatchItem> items,
                                std::string* error) const {
+  DropReadyQ8();
   if (!UsePrimaryStream(error)) {
     return false;
   }
@@ -818,6 +821,7 @@ bool Executor::ForwardWide(Session& session,
 
 bool Executor::ForwardBatchImpl(std::span<const BatchItem> items, bool wide,
                                 std::string* error) const {
+  DropReadyQ8();
   if (!UsePrimaryStream(error)) {
     return false;
   }
