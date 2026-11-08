@@ -1,4 +1,4 @@
-﻿#include "src/models/qwen38_flash_next/kernels/rocm/kernels.hpp"
+#include "src/models/qwen38_flash_next/kernels/rocm/kernels.hpp"
 
 #include <hip/hip_bfloat16.h>
 #include <hip/hip_fp16.h>
@@ -6843,7 +6843,8 @@ __launch_bounds__(256) __global__ void DenseF16GEMMKernel(
     float* __restrict__ y, std::size_t batch, std::size_t m, std::size_t k,
     const __half* xn = nullptr, __half* mixed_half = nullptr,
     void* mixed_q8 = nullptr, const float* conv_w = nullptr,
-    float* conv_out = nullptr, AttentionProjectionOutput attention = {}) {
+    float* conv_out = nullptr, AttentionProjectionOutput attention = {},
+    const unsigned row_tile_offset = 0) {
   static_assert(WM * WN == 8, "256 threads is 8 waves");
   static_assert(BM % (16 * WM) == 0 && BN % (16 * WN) == 0);
   static_assert(!(kBf16 && kHalfWeights));
@@ -6892,8 +6893,10 @@ __launch_bounds__(256) __global__ void DenseF16GEMMKernel(
   const int wave_tok = wave_id % WN;
   // Group row tiles for the narrow HC up projection. The tile grid's row
   // count is divisible by kRowGroup; every dot product keeps its K order.
-  const unsigned row_group = blockIdx.y / kRowGroup;
-  const unsigned within = (blockIdx.y % kRowGroup) * gridDim.x + blockIdx.x;
+  const unsigned row_group =
+      (blockIdx.y + row_tile_offset) / kRowGroup;
+  const unsigned within =
+      ((blockIdx.y + row_tile_offset) % kRowGroup) * gridDim.x + blockIdx.x;
   const int r_block = (row_group * kRowGroup + within % kRowGroup) * BM;
   const int t_block = (within / kRowGroup) * BN;
   const auto token_of = [&](int local) { return t_block + local; };
@@ -7563,6 +7566,8 @@ bool DenseF16SsmGemm(const void* w, const __half* x, const float* conv_w,
                      ,
                      std::uint32_t gpu_rows
 #endif
+                      ,
+                      hipStream_t z_stream, hipEvent_t z_start
 ) {
   if (n_tokens == 0 || m != 16384 || k != 2560 || channels != 10240 ||
       kernel != kSsmConvTaps) {
@@ -7581,17 +7586,42 @@ bool DenseF16SsmGemm(const void* w, const __half* x, const float* conv_w,
     return true;
   }
 #endif
-  // Row-tile pairs per token tile in launch order (-0.9 %).
-  hipLaunchKernelGGL((DenseF16GEMMKernel<256, 128, 2, 8, 1, 2, false, true>),
-                     dim3((n_tokens + 127) / 128,
+  unsigned z_tile_first =
+      z_stream != nullptr
 #ifdef GUFO_NPU
-                          launch_rows / 256
-#else
-                          m / 256
+          && launch_rows >= m
 #endif
-                          ),
-                     dim3(kThreads), 0, stream, w, x, qkvz, n_tokens, m, k,
-                     nullptr, nullptr, nullptr, conv_w, convolved);
+          ? channels / 256
+          : 0;
+  if (z_tile_first != 0) {
+    // The Z rows' tiles run beside the convolution boundary on z_stream,
+    // forked after the QKV tiles and joined by GatedDeltaNet's z_ready wait.
+    if (hipEventRecord(z_start, stream) != hipSuccess ||
+        hipStreamWaitEvent(z_stream, z_start, 0) != hipSuccess)
+      z_stream = stream;
+    if (z_stream == stream)
+      z_tile_first = 0;
+  }
+  // Row-tile pairs per token tile in launch order (-0.9 %).
+  hipLaunchKernelGGL(
+      (DenseF16GEMMKernel<256, 128, 2, 8, 1, 2, false, true>),
+      dim3((n_tokens + 127) / 128,
+           z_tile_first != 0
+               ? z_tile_first
+#ifdef GUFO_NPU
+               : launch_rows / 256
+#else
+               : m / 256
+#endif
+               ),
+      dim3(kThreads), 0, stream, w, x, qkvz, n_tokens, m, k, nullptr, nullptr,
+      nullptr, conv_w, convolved);
+  if (z_tile_first != 0)
+    hipLaunchKernelGGL((DenseF16GEMMKernel<256, 128, 2, 8, 1, 2>),
+                       dim3((n_tokens + 127) / 128, m / 256 - z_tile_first),
+                       dim3(kThreads), 0, z_stream, w, x, qkvz, n_tokens, m, k,
+                       nullptr, nullptr, nullptr, nullptr, nullptr, {},
+                       z_tile_first);
   hipLaunchKernelGGL(
       SsmConvBoundaryKernel,
       dim3(Blocks(channels / 4), (n_tokens + kSsmProjectionTileTokens - 1) /
@@ -7603,8 +7633,7 @@ bool DenseF16SsmGemm(const void* w, const __half* x, const float* conv_w,
 
 template<WeightType type, unsigned tokens>
 void LaunchSmallGemm(const void* w, const float* x, float* out, std::uint32_t m,
-                     std::uint32_t k, hipStream_t stream) {
-  if constexpr (type != WeightType::kQ8_0) {
+                     std::uint32_t k, hipStream_t stream) {  if constexpr (type != WeightType::kQ8_0) {
     // Rows of whole four-step passes (K 2560: router and GDN alpha/beta in
     // F16, indexer in BF16) take the unchecked vector loads, four steps at a
     // time at any width: the same products in the same order.

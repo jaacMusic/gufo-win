@@ -588,12 +588,23 @@ private:
   mutable bool unwaited_{false};
   /// Back to the primary stream, after draining the current one if needed.
   [[nodiscard]] bool UsePrimaryStream(std::string* error_msg) const;
+  /// The main stream waits for the side stream's queued overlap, if any.
+  [[nodiscard]] bool JoinSide(std::string* error_msg) const;
   /// The accumulative state of a session to or from the retry backup buffer
   /// (npu_retry.hpp lists the regions), in a few batched launches.
   [[nodiscard]] bool CopyNpuRetryState(Session& session, bool save,
                                        std::string* error_msg) const;
 
   hipEvent_t counts_ready_{nullptr};
+  /// Side stream running the shared expert / Z-row tiles beside the main
+  /// stream; forked through side_start_, joined back through side_done_.
+  hipStream_t side_stream_{nullptr};
+  hipEvent_t side_start_{nullptr};
+  hipEvent_t side_done_{nullptr};
+  mutable bool side_pending_{false};
+  /// True between BeginCapture and EndCapture: overlap guards must keep the
+  /// side stream's forks/joins inside the capture.
+  mutable bool capturing_{false};
   hipblasHandle_t blas_{nullptr};
   std::unique_ptr<BlasLt> blaslt_;
 

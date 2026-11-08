@@ -2142,12 +2142,17 @@ Next sweep from `0fb50ce4`.
 - Port candidate (fix, trivial): `805c9421` #993 counts the draft block's
   hidden row in `SessionBytes` (`max(max_speculative, max_copy_rows) + 1`
   rows × HcDim). Pure accounting arithmetic, perf-neutral; port alongside the
-  next executor change.
+  next executor change. Ported 2026-11-07 (`f2b23479`).
 - Verify-then-port (fix): `186a507d` #1016 ends capacity-limited prefill steps
   on a selection block (`StepTokens` clamps `count -= (offset+count) % ratio`).
   The fork's step sizing in `engine.cpp` (Prefill loop, ~line 841) has no
   alignment clamp; confirm the misaligned-frontier bug exists in the fork's
   executor/batch walk before porting. Host arithmetic only, perf-neutral.
+  Ported 2026-11-07 as `Model::ClampPrefillStep` (engine.cpp Prefill loop +
+  inference_backend.cpp serving Prefill); SessionBytes fix (#993) rode along.
+  Gate: session_test --prefill-only rebuilt on the restored pre-sync test
+  (`f35539c6`); all chunk/boundary logits exact (frontier itself was already
+  correct — clamp is defense for internal multi-pass spans).
 - Maybe (fix): `118b7c63` #1021 GGUF tensorless split shards (10 lines in
   `gguf_reader.cpp`, open path only) — port only if multi-shard GGUFs are
   served here. `b7cf081d` #1041 probe expert-format gate rides the extension

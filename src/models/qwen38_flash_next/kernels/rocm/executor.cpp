@@ -395,6 +395,14 @@ Executor::~Executor() {
   if (counts_ready_ != nullptr) {
     (void)hipEventDestroy(counts_ready_);
   }
+  if (side_stream_ != nullptr) {
+    (void)hipStreamDestroy(side_stream_);
+  }
+  for (hipEvent_t event : {side_start_, side_done_}) {
+    if (event != nullptr) {
+      (void)hipEventDestroy(event);
+    }
+  }
   if (alt_stream_ != nullptr) {
     qfn_mmq_release_stream(alt_stream_);
     (void)hipStreamDestroy(alt_stream_);
@@ -430,7 +438,12 @@ std::unique_ptr<Executor> Executor::Create(const DeviceModel& model,
   }
   e->stream_ = e->primary_stream_;
   if (!Check(hipEventCreateWithFlags(&e->counts_ready_, hipEventDisableTiming),
-             "expert counts event", error_msg)) {
+             "expert counts event", error_msg) ||
+      !Check(hipStreamCreate(&e->side_stream_), "side stream", error_msg) ||
+      !Check(hipEventCreateWithFlags(&e->side_start_, hipEventDisableTiming),
+             "side stream fork", error_msg) ||
+      !Check(hipEventCreateWithFlags(&e->side_done_, hipEventDisableTiming),
+             "side stream join", error_msg)) {
     return nullptr;
   }
   if (hipblasCreate(&e->blas_) != HIPBLAS_STATUS_SUCCESS ||
@@ -2248,6 +2261,19 @@ bool Executor::LinearAttention(const DeviceLayer& l, Session::LinearState& s,
   std::uint32_t qkv_stride = channels;
   std::uint32_t z_stride = c.SsmValueDim();
   bool convolved = false;
+  // The Z rows' projection tiles may run on the side stream beside the
+  // convolution boundary; GatedDeltaNet waits for them through z_ready, and
+  // any early return joins them back through z_join.
+  hipEvent_t z_ready = nullptr;
+  struct ZJoin {
+    const Executor* executor;
+    hipEvent_t event;
+    ~ZJoin() {
+      if (event != nullptr &&
+          hipStreamWaitEvent(executor->stream_, event, 0) != hipSuccess)
+        (void)hipStreamSynchronize(executor->side_stream_);
+    }
+  } z_join{this, nullptr};
 #ifdef GUFO_NPU
   std::unique_ptr<npu::HipLinearZTransfer> npu_transfer;
   std::unique_ptr<npu::LinearZWork> npu_work;
@@ -2292,7 +2318,12 @@ bool Executor::LinearAttention(const DeviceLayer& l, Session::LinearState& s,
           l.ssm_in.rows, l.ssm_in.cols, channels, c.ssm_conv_kernel, stream_
 #ifdef GUFO_NPU
           ,
-          npu_work ? l.npu_z->gpu_rows : 0
+          npu_work ? l.npu_z->gpu_rows : 0,
+          npu_work ? nullptr : side_stream_,
+          npu_work ? nullptr : side_start_
+#else
+          ,
+          side_stream_, side_start_
 #endif
       );
 #ifdef GUFO_NPU
@@ -2305,6 +2336,22 @@ bool Executor::LinearAttention(const DeviceLayer& l, Session::LinearState& s,
         convolved = l.npu_z->gpu_rows >= channels;
       }
 #endif
+      if (convolved
+#ifdef GUFO_NPU
+          && npu_work == nullptr
+#endif
+      ) {
+        // The Z tiles are queued on the side stream; GatedDeltaNet waits for
+        // this event before it reads the Z rows.
+        if (!Check(hipEventRecord(side_done_, side_stream_),
+                   "side stream join", error_msg)) {
+          if (!capturing_)
+            (void)hipStreamSynchronize(side_stream_);
+          return false;
+        }
+        z_ready = side_done_;
+        z_join.event = side_done_;
+      }
     }
     if (!projections_ready && !convolved &&
 #ifdef GUFO_NPU
@@ -2371,7 +2418,7 @@ bool Executor::LinearAttention(const DeviceLayer& l, Session::LinearState& s,
                 c.ssm_num_k_heads, c.ssm_num_v_heads, c.ssm_head_dim,
                 c.ssm_conv_kernel, MatrixRows(n_tokens) && !speculative,
                 convolved, c.rms_eps, stream_, out_half,
-                out_q8_1 ? s_.gdn_q8_1 : nullptr);
+                out_q8_1 ? s_.gdn_q8_1 : nullptr, z_ready);
   MarkPhase(Timeline::kPhGdnScan, n_tokens);
   if (!project_output) {
     return true;
@@ -2658,6 +2705,80 @@ bool Executor::Moe(const DeviceLayer& l, const float* x, float* out,
       transfer.reset();
     }
   }
+#endif  // GUFO_NPU
+  // The side stream runs the shared expert beside the routed experts. Any
+  // gain depends on the workload: both paths read weights and can contend
+  // for DRAM. The shared expert writes its own scratch and may quantize x
+  // into s_.x_q8t, so no main-stream work may use s_.x_q8t before JoinSide.
+  // Only the Q8_0 shared expert overlaps: its kernels take stream_, while
+  // the BF16, F16 and F32 routes go through BLAS handles bound to the main
+  // stream. A decode pass replays from a captured graph, so the fork and
+  // join below must stay inside the capture region: side_stream_ joins the
+  // capture through side_start_, and the main stream joins back through
+  // side_done_.
+  bool overlap = (ExpertMatrixRows(n_tokens) || n_tokens <= kVecBatch) &&
+                 !last_only && l.shexp_gate.type == GgmlType::kQ8_0 &&
+                 l.shexp_up.type == GgmlType::kQ8_0 &&
+                 l.shexp_down.type == GgmlType::kQ8_0;
+#ifdef GUFO_NPU
+  // The NPU shared-expert path overlaps through finish_shared instead.
+  overlap = overlap && !work;
+#endif
+  const hipStream_t main = stream_;
+  if (overlap) {
+    if (!Check(hipEventRecord(side_start_, main), "side stream fork",
+               error_msg) ||
+        !Check(hipStreamWaitEvent(side_stream_, side_start_, 0),
+               "side stream wait", error_msg)) {
+      return false;
+    }
+    // Waiting on an event recorded inside the capture is what makes the side
+    // stream part of it. This checks the fork, not the replayed arithmetic.
+    if (capturing_) {
+      hipStreamCaptureStatus side_status = hipStreamCaptureStatusNone;
+      if (!Check(hipStreamIsCapturing(side_stream_, &side_status),
+                 "side stream capture query", error_msg) ||
+          side_status != hipStreamCaptureStatusActive) {
+        AssignError(error_msg,
+                    "shared-expert overlap did not join the graph capture");
+        return false;
+      }
+    }
+  }
+  // Restore the launch stream and publish any queued side work even when a
+  // shared-expert launch throws. The join guard runs after this scope unwinds.
+  struct JoinGuard {
+    const Executor* executor;
+    ~JoinGuard() { (void)executor->JoinSide(nullptr); }
+  } join_guard{this};
+  struct SharedScope {
+    const Executor* executor;
+    hipStream_t main;
+    bool overlap;
+    bool finished{false};
+    bool Finish() noexcept {
+      executor->stream_ = main;
+      if (finished)
+        return true;
+      finished = true;
+      if (!overlap)
+        return true;
+      const auto status =
+          hipEventRecord(executor->side_done_, executor->side_stream_);
+      if (status == hipSuccess) {
+        executor->side_pending_ = true;
+      } else if (!executor->capturing_) {
+        // Capture cleanup discards recorded work; only eager work needs a
+        // host wait when no completion event could be recorded.
+        (void)hipStreamSynchronize(executor->side_stream_);
+      }
+      return status == hipSuccess;
+    }
+    ~SharedScope() { (void)Finish(); }
+  } shared_scope{this, main, overlap};
+  if (overlap)
+    stream_ = side_stream_;
+#ifdef GUFO_NPU
   if (!work) {
 #endif
     if (!GatedDense(l.shexp_up, l.shexp_gate, x, s_.shexp_up, n_tokens,
@@ -2700,6 +2821,10 @@ bool Executor::Moe(const DeviceLayer& l, const float* x, float* out,
   })
                                                    : std::function<bool()>{};
 #endif
+  if (!shared_scope.Finish()) {
+    AssignError(error_msg, "side stream join event");
+    return false;
+  }
   MarkPhase(Timeline::kPhMoeShared, n_tokens);
   if (last_only && l.ffn_gate_exps.type == GgmlType::kQ8_0 &&
       l.ffn_up_exps.type == GgmlType::kQ8_0 &&
@@ -2835,6 +2960,11 @@ bool Executor::MoeExperts(const DeviceLayer& l, const float* x, float* out,
                  n_tokens, error_msg)) {
       return false;
     }
+  }
+  // The epilogue (here or deferred into Combine by moe_pending_) reads the
+  // shared expert's output, which may still be queued on the side stream.
+  if (!JoinSide(error_msg)) {
+    return false;
   }
   if (wmma_experts) {
     // The combine that follows folds this epilogue into its own pass when
@@ -2977,10 +3107,13 @@ bool Executor::Run(Session& session, std::uint64_t key, bool graph,
               "graph capture", error_msg)) {
         return false;
       }
+      capturing_ = true;
       const bool ok = run_body();
-      if (!Check(hipStreamEndCapture(stream_, &captured), "graph capture end",
-                 error_msg) ||
-          !ok) {
+      const bool ended =
+          Check(hipStreamEndCapture(stream_, &captured), "graph capture end",
+                error_msg);
+      capturing_ = false;
+      if (!ended || !ok) {
         if (captured != nullptr) {
           (void)hipGraphDestroy(captured);
         }
@@ -3445,6 +3578,21 @@ bool Executor::UsePrimaryStream(std::string* error_msg) const {
     ++waits_completed_;  // covers a deferred frontier copy
   }
   stream_ = primary_stream_;
+  return true;
+}
+
+bool Executor::JoinSide(std::string* error_msg) const {
+  if (!side_pending_) {
+    return true;
+  }
+  side_pending_ = false;
+  if (hipStreamWaitEvent(stream_, side_done_, 0) != hipSuccess) {
+    if (!capturing_) {
+      (void)hipStreamSynchronize(side_stream_);
+    }
+    AssignError(error_msg, "side stream join failed");
+    return false;
+  }
   return true;
 }
 
