@@ -2330,9 +2330,9 @@ yield callback throws. 150 soak rounds since are clean (zero stream
 errors, output hash unchanged, prompt 13.3 s / decoder 12.55 s: the extra
 syncs cost about 2% of the port's win).
 
-## Reference build 2026-11-08 ( b3d6f54)
+## Reference build 2026-11-08 (0b3d6f54)
 
- b3d6f54 (layer-split prefill + race fix + --prefill-chunk deprecation)
+0b3d6f54 (layer-split prefill + race fix + --prefill-chunk deprecation)
 is the new reference binary and baseline for future gates on this machine.
 Single-session bench (release, v3.1 XL UD-Q4_K_XL 4-shard + MTP shared
 Q8_0, -p 2048 -n 128 -d 0,16384 -r 2 --temperature 0, idle engine):
