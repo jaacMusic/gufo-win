@@ -111,6 +111,11 @@ public:
   [[nodiscard]] std::size_t capacity() const noexcept;
   [[nodiscard]] std::size_t buffered_output_bytes() const noexcept;
   [[nodiscard]] std::size_t max_buffered_output_bytes() const noexcept;
+  /// Budget of host bytes for prompt KV state and the bytes already claimed,
+  /// for admission refusals and /metrics gauges. `budget_bytes` is zero when
+  /// the runner does not publish a claim.
+  [[nodiscard]] PromptAdmissionBudget PromptAdmissionBudgetSnapshot()
+      const noexcept;
 
   [[nodiscard]] Request Submit(std::vector<TextRunnerToken> prompt,
                                std::size_t max_tokens,

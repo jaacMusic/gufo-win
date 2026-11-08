@@ -973,7 +973,7 @@ HttpResponse LlamaSlots(const HttpRequest&, TextGenerationBackend& b) {
   return Ok(resp);
 }
 
-HttpResponse LlamaMetrics(const HttpRequest&, TextGenerationBackend&) {
+HttpResponse LlamaMetrics(const HttpRequest&, TextGenerationBackend& backend) {
   std::ostringstream out;
   out << "# HELP llamacpp:prompt_tokens_total Total prompt tokens processed\n"
       << "# TYPE llamacpp:prompt_tokens_total counter\n"
@@ -996,6 +996,23 @@ HttpResponse LlamaMetrics(const HttpRequest&, TextGenerationBackend&) {
       << "# HELP llamacpp:kv_cache_usage_ratio KV cache usage ratio\n"
       << "# TYPE llamacpp:kv_cache_usage_ratio gauge\n"
       << "llamacpp:kv_cache_usage_ratio 0.0\n";
+  if (const auto prompt_budget = backend.prompt_admission_budget()) {
+    out << "# HELP gufo_prompt_state_budget_bytes Host bytes reserved for "
+           "prompt KV state\n"
+        << "# TYPE gufo_prompt_state_budget_bytes gauge\n"
+        << "gufo_prompt_state_budget_bytes " << prompt_budget->budget_bytes
+        << "\n"
+        << "# HELP gufo_prompt_state_reserved_bytes Host bytes claimed by "
+           "pending prompts\n"
+        << "# TYPE gufo_prompt_state_reserved_bytes gauge\n"
+        << "gufo_prompt_state_reserved_bytes " << prompt_budget->used_bytes
+        << "\n"
+        << "# HELP gufo_prompt_state_available_bytes Host bytes still "
+           "available for prompts\n"
+        << "# TYPE gufo_prompt_state_available_bytes gauge\n"
+        << "gufo_prompt_state_available_bytes "
+        << prompt_budget->available_bytes << "\n";
+  }
   return {.status = 200,
           .reason = "OK",
           .body = out.str(),

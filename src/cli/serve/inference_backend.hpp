@@ -120,6 +120,9 @@ public:
   /// Stable model identifier used in API responses.
   [[nodiscard]] std::string model_id() const override;
   [[nodiscard]] bool ready() const override;
+  /// Host prompt-state budget gauges, when the runner publishes a claim.
+  [[nodiscard]] std::optional<PromptAdmissionBudget> prompt_admission_budget()
+      const override;
   [[nodiscard]] bool device_lost() const override;
   [[nodiscard]] bool supports_images() const override;
   [[nodiscard]] std::string model_path() const override;

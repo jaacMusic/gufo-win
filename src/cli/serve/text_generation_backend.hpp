@@ -28,6 +28,14 @@ enum class TextGenerationErrorCode : std::uint8_t {
   kOutputBackpressure,
   kSchedulerStopping,
   kToolChoiceUnsatisfied,
+  kInsufficientMemory,
+};
+
+/// Snapshot of a scheduler-level budget, for /metrics gauges.
+struct PromptAdmissionBudget {
+  std::size_t budget_bytes{0};
+  std::size_t used_bytes{0};
+  std::size_t available_bytes{0};
 };
 
 class TextGenerationError final : public std::runtime_error {
@@ -35,7 +43,20 @@ public:
   TextGenerationError(TextGenerationErrorCode code, const std::string& message)
       : std::runtime_error(message), code_(code) {}
 
+  TextGenerationError(TextGenerationErrorCode code, const std::string& message,
+                      std::size_t required_bytes, std::size_t remaining_bytes)
+      : std::runtime_error(message),
+        code_(code),
+        required_bytes_(required_bytes),
+        remaining_bytes_(remaining_bytes) {}
+
   [[nodiscard]] TextGenerationErrorCode code() const noexcept { return code_; }
+  [[nodiscard]] std::optional<std::size_t> required_bytes() const noexcept {
+    return required_bytes_;
+  }
+  [[nodiscard]] std::optional<std::size_t> remaining_bytes() const noexcept {
+    return remaining_bytes_;
+  }
   [[nodiscard]] int http_status() const noexcept {
     switch (code_) {
       case TextGenerationErrorCode::kQueueFull:
@@ -46,6 +67,7 @@ public:
       case TextGenerationErrorCode::kOutputLimit:
       case TextGenerationErrorCode::kOutputBackpressure:
       case TextGenerationErrorCode::kSchedulerStopping:
+      case TextGenerationErrorCode::kInsufficientMemory:
         return 503;
       case TextGenerationErrorCode::kToolChoiceUnsatisfied:
         return 502;
@@ -68,6 +90,8 @@ public:
         return "scheduler_stopping";
       case TextGenerationErrorCode::kToolChoiceUnsatisfied:
         return "tool_choice_unsatisfied";
+      case TextGenerationErrorCode::kInsufficientMemory:
+        return "insufficient_memory";
     }
     return "generation_error";
   }
@@ -78,6 +102,8 @@ public:
 
 private:
   TextGenerationErrorCode code_;
+  std::optional<std::size_t> required_bytes_;
+  std::optional<std::size_t> remaining_bytes_;
 };
 
 struct ChatRequest {
@@ -218,6 +244,12 @@ public:
 
   [[nodiscard]] virtual std::string model_id() const = 0;
   [[nodiscard]] virtual bool ready() const = 0;
+  /// Bytes still available for admitting new prompts into host state.
+  /// Backends with an asynchronous scheduler override this.
+  [[nodiscard]] virtual std::optional<PromptAdmissionBudget>
+  prompt_admission_budget() const {
+    return std::nullopt;
+  }
   /// True once a failed generation showed that the execution device can no
   /// longer run work, for example after a GPU reset. The loss is permanent.
   [[nodiscard]] virtual bool device_lost() const { return false; }

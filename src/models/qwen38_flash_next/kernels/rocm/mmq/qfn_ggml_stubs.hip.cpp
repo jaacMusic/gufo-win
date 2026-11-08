@@ -112,53 +112,85 @@ namespace {
  * hipMallocAsync/hipFreeAsync, whose reuse of a just-freed block raced with
  * in-flight kernels on this ROCm and made prefill logits nondeterministic. */
 struct qfn_stack_pool : public ggml_hip_pool {
+    struct block {
+        char *base;
+        size_t capacity;
+        size_t top;
+    };
+
+    struct live_alloc {
+        char *ptr;
+        size_t bytes;
+        size_t block;
+    };
+
     int device;
-    char *base = nullptr;
-    size_t capacity = 0;
-    size_t top = 0;
-    std::vector<std::pair<char *, size_t>> live;
+    // Freed blocks are never returned, so captured graph pointers stay valid
+    // and a capture never needs to grow again.
+    std::vector<block> blocks;
+    size_t current = 0;
+    size_t live_bytes = 0;
+    size_t high_water = 0;
+    std::vector<live_alloc> live;
 
     explicit qfn_stack_pool(int device) : device(device) {}
 
     ~qfn_stack_pool() override {
-        if (base) (void)hipFree(base);
+        for (const block &b : blocks) (void)hipFree(b.base);
     }
 
-    void reserve(size_t bytes) {
-        if (bytes <= capacity) return;
-        /* Growing invalidates outstanding pointers, so it only happens while
-         * nothing is live; the arena starts generous to keep that true. */
-        if (top != 0) {
-            fprintf(stderr, "qfn_stack_pool: arena exhausted with live allocations\n");
-            abort();
-        }
+    void add_block(size_t bytes) {
+        /* Drain the device first, as the single arena did. On ROCm an
+         * allocation made while kernels are in flight leaves later kernel
+         * launches slower for seconds. Blocks are only added by eager
+         * passes, never during capture. */
         (void)hipDeviceSynchronize();
-        if (base) (void)hipFree(base);
-        size_t next = capacity ? capacity : (size_t) 256 << 20;
-        while (next < bytes) next *= 2;
-        HIP_CHECK(hipMalloc((void **) &base, next));
-        capacity = next;
+        char *base = nullptr;
+        HIP_CHECK(hipMalloc((void **) &base, bytes));
+        blocks.push_back({base, bytes, 0});
     }
 
     void * alloc(size_t size, size_t * actual_size) override {
         ggml_hip_set_device(device);
         const size_t aligned = (size + 255) & ~(size_t) 255;
-        if (top + aligned > capacity) reserve(top + aligned);
-        char *ptr = base + top;
-        top += aligned;
-        live.emplace_back(ptr, aligned);
+        if (blocks.empty()) {
+            size_t first = (size_t) 16 << 20;
+            while (first < aligned) first *= 2;
+            add_block(first);
+        }
+        if (blocks[current].top + aligned > blocks[current].capacity) {
+            // Blocks after `current` are empty: the stack only reaches them
+            // through it.
+            size_t next = current + 1;
+            while (next < blocks.size() && blocks[next].capacity < aligned) ++next;
+            if (next == blocks.size()) {
+                size_t bytes = blocks.back().capacity * 2;
+                while (bytes < aligned) bytes *= 2;
+                add_block(bytes);
+            }
+            current = next;
+        }
+        block &b = blocks[current];
+        char *ptr = b.base + b.top;
+        b.top += aligned;
+        live_bytes += aligned;
+        if (live_bytes > high_water) high_water = live_bytes;
+        live.push_back({ptr, aligned, current});
         if (actual_size) *actual_size = aligned;
         return ptr;
     }
 
     void free(void * ptr, size_t /*size*/) override {
         if (!ptr) return;
-        if (live.empty() || live.back().first != ptr) {
+        if (live.empty() || live.back().ptr != ptr) {
             fprintf(stderr, "qfn_stack_pool: non-LIFO free\n");
             abort();
         }
-        top -= live.back().second;
+        const live_alloc a = live.back();
         live.pop_back();
+        blocks[a.block].top -= a.bytes;
+        live_bytes -= a.bytes;
+        while (current > 0 && blocks[current].top == 0) --current;
     }
 };
 
@@ -180,8 +212,8 @@ std::map<std::pair<int, hipStream_t>, std::unique_ptr<ggml_hip_pool>> g_stream_p
 // The fork alternates the executor's two streams between passes (WaitFlag),
 // so the eager warm-up pass that grows one stream's arena may run on a
 // different stream than the later decode-graph capture, and capture forbids
-// hipMalloc. Equalize the second arena to the first's capacity right after
-// the warm pass, outside any capture.
+// hipMalloc. Grow the second arena to the first's high-water mark right after
+// the warm pass, outside any capture; freed blocks stay for reuse.
 extern "C" void qfn_mmq_equalize_stream_pools(int device, hipStream_t warm,
                                               hipStream_t other) {
     const std::lock_guard<std::mutex> lock(g_stream_pools_mutex);
@@ -191,8 +223,8 @@ extern "C" void qfn_mmq_equalize_stream_pools(int device, hipStream_t warm,
     if (!po) po = ggml_backend_hip_context::new_pool_for_device(device, 0);
     const auto *sw = static_cast<qfn_stack_pool *>(pw.get());
     auto *so = static_cast<qfn_stack_pool *>(po.get());
-    if (so->capacity < sw->capacity) {
-        ggml_hip_pool_alloc<char> grow(*so, sw->capacity);
+    if (so->high_water < sw->high_water) {
+        ggml_hip_pool_alloc<char> grow(*so, sw->high_water);
     }
 }
 

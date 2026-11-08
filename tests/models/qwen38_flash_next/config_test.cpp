@@ -239,10 +239,20 @@ void CheckMalformedMetadata() {
   assert(draft && trunk && draft->MtpMatches(*trunk));
 }
 
+void CheckPromptKvBytesPerToken() {
+  const auto parsed = Parse(ValidMetadata());
+  assert(parsed);
+  // 12 full-attention layers x 2 (K and V) x 512 kv dim x 2 bytes.
+  assert(parsed->PromptKvBytesPerToken(false) == 24576);
+  // MTP adds one draft row; it does not duplicate the target rows.
+  assert(parsed->PromptKvBytesPerToken(true) == 26624);
+}
+
 }  // namespace
 
 int main() {
   CheckSidecarCompatibility();
   CheckMalformedMetadata();
+  CheckPromptKvBytesPerToken();
   std::cout << "Flash-Next metadata checks passed.\n";
 }

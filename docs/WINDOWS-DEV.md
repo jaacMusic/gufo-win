@@ -119,16 +119,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\windows\fetch-hf-shard
 Benchmarks use the production command line; no thinking switch exists.
 
 ```
-gufo bench --model '<hf-cache>\models--unsloth--Qwen3.8-Flash-Next-GGUF\
-  <snapshot>\UD-Q4_K_XL\Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf'
+gufo bench --model "$env:USERPROFILE\models\qwen38-flash-next-v31\
+  UD-Q4_K_XL\Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf"
   --n-prompt 2048 --n-gen 128 --n-depth 0,16384 --repetitions 1
   --temperature 0
 ```
 
-- Model files live in the local HF cache for
-  `unsloth/Qwen3.8-Flash-Next-GGUF`; use the newest snapshot that contains
-  the quantization (4-part UD-Q4_K_XL plus an `MTP` sidecar and
-  `mmproj-BF16.gguf`).
+- The bench model is the Dynamic v3.1 re-pin (`d9620119`) downloaded to
+  `%USERPROFILE%\models\qwen38-flash-next-v31` (4-part UD-Q4_K_XL plus an
+  `MTP` sidecar and `mmproj-BF16.gguf`) — that local directory supersedes the
+  HF-cache snapshots.
 - `tools\windows\run-flash-next.ps1 -Mode bench` wraps the full sweep
   (depths `0,4096,16384,32768,65536,131072`, `--repetitions 2`, specular
   args). `-Draft off` = AR baseline, `-Greedy` = `--temperature 0`.

@@ -2424,6 +2424,9 @@ public:
         // reserve its remaining lazy buffers once from aggregate capacity.
         .temporary_scratch_bytes = 0,
         .retained_snapshot_capacity_bytes = HostSnapshotBudgetBytes(),
+        .prompt_state_bytes_per_token =
+            model_->config().PromptKvBytesPerToken(use_mtp_),
+        .prompt_admission_budget_bytes = HostSnapshotBudgetBytes(),
         .requires_device_runtime_lock = true,
     };
   }
@@ -3557,6 +3560,23 @@ bool InferenceBackend::ready() const {
   return impl_->Snapshot() != nullptr;
 #else
   return false;
+#endif
+}
+
+std::optional<PromptAdmissionBudget> InferenceBackend::prompt_admission_budget()
+    const {
+#if defined(ENGINE_ENABLE_HIP)
+  const auto state = impl_->Snapshot();
+  if (state == nullptr || state->scheduler == nullptr) {
+    return std::nullopt;
+  }
+  const auto budget = state->scheduler->PromptAdmissionBudgetSnapshot();
+  if (budget.budget_bytes == 0) {
+    return std::nullopt;
+  }
+  return budget;
+#else
+  return std::nullopt;
 #endif
 }
 

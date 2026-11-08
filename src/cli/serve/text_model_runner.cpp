@@ -1457,6 +1457,10 @@ std::size_t TextRunnerPool::capacity() const noexcept {
   return impl_->cache.capacity();
 }
 
+const TextRunnerResourceClaim& TextRunnerPool::resource_claim() const noexcept {
+  return impl_->validated.resources;
+}
+
 TextExecutionPlan TextRunnerPool::SelectDecodePlan(
     std::size_t ready_requests) const {
   if (ready_requests == 0) {

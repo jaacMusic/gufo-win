@@ -109,6 +109,12 @@ HttpResponse GenerationError(const TextGenerationError& exception) {
   error["message"] = exception.what();
   error["type"] = "server_error";
   error["code"] = exception.stable_code();
+  if (const auto required = exception.required_bytes()) {
+    error["required_bytes"] = *required;
+  }
+  if (const auto remaining = exception.remaining_bytes()) {
+    error["remaining_bytes"] = *remaining;
+  }
   response["error"] = std::move(error);
   HttpResponse output{
       .status = exception.http_status(),

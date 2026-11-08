@@ -131,6 +131,10 @@ struct TextRunnerResourceClaim {
   ///
   /// The pool queries this again after creating all mutable request states.
   std::optional<std::size_t> retained_snapshot_capacity_bytes;
+  /// Host bytes a prefill pass needs per prompt token, for admission.
+  std::optional<std::size_t> prompt_state_bytes_per_token;
+  /// Total host bytes reserved for prompt state across concurrent requests.
+  std::optional<std::size_t> prompt_admission_budget_bytes;
   bool requires_device_runtime_lock{false};
 };
 
@@ -467,6 +471,8 @@ public:
 
   [[nodiscard]] const TextModelRunner& runner() const noexcept;
   [[nodiscard]] std::size_t capacity() const noexcept;
+  /// The validated resource claim of the pool's runner.
+  [[nodiscard]] const TextRunnerResourceClaim& resource_claim() const noexcept;
   [[nodiscard]] TextExecutionPlan SelectDecodePlan(
       std::size_t ready_requests) const;
   [[nodiscard]] std::vector<TextDecodeStep> DecodeBatch(

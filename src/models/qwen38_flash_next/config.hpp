@@ -104,6 +104,19 @@ struct Config {
   [[nodiscard]] bool IsLinearLayer(std::uint32_t layer) const noexcept {
     return layer < num_layers && ((layer + 1) % full_attention_interval) != 0;
   }
+  /// Host K/V bytes one prompt token needs across all full-attention layers:
+  /// the checkpoint a prefill pass retains while it runs. The MTP drafter
+  /// keeps one extra K/V row.
+  [[nodiscard]] std::size_t PromptKvBytesPerToken(
+      bool speculative) const noexcept {
+    if (full_attention_interval == 0) {
+      return 0;
+    }
+    const std::size_t row =
+        2 * static_cast<std::size_t>(AttentionKvDim()) * sizeof(std::uint16_t);
+    const std::size_t layers = num_layers / full_attention_interval;
+    return (layers + (speculative ? 1 : 0)) * row;
+  }
   [[nodiscard]] bool IsPleLayer(std::uint32_t layer) const noexcept {
     return ple_layer >= 0 && layer == static_cast<std::uint32_t>(ple_layer);
   }

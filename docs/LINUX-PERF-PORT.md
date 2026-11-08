@@ -2173,3 +2173,41 @@ Next sweep from `0fb50ce4`.
   `c2292921` (Rust PNG dep), `5d2bf02f` (upstream test-only), extension
   framework / cache migration / release-CI commits (architecture the fork
   does not share).
+
+## Ports 2026-11-08: growable MMQ arena (#740) and prompt-state admission budget (#1083)
+
+Both ported by hand from upstream onto `66d07011`; this closes #740 from the
+open-items list. Benchmarks now use the Dynamic v3.1 XL re-pin
+(`%USERPROFILE%\models\qwen38-flash-next-v31`, revision `d9620119`) — that is
+the bench model from now on.
+
+- `[x]` **`1a6655fc` #740 growable qfn_mmq arena** — `qfn_stack_pool` in
+  `qfn_ggml_stubs.hip.cpp` is now block-based (16 MiB first block, doubling;
+  LIFO free across blocks; blocks are never freed, so captured graph pointers
+  stay valid). Previously each (device,stream) pool pinned one arena sized
+  for the worst shape (~240 MiB/stream saved). Fork adaptations kept:
+  `live_bytes`/`high_water` tracking, `hipMalloc`+`hipDeviceSynchronize` in
+  `add_block`, and `qfn_mmq_equalize_stream_pools` reworked to grow the cold
+  stream's pool to the warm stream's `high_water` (the old `capacity` member
+  is gone). `mmq.hpp` tmp_fixup scratch now allocates via
+  `qfn_pool_for_stream(id, stream)` instead of `ctx.pool(id)`. Tests:
+  upstream's `CheckArenaGrowth` + `CheckArenaGraphReplay` ported into
+  `projection_ops_test`; the graph replay test uses a plain `hipStreamCreate`
+  stream and `hipStreamCaptureModeThreadLocal` (Windows ROCm drops kernels
+  from instantiated graphs off NonBlocking capture streams).
+- `[x]` **#1083 prompt-state admission budget (open PR)** — prompts are now
+  charged against a host budget before queuing; over-budget requests get a
+  503 `insufficient_memory` refusal with `required_bytes`/`remaining_bytes`
+  instead of failing later. `PromptKvBytesPerToken` in qwen38 config
+  (24,576 B/token, +2,048 with MTP), `PromptBudget` CAS reservation in
+  `text_generation_scheduler.cpp`, `gufo_prompt_state_budget_bytes` /
+  `gufo_prompt_state_reserved_bytes` / `gufo_prompt_state_available_bytes`
+  gauges in `/metrics`, error payload mirrors in `openai_chat.cpp`. Budget =
+  `HostSnapshotBudgetBytes()`. Tests: `TestPromptStateAdmissionBudget`
+  (scheduler) and `CheckPromptKvBytesPerToken` (config).
+
+A/B on v3.1 XL (release build, pp2048/tg128, depths 0 and 16384,
+`-r 2 --temperature 0`, idle engine): pp 1619.2 / tg 35.6 at d0; pp 1439.1 /
+tg 33.1 at d16384 — all within single-run noise of the documented v3.1
+baseline (1609.5/35.5, 1441.7/33.0). Both ports are perf-neutral as
+expected; #740 only changes allocation.

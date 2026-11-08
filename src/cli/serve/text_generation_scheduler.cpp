@@ -6,6 +6,7 @@
 #include <deque>
 #include <exception>
 #include <iterator>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
@@ -53,6 +54,31 @@ struct OutputBudget {
   std::atomic<std::size_t> max_buffered_bytes{0};
 };
 
+/// Prompt KV bytes reserved by requests that have not finished. The budget is
+/// sampled from the runner's host claim, so queued work cannot overcommit it
+/// before the prefill that actually commits those pages runs.
+struct PromptBudget {
+  void Release(std::size_t bytes) noexcept {
+    if (bytes > 0)
+      reserved_bytes.fetch_sub(bytes, std::memory_order_acq_rel);
+  }
+
+  [[nodiscard]] bool TryReserve(std::size_t bytes,
+                                std::size_t budget) noexcept {
+    std::size_t current = reserved_bytes.load(std::memory_order_relaxed);
+    while (bytes <= budget && current <= budget - bytes) {
+      const std::size_t updated = current + bytes;
+      if (reserved_bytes.compare_exchange_weak(current, updated,
+                                               std::memory_order_acq_rel,
+                                               std::memory_order_relaxed))
+        return true;
+    }
+    return false;
+  }
+
+  std::atomic<std::size_t> reserved_bytes{0};
+};
+
 /// A waiting request must share at least this much with the running prefill
 /// before that prefill is asked to stop and retain a checkpoint there: below
 /// it, the copy costs more than the tokens the waiter would re-read.
@@ -66,6 +92,8 @@ struct ScheduledRequest {
   bool cache_prompt{true};
   std::size_t cache_prefix_tokens{0};
   std::size_t token_limit{1};
+  std::size_t prompt_state_bytes{0};
+  std::shared_ptr<struct PromptBudget> prompt_budget;
   sampling::SamplingConfig sampling;
   TextGenerationScheduler::CancellationCheck external_cancellation;
   bool publish_token_pieces{false};
@@ -96,6 +124,16 @@ struct ScheduledRequest {
   std::size_t buffered_output_bytes{0};
   std::exception_ptr failure;
   bool terminal{false};
+  /// Set once the prompt-state charge is returned, either when the request
+  /// reaches terminal or by the destructor if it never did.
+  bool prompt_released{false};
+
+  ~ScheduledRequest() {
+    // Terminal normally returns the prompt-state charge; this covers a request
+    // discarded before it ran.
+    if (prompt_budget != nullptr && !prompt_released)
+      prompt_budget->Release(prompt_state_bytes);
+  }
 };
 
 struct PendingClient {
@@ -125,6 +163,11 @@ void PublishTerminal(const std::shared_ptr<ScheduledRequest>& request,
     }
     request->failure = std::move(failure);
     request->terminal = true;
+    // Execution is over, so the prompt-state pages are no longer claimed even
+    // if a streaming client keeps the result handle alive.
+    if (request->prompt_budget != nullptr &&
+        !std::exchange(request->prompt_released, true))
+      request->prompt_budget->Release(request->prompt_state_bytes);
     request->phase.store(TextRequestPhase::kTerminal,
                          std::memory_order_release);
   }
@@ -1253,6 +1296,8 @@ struct TextGenerationScheduler::Impl {
   TextPrefillPolicy prefill_policy;
   TextSchedulerPolicy scheduler_policy;
   std::shared_ptr<OutputBudget> output_budget;
+  std::shared_ptr<PromptBudget> prompt_budget =
+      std::make_shared<PromptBudget>();
   bool incremental_prefill_supported{false};
   bool final_token_advance_required{true};
   bool incremental_text_is_exact{false};
@@ -1411,6 +1456,19 @@ std::size_t TextGenerationScheduler::max_buffered_output_bytes()
       std::memory_order_relaxed);
 }
 
+PromptAdmissionBudget TextGenerationScheduler::PromptAdmissionBudgetSnapshot()
+    const noexcept {
+  const auto& claim = impl_->runner_pool->resource_claim();
+  const std::size_t budget = claim.prompt_admission_budget_bytes.value_or(0);
+  const std::size_t used =
+      impl_->prompt_budget->reserved_bytes.load(std::memory_order_relaxed);
+  return {
+      .budget_bytes = budget,
+      .used_bytes = used,
+      .available_bytes = budget > used ? budget - used : 0,
+  };
+}
+
 TextGenerationScheduler::Request TextGenerationScheduler::Submit(
     std::vector<TextRunnerToken> prompt, std::size_t max_tokens,
     const sampling::SamplingConfig& sampling,
@@ -1476,6 +1534,29 @@ TextGenerationScheduler::Request TextGenerationScheduler::Submit(
       impl_->scheduler_policy.max_buffered_output_bytes_per_request;
   request->output_budget = impl_->output_budget;
 
+  // Larger prompts claim more host state (prefill K/V checkpoints); charge
+  // the prompt budget before queueing so many concurrent prompts cannot
+  // overcommit what the next prefill would need. On length_error the value
+  // cannot fit in size_t, so it is over every possible budget.
+  std::size_t prompt_state_bytes = 0;
+  std::optional<std::size_t> prompt_state_bytes_per_token;
+  {
+    const auto& resource_claim = impl_->runner_pool->resource_claim();
+    if (resource_claim.prompt_admission_budget_bytes.has_value()) {
+      prompt_state_bytes_per_token =
+          resource_claim.prompt_state_bytes_per_token;
+    }
+  }
+  if (prompt_state_bytes_per_token.has_value()) {
+    if (*prompt_state_bytes_per_token != 0 &&
+        request->prompt.size() > std::numeric_limits<std::size_t>::max() /
+                                     *prompt_state_bytes_per_token) {
+      throw std::length_error("prompt state exceeds the addressable budget");
+    }
+    // `request->prompt` because `prompt` was moved from above.
+    prompt_state_bytes = request->prompt.size() * *prompt_state_bytes_per_token;
+  }
+
   {
     const std::lock_guard<std::mutex> lock(impl_->queue_mutex);
     if (impl_->stopping) {
@@ -1497,6 +1578,22 @@ TextGenerationScheduler::Request TextGenerationScheduler::Submit(
       throw TextGenerationError(TextGenerationErrorCode::kClientQueueFull,
                                 "text generation client pending queue is full");
     }
+    if (prompt_state_bytes_per_token.has_value()) {
+      const auto& resource_claim = impl_->runner_pool->resource_claim();
+      const std::size_t budget =
+          resource_claim.prompt_admission_budget_bytes.value_or(0);
+      if (!impl_->prompt_budget->TryReserve(prompt_state_bytes, budget)) {
+        const std::size_t remaining =
+            budget > impl_->prompt_budget->reserved_bytes.load()
+                ? budget - impl_->prompt_budget->reserved_bytes.load()
+                : 0;
+        throw TextGenerationError(
+            TextGenerationErrorCode::kInsufficientMemory,
+            "prompt state requires " + std::to_string(prompt_state_bytes) +
+                " host bytes but only " + std::to_string(remaining) + " remain",
+            prompt_state_bytes, remaining);
+      }
+    }
     if (client == impl_->queued_clients.end()) {
       impl_->queued_clients.push_back({
           .client_id = request->client_id,
@@ -1506,8 +1603,15 @@ TextGenerationScheduler::Request TextGenerationScheduler::Submit(
     }
     request->result.queue_depth_at_submit = impl_->queued_count + 1;
     request->result.client_queue_depth_at_submit = client->requests.size() + 1;
-    client->requests.push_back(request);
+    try {
+      client->requests.push_back(request);
+    } catch (...) {
+      impl_->prompt_budget->Release(prompt_state_bytes);
+      throw;
+    }
     ++impl_->queued_count;
+    request->prompt_state_bytes = prompt_state_bytes;
+    request->prompt_budget = impl_->prompt_budget;
   }
   impl_->queue_condition.notify_one();
   return Request(std::make_unique<Request::Impl>(std::move(request)));
