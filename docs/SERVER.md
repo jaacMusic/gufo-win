@@ -151,9 +151,9 @@ work can batch across ready requests. See the
 [Flash-Next benchmark and quality contract](models/qwen3.8-flash-next/BENCHMARKS.md).
 
 Each model chooses its prefill chunk; `--prefill-batch` overrides the
-Flash-Next chunk of 8192 prompt tokens per prefill pass. `--prefill-chunk`
-limits prompt work between active decode rounds without changing a lone
-request's kernel policy.
+Flash-Next chunk of 8192 prompt tokens per prefill pass. Beside active
+decoders, prompts are split by layers instead (`--prefill-chunk` is
+deprecated and ignored).
 
 Qwen image requests reuse decoded and resized RGB pixels using a fast lookup
 hash and exact encoded-byte comparison under the preprocessing version. Each

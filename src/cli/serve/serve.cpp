@@ -460,8 +460,6 @@ void PrintServeHelp(std::string_view program_name,
     std::string mtp_policy = "length";
     std::string mtp_draft_vocab = "full";
     bool prompt_lookup = true;
-    std::size_t prefill_chunk_tokens =
-        server::kDefaultDecodeActivePrefillTokens;
     std::uint32_t prefill_batch_tokens = 0;
     std::size_t max_pending_requests = 16;
     std::size_t max_pending_requests_per_client = 4;
@@ -558,10 +556,13 @@ void PrintServeHelp(std::string_view program_name,
         "Qwen3.8-Flash-Next: after an MTP draft, propose the tokens that "
         "followed a 12+ token match earlier in the conversation",
         "Speculative", &prompt_lookup);
-    parser.AddOption(
+    // Deprecated: prompts beside decoders are split by layers now; kept
+    // accepted (and ignored) so existing serve command lines keep working.
+    parser.AddCustomOption(
         "", "--prefill-chunk", "N",
-        "Maximum prompt tokens between active decode rounds (default: 512)",
-        "Scheduling", &prefill_chunk_tokens);
+        "Deprecated and ignored: prompts beside decoders are split by layers",
+        "Scheduling",
+        [](std::string_view, std::string_view, std::string*) { return true; });
     parser.AddOption(
         "", "--prefill-batch", "N",
         "Prompt tokens per Flash-Next prefill pass (default: 8192)", "Model",
@@ -940,8 +941,6 @@ int RunServe(std::span<const char* const> args) {
     std::string mtp_policy = "length";
     std::string mtp_draft_vocab = "full";
     bool prompt_lookup = true;
-    std::size_t prefill_chunk_tokens =
-        server::kDefaultDecodeActivePrefillTokens;
     std::uint32_t prefill_batch_tokens = 0;
     std::size_t max_pending_requests = 16;
     std::size_t max_pending_requests_per_client = 4;
@@ -1032,10 +1031,13 @@ int RunServe(std::span<const char* const> args) {
         "Qwen3.8-Flash-Next: after an MTP draft, propose the tokens that "
         "followed a 12+ token match earlier in the conversation",
         "Speculative", &prompt_lookup);
-    llm_parser.AddOption(
+    // Deprecated: prompts beside decoders are split by layers now; kept
+    // accepted (and ignored) so existing serve command lines keep working.
+    llm_parser.AddCustomOption(
         "", "--prefill-chunk", "N",
-        "Maximum prompt tokens between active decode rounds (default: 512)",
-        "Scheduling", &prefill_chunk_tokens);
+        "Deprecated and ignored: prompts beside decoders are split by layers",
+        "Scheduling",
+        [](std::string_view, std::string_view, std::string*) { return true; });
     llm_parser.AddOption(
         "", "--prefill-batch", "N",
         "Prompt tokens per Flash-Next prefill pass (default: 8192)", "Model",
@@ -1101,7 +1103,7 @@ int RunServe(std::span<const char* const> args) {
     }
     if (max_tokens < -1 || max_tokens == 0 ||
         max_tokens > std::numeric_limits<std::uint32_t>::max() ||
-        prefill_chunk_tokens == 0 || max_pending_requests == 0 ||
+        max_pending_requests == 0 ||
         max_pending_requests_per_client == 0 ||
         max_pending_requests_per_client > max_pending_requests ||
         max_output_bytes == 0 || max_buffered_output_bytes == 0 ||
@@ -1190,7 +1192,6 @@ int RunServe(std::span<const char* const> args) {
     backend = std::make_shared<server::InferenceBackend>();
     if (!backend->load(model, &err, max_context, session_count,
                        server::TextPrefillPolicy{
-                           .decode_active_tokens = prefill_chunk_tokens,
                            .prefill_chunk_tokens = prefill_batch_tokens,
                        },
                        server::TextSchedulerPolicy{

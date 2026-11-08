@@ -2293,8 +2293,14 @@ being cut into 512-token chunks between decode rounds, and the decoder keeps
 stepping inside the pass rather than only between chunks. Greedy output is
 byte-identical across all 18 rounds.
 
-`--prefill-chunk` still bounds the non-split path: a runner without a yield
-slice, or a step with no runnable decoder.
+`--prefill-chunk` bounded the non-split path (a step with no runnable
+decoder); it is now deprecated and ignored, as upstream `12f8d8ab` (#1095)
+did — the fixed 512-token budget (`kDefaultDecodeActivePrefillTokens`) and
+yield slice cover it. Cap sweep (2026-11-08, 17.8k prompt beside a 64-token
+decode, 10 rounds per value, identical greedy output): layer-group cap
+4 → 12.87 s / 12.03 s, 8 → 12.86 s / 12.01 s, 16 → 13.24 s / 12.25 s,
+40 → 13.19 s / 12.23 s (prefill / decoder totals); the hardcoded cap of 8
+groups stays.
 
 Note: one 3-round run of an earlier revision that also resumed pending
 snapshot captures inside a yield failed both streams with
