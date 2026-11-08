@@ -2191,15 +2191,15 @@ new commits — the queue carries work the fork can take before it merges.
   tokens alone. Bit-neutral whenever no backoff is set. Free win for
   multi-session serving; measure with `gufo bench -ng 2 -md 2 -b 2 -p 128
   --mtp-method greedy -ngl 2`.
-- Port candidate (perf, small): #969 *fuse batched target FFN HC pair* (+17/−4)
-  and #958 *reuse Q8 activations from batched HC mixing* (+9/−1), same file.
-  `batch.cpp` (target FFN block, `CombineBatch(...)` then `HcMixBatch(...)`) is
-  upstream's pre-fix code verbatim, and every guard the fused path needs is
-  present here (`FusedMixer`, `pending_combine_`, `res_deferred_`,
-  `defer_residual_`, `moe_pending_`, `DropReadyQ8`; ready-Q8 is maintained by
-  `9cd9d2fa`). −6 launches per target-verify step (−3 more with #958). Fork
-  decode gaps are 20 ms of 1313 ms (1.5%), so expect ≤+0.3%; port both and A/B
-  them as one change.
+- Ported (perf, small): #969 *fuse batched target FFN HC pair* (+78/−25, mostly
+  its test) — see "Port 2026-11-08" below. #958 *reuse Q8 activations from
+  batched HC mixing* (+394/−12) stays unported: its own qualification is
+  inconclusive (−0.089%/+0.468% end to end, 2.279–2.519 µs saved per mixer),
+  its test is written against upstream helpers this fork lacks (`hip::Buffer`,
+  `silu_ref`, `Q8Bytes`, `Floats`; here it is `HipBuffer`), and after #969 the
+  hot target pair already records ready Q8 through the fused scalar mixer.
+  Revisit only if a profile puts the batched quantize launch on the critical
+  path.
 - Port candidate (build only): #945 *Clang 23 value-style WMMA builtin
   signatures on gfx1151* — accumulator passed by value in `mma.hpp`, plus
   `#include <exception>` in `executor.cpp`. No runtime effect; land with the
@@ -2260,11 +2260,38 @@ nothing for up to 16 tokens.
   interval, and poor acceptance still sets 16 with `Choose == 0`.
   `qwen38_flash_next.{mtp_sampling,draft_vocab,config}` pass (3/3,
   `build/cpu-test`); the new check fails when the branch is disabled.
-- Pending A/B on this host (multi-session greedy MTP, one engine at a time):
-  `gufo bench -ng 2 -md 2 -b 2 -p 128 --mtp-method greedy -ngl 2`. Upstream
-  landed it as a correctness fix for stale policy state, not a throughput win;
-  the gain appears only in serving shapes where a greedy batch and a solo
-  request alternate per session.
+- Pending A/B on this host: `gufo bench` has no multi-session option, so the
+  shape is `gufo serve -j 2 --speculative mtp --mtp-model <MTP.gguf>` with two
+  concurrent `temperature: 0` `/v1/completions` streams (stop the running
+  engine first: one model per 113 GiB). Upstream landed this as a correctness
+  fix for stale policy state, not a throughput win; the gain appears only where
+  a greedy batch and a solo request alternate per session.
+
+## Port 2026-11-08: one fused HC mixer for the batched target FFN (upstream #969)
+
+`ForwardBatchImpl` ran the target block's residual combine and HC mixer as the
+batched pair — `CombineBatch` + `HcMixBatch`, five launches — even when the
+whole batch was decode-sized, while the scalar route already had an exact
+one-launch mixer (`HcMixQ8Fused`, gated by `FusedMixer`).
+
+- `kernels/rocm/batch.cpp` (target FFN block): take
+  `Combine(base.res, l.hc_ffn.norm.f32(), rows, nullptr, &l.hc_ffn)` +
+  `HcMix(...)` when `rows != 0 && FusedMixer(l.hc_ffn, rows) &&
+  pending_combine_.mixer == nullptr && !res_deferred_ && !defer_residual_ &&
+  !moe_pending_`, with `DropReadyQ8()` first because the fused pair republishes
+  its own xn/mixed Q8. Every other shape (wider rows, deferred residual, other
+  injection format, pending MoE) keeps the batched pair unchanged.
+- Qualified numerically, which is the whole risk: `hc_mix_ops` now compares the
+  fused mixer against the separately launched `CombineBatch`/`HcMixBatch`
+  arithmetic (`MixerReference::Batch`) for rows 1–8 × injection on/off × input
+  scales 1e-4/1/1e4 — 48 cases, every active output representation byte for
+  byte, repeated launches and graph replays. The file's original 10 cases keep
+  passing (58 mixer cases total), on gfx1151 with TheRock ROCm 10.0.0 / clang 23.
+- Not measured end to end: the batched route needs
+  `gufo serve -j 2 --speculative mtp --mtp-model <MTP.gguf>` with two concurrent
+  greedy streams (`gufo bench` cannot batch). Upstream's own number was a launch
+  count, not a throughput claim; the fork's decode launch-gap budget is
+  20 ms of 1313 ms, so expect ≤+0.3% on batched decode and nothing elsewhere.
 
 ## External engines check 2026-11-08 (llama.cpp, vLLM, bubo)
 
