@@ -454,19 +454,22 @@ combines 1.0, attn core 2.9.
 
 ### Prefill (pp2048 ≈ 1259 ms; >10 % buckets confirmed at probe ceilings)
 
-- **LM head runs ~24 TFLOP/s vs ~35 for sibling GEMMs** (66 ms/pass, 5.2 %,
-  skipped only by the 10 % rule). Same Q8→F16 WMMA mechanism, so the tile is
-  the suspect. Recipe: standalone shape sweep (151936×2560×2048) over
-  `DenseF16GEMMKernel` tile/rowgrp variants, `tools/bench/build.sh` + the
-  dense_blaslt_sweep pattern. Bit-exact gate. Est. −15–20 ms (+1.4 %).
+- **LM head: closed 2026-11-08, no tile to sweep.** The earlier "24 TFLOP/s vs
+  ~35 for sibling GEMMs, 66 ms/pass, sweep 151936×2560×2048 tiles" figure is a
+  2048-logit-row shape; production prefill passes `n_logits = 1` per chunk
+  (`engine.cpp:892`, chunk = up to 8192 tokens), so the head is the 1-row Q8_0
+  GEMV: 1.98 ms/pass at 209 GB/s, already at the host stream ceiling (measured
+  with `tests/models/qwen38_flash_next/lm_head_bench.cpp`). `DenseF16Gemm` at
+  255 rows is 6.38 ms / 31 TFLOP/s but the head never reaches it. See
+  `LINUX-PERF-PORT.md`, "the LM-head tile sweep has no shape to win".
 - **`head` bucket unresolved at prefill width**: decode head with ~1–2 logit
-  rows is 4.63 ms, but `head w255` is 65.5 ms per pp2048-scale pass. If the
-  bench `n_logits` is small, the vocab GEMV cannot fill it; the bucket's split
-  (last-layer HC tail vs `Dense(output)` vs download) has no marks. First move:
-  two extra `MarkPhase` splits around `Dense(output, ...)` in
-  `executor.cpp` prefill-logits block, then re-trace idle.
+  rows is 4.63 ms, but `head w255` is 65.5 ms per pp2048-scale pass while
+  `Dense(output)` is only ~2 ms of it. The bucket's split (last-layer HC tail vs
+  `Dense(output)` vs download) has no marks. First move: two extra `MarkPhase`
+  splits around `Dense(output, ...)` in `executor.cpp` prefill-logits block and
+  around the `logits_host_` copy, then re-trace idle.
 - **Router chain: 18 ms/pass (~3 TF/s, 14 launches/layer, m=128 rows)**.
-  Fused logits+top-k could reclaim ~10 ms (+1 %); lowest priority, after LM head.
+  Fused logits+top-k could reclaim ~10 ms (+1 %); lowest priority.
 
 ### Checked and already tight (do not re-derive)
 

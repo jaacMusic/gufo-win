@@ -2311,9 +2311,8 @@ one-launch mixer (`HcMixQ8Fused`, gated by `FusedMixer`).
   `mmq.hpp` already encodes the same idea (`QFN_WMMA_MMQ_Y = 64`, "four-wave
   RDNA WMMA tiles cut the decoded-weight LDS footprint enough to admit more
   workgroups"), and the `mmq_x` cap of 80 was swept on a real 4096-token
-  routed-MoE chunk. Remaining use is as a prior for the open LM-head tile item
-  above (+1.4%): prefer geometries that keep 2 workgroups per CU instead of
-  inventing new tiles.
+  routed-MoE chunk. It was the prior for the LM-head tile item, which is now
+  closed: that item measured a shape production never runs (below).
 - llama.cpp `fccf7166` (broaden MoE `ncols_opt` tile heuristic on RDNA3.5, arch
   gate `RDNA3_0`→`RDNA3`, +11% pooled MUL_MAT_ID on gfx1151): no equivalent bug
   here — the fork has no RDNA3/RDNA4 macro gates outside the vendored
@@ -2332,3 +2331,39 @@ one-launch mixer (`HcMixQ8Fused`, gated by `FusedMixer`).
   `365708eb` keeps logprobs on one-token decode steps (this fork rejects
   `logprobs` outright in `openai_chat.cpp`) and `5c548af7` DiffusionGemma tool
   calls (no `diffusion_gemma` model here). The rest is documentation.
+
+## Closed 2026-11-08: the LM-head tile sweep has no shape to win
+
+The plan carried "LM head runs ~24 TFLOP/s vs ~35 for sibling GEMMs (66 ms/pass,
+5.2 %), same Q8→F16 WMMA mechanism, sweep `DenseF16GEMMKernel` tiles for
+151936×2560×2048, est. −15–20 ms". That 66 ms is a *2048-logit-row* pass, and
+production prefill never asks for one: `Session::Feed` calls
+`exec.Forward(session, chunk, 1, logits_.data(), ...)`
+(`engine.cpp:892`), so every chunk — including a whole 2048-token prompt, since
+`max_batch` is `PrefillCapacity()` = `prefill_chunk_tokens` = 8192 by default —
+ends in a single-row logits projection. A 1-row Q8_0 weight is a GEMV:
+`Dense(w, const float*, ...)` quantizes the row and hands it to
+`qfn_mmq_q8_0_dense_vec_preq` (`executor.cpp:1310-1341`, `:1436-1480`), and
+`DenseF16Route` needs `MatrixRows(n)` (≥ 96 rows), so `DenseF16Gemm` is
+unreachable for the head.
+
+Measured on gfx1151 (new `tests/models/qwen38_flash_next/lm_head_bench.cpp`,
+151936×2560 Q8_0, 413 MB, median of 9 after 2 warmups):
+
+| path | ms | rate |
+| --- | --- | --- |
+| `qfn_mmq_q8_0_dense_vec_preq`, 1 row (production) | 1.98 | 209 GB/s |
+| `qfn_mmq_q8_0_dense` f32, 1 row | 2.09 | 198 GB/s |
+| `DenseF16Gemm`, 255 rows | 6.38 | 64.8 GB/s ≈ 31 TFLOP/s |
+
+The production path is already at this host's ~198–213 GB/s weight-stream
+ceiling, so the head is ~2 ms of a 1259 ms pass (0.16 %) and there is no tile
+geometry to sweep: −15–20 ms is not available at 1 row, and the 31 vs 35 TFLOP/s
+wide-row gap sits on a shape nothing calls. Nothing to port, nothing to change.
+
+Still open, and not the head: the trace's `head w255` bucket is 65.5 ms while
+`Dense(output)` is ~2 ms of it, so ~63 ms is the last layer's own tail plus the
+download. `PERF-REVIEW-PLAN.md` already names the next move — two extra
+`MarkPhase` splits around the prefill-logits `Dense(output, ...)` and around the
+`logits_host_` copy, then re-trace idle — which is a tracing change, not a
+kernel one.
