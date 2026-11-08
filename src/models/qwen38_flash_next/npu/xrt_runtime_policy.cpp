@@ -12,11 +12,13 @@ void ValidateAndLoad(RuntimeOperations& operations) {
       identity.path.filename() != "xrt_coreutil.dll") {
     throw std::runtime_error("NPU XRT requires an absolute runtime DLL path");
   }
+  // Re-certified 2026-11 against the WHQL-signed KMD 32.00.20102.4481
+  // System32 drop; the XRT host ABI below (2.21.0 build 8679) is unchanged.
   if (identity.sha256 !=
-      "04a26d37c6e0c713491ad0bfae74ce74ea94c74136d2aa056333616dac6c3a44") {
+      "d0dce13280a0d668b497d4fcabdcb43f1a7353e466af3acabd98c6df7607ed8e") {
     throw std::runtime_error("NPU XRT DLL SHA256 mismatch");
   }
-  if (identity.file_version != std::array<unsigned, 4>{32, 0, 20102, 3931}) {
+  if (identity.file_version != std::array<unsigned, 4>{32, 0, 20102, 4481}) {
     throw std::runtime_error("NPU XRT DLL file version mismatch");
   }
   operations.Load(identity.path);

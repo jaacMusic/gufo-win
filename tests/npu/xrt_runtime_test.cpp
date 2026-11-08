@@ -9,8 +9,8 @@ class FakeRuntime final : public gufo::npu::detail::RuntimeOperations {
 public:
   gufo::npu::RuntimeIdentity identity{
       std::filesystem::current_path() / "xrt_coreutil.dll",
-      "04a26d37c6e0c713491ad0bfae74ce74ea94c74136d2aa056333616dac6c3a44",
-      {32, 0, 20102, 3931}};
+      "d0dce13280a0d668b497d4fcabdcb43f1a7353e466af3acabd98c6df7607ed8e",
+      {32, 0, 20102, 4481}};
   std::array<unsigned, 5> versions{2, 21, 0, 8679, 131093};
   unsigned inspections = 0;
   unsigned loads = 0;
