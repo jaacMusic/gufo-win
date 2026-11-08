@@ -2300,3 +2300,16 @@ Note: one 3-round run of an earlier revision that also resumed pending
 snapshot captures inside a yield failed both streams with
 `generation_failed`. That window is gone (a capture can allocate ~1.2 GB
 while a pass is suspended) and 22 rounds since are clean.
+
+A second, fork-only hazard surfaced under longer soaks: `stream_` flips
+between `primary_stream_` and `alt_stream_` at every completed wait, so a
+prefill pass spans both streams, while upstream #1042 assumes one. The
+ported hook synced and unparked on a single stream, letting the other
+stream's prefill kernels race the park copies: intermittent
+`routed F16 gate/up GEMM failed` then `control upload: unspecified launch
+failure`, roughly once per 30-round soak. `RunLayerHook` now drains both
+streams before parking and again before unparking, and pins the resumed
+pass to the primary stream; the hook also restores all parked state if the
+yield callback throws. 150 soak rounds since are clean (zero stream
+errors, output hash unchanged, prompt 13.3 s / decoder 12.55 s: the extra
+syncs cost about 2% of the port's win).

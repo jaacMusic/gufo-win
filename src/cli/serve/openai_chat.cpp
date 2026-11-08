@@ -1943,11 +1943,11 @@ HttpResponse StreamingResponse(
               error["error"] = std::move(detail);
               stream_log->error_event_sent = writer(Sse(error));
               (void)writer("data: [DONE]\n\n");
-            } catch (const std::exception&) {
+            } catch (const std::exception& exception) {
               stream_log->error_code = "generation_failed";
               json::Value error = json::Value::object();
               json::Value detail = json::Value::object();
-              detail["message"] = "generation failed";
+              detail["message"] = exception.what();
               detail["type"] = "server_error";
               detail["code"] = "generation_failed";
               error["error"] = std::move(detail);

@@ -3421,9 +3421,17 @@ std::vector<std::uint32_t> Executor::LayerHookBoundaries(
 
 bool Executor::RunLayerHook(Session& session, std::string* error_msg) const {
   // The host may read pinned buffers this pass still copies from (the PLE
-  // rows), and `between` rewrites them: finish the queued layers first.
-  if (!Check(hipStreamSynchronize(stream_), "layer hook sync", error_msg))
+  // rows), and `between` rewrites them: finish the queued layers first. The
+  // pass's waits flip stream_ between primary_stream_ and alt_stream_, so
+  // both must be drained: either can still hold layers writing the rows
+  // about to be parked and handed to a decode.
+  if (!Check(hipStreamSynchronize(primary_stream_), "layer hook sync",
+             error_msg) ||
+      (alt_stream_ != nullptr &&
+       !Check(hipStreamSynchronize(alt_stream_), "layer hook sync",
+              error_msg))) {
     return false;
+  }
   // Everything that carries one layer's output into the next: the scratch
   // views and the producer bookkeeping.
   const Scratch base = s_;
@@ -3490,6 +3498,11 @@ bool Executor::RunLayerHook(Session& session, std::string* error_msg) const {
       return false;
     at += p.bytes;
   }
+  // The fork runs decode-sized passes on alt_stream_: the parked rows must be
+  // fully saved before `between` can launch decode kernels that rewrite them,
+  // and its stream must be drained before they are restored.
+  if (!Check(hipStreamSynchronize(stream_), "layer hook park sync", error_msg))
+    return false;
   // A pass ends with no deferred work; hand `between` that state. Moving the
   // hook out also keeps a decode inside it from yielding again.
   inject_fused_ = nullptr;
@@ -3501,43 +3514,66 @@ bool Executor::RunLayerHook(Session& session, std::string* error_msg) const {
   shexp_half_ready_ = false;
   auto hook = std::move(hook_);
   hook_ = {};
+  const auto restore = [&]() -> bool {
+    // `between` ran decode work on either stream (its waits flip stream_);
+    // drain both, then resume the pass on the primary stream.
+    if (!Check(hipStreamSynchronize(primary_stream_), "layer hook sync",
+               error_msg) ||
+        (alt_stream_ != nullptr &&
+         !Check(hipStreamSynchronize(alt_stream_), "layer hook sync",
+                error_msg))) {
+      return false;
+    }
+    stream_ = primary_stream_;
+    unwaited_ = false;
+    hook_ = std::move(hook);
+    prefill_phase = phase;
+    UseScratch(base);
+    auto* at = static_cast<std::uint8_t*>(hook_park_);
+    for (const auto& p : parked) {
+      if (!Check(hipMemcpyAsync(p.buffer, at, p.bytes, hipMemcpyDeviceToDevice,
+                                stream_),
+                 "layer hook unpark", error_msg))
+        return false;
+      at += p.bytes;
+    }
+    xn_half_ = xn_half;
+    inject_parts_ = inject_parts;
+    inject_fused_ = inject_fused;
+    q8_slot_ = q8_slot;
+    xn_q8_ready_ = xn_ready;
+    mixed_q8_ready_ = mixed_ready;
+    pending_combine_ = pending;
+    moe_pending_ = moe_pending;
+    defer_residual_ = defer;
+    res_deferred_ = deferred;
+    shexp_half_ready_ = shexp_half;
+    selected_logits_ = selected;
+    wide_rows_ = wide_rows;
+    prefetch_next_ = prefetch_next;
+    routed_max_rows_ = routed_max_rows;
+    routed_n_tiles_ = routed_n_tiles;
+    routed_tile_rows_ = routed_tile_rows;
+    routed_tile_cols_ = routed_tile_cols;
+    prefetch_deferred_ = false;
+    return true;
+  };
   {
     // Decode entry points other than Forward rely on the decode phase
     // outside any pass; prefill routes would also grow arenas a graph
     // capture forbids.
     PrefillPhase decode_phase(false);
-    hook();
+    try {
+      hook();
+    } catch (...) {
+      // A failed yield must still put the pass's rows and bookkeeping back:
+      // later requests would inherit a corrupted executor.
+      (void)restore();
+      throw;
+    }
   }
-  hook_ = std::move(hook);
-  prefill_phase = phase;
-  UseScratch(base);
-  at = static_cast<std::uint8_t*>(hook_park_);
-  for (const auto& p : parked) {
-    if (!Check(hipMemcpyAsync(p.buffer, at, p.bytes, hipMemcpyDeviceToDevice,
-                              stream_),
-               "layer hook unpark", error_msg))
-      return false;
-    at += p.bytes;
-  }
-  xn_half_ = xn_half;
-  inject_parts_ = inject_parts;
-  inject_fused_ = inject_fused;
-  q8_slot_ = q8_slot;
-  xn_q8_ready_ = xn_ready;
-  mixed_q8_ready_ = mixed_ready;
-  pending_combine_ = pending;
-  moe_pending_ = moe_pending;
-  defer_residual_ = defer;
-  res_deferred_ = deferred;
-  shexp_half_ready_ = shexp_half;
-  selected_logits_ = selected;
-  wide_rows_ = wide_rows;
-  prefetch_next_ = prefetch_next;
-  routed_max_rows_ = routed_max_rows;
-  routed_n_tiles_ = routed_n_tiles;
-  routed_tile_rows_ = routed_tile_rows;
-  routed_tile_cols_ = routed_tile_cols;
-  prefetch_deferred_ = false;
+  if (!restore())
+    return false;
   if (prefetch_deferred) {
     PrefetchPle(session, prefetch_next_);
     prefetch_next_ = {};
