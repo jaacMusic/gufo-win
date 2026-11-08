@@ -2375,6 +2375,10 @@ cherry-pick flow yet. Triage of the ones touching this fork's scope:
   Strix Halo). Open, +2,023/-422, changes the production KV format. Do not
   hand-port while open; revisit when it lands on main or the session-count
   limit becomes a paid requirement. Needs the full byte-identity + A/B gate.
+  Rebase cost measured against `6246d77a` (PR parent): fork attention/executor
+  diverge at rewrite scale (~1.7k/~2.3k lines; no `continuation_layout.cpp`
+  in fork), so the port is a ~1-day re-implementation, not a transferable
+  diff. Decision 2026-11-08: wait for merge.
 - Skip **gufo-org/gufo#910** (DXGI state-capacity admission): the fork already
   reads the DXGI budget by LUID in `src/core/platform/device_memory.{hpp,cpp}`
   and feeds serve admission; the PR's remainder is `event=state_capacity`
