@@ -2367,3 +2367,38 @@ download. `PERF-REVIEW-PLAN.md` already names the next move — two extra
 `MarkPhase` splits around the prefill-logits `Dense(output, ...)` and around the
 `logits_host_` copy, then re-trace idle — which is a tracing change, not a
 kernel one.
+
+## Measured 2026-11-08: the `lm_head` Q4_1 decode copy is +4.9 % decode
+
+The copy has existed since `d6c667e4` but sat outside the default class list
+(`device_model.cpp:720-722` = `ssm_in,ssm_out,attn_qkv,shexp`) with no recorded
+reason, so this was measurement only — no code change. A/B on gfx1151,
+`gufo bench -p 2048 -n 128 -d 0 -r 2 --temperature 0`, one engine at a time,
+`GUFO_DECODE_COPY_CLASSES` as the only difference:
+
+| classes | pp2048 t/s | tg128 t/s | copies |
+| --- | --- | --- | --- |
+| default | 1604.54 ± 21.99 | 34.65 ± 0.46 | 1.58 GiB |
+| + `lm_head` | 1604.10 ± 6.33 | **36.30 ± 0.28** | 1.95 GiB |
+| default (repeat) | 1600.22 ± 19.22 | 34.99 ± 0.02 | 1.58 GiB |
+| + `lm_head` (repeat) | 1588.09 ± 22.08 | **36.70 ± 0.05** | 1.95 GiB |
+| + `lm_head,attn_out,hc` | 1591.27 ± 14.18 | 36.47 ± 0.31 | 2.43 GiB |
+| + `attn_out,hc` | 1592.35 ± 10.24 | 35.42 ± 0.16 | 2.06 GiB |
+
+`lm_head` alone is +4.9 % decode (34.99 → 36.70 t/s = 28.58 → 27.25 ms/token,
+−1.33 ms/token, matching the −1.2–1.5 ms/token estimate: the head GEMV then
+reads 20 instead of 34 bytes per 32 elements) for +0.37 GiB of unified memory,
+with prefill unchanged inside noise. The `q4` extras (`attn_out,hc`) buy nothing
+measurable (35.42 vs 34.99 is run-to-run drift; the full set's 36.47 is the
+`lm_head` gain) and cost +0.48 GiB, so they stay opt-in. One 17.74 ± 2.12 t/s
+reading for `attn_out,hc` was a bad measurement; the re-run above is the one
+recorded.
+
+Greedy replay (`gufo prompt -m <model> -p <fixed derailleur prompt> -n 128 -t 0
+--no-display-prompt`, old vs new class set): the streams agree for ~110 tokens,
+then diverge once at a paraphrase and reconverge onto the same sentence — 621 vs
+631 characters, no degeneration. That is the expected outcome of a lossy Q4_1
+requantization of the output matrix, and it is why the class is opt-in: it is a
+quality call, not a correctness gate. Enable with
+`GUFO_DECODE_COPY_CLASSES=ssm_in,ssm_out,attn_qkv,shexp,lm_head`; the default
+list is unchanged.

@@ -439,13 +439,15 @@ combines 1.0, attn core 2.9.
 
 - **LM-head Q4_1 decode copy already exists** (commit `d6c667e4`): class
   `lm_head` in `device_model.cpp` (`wants("lm_head")` → `add(m->output_, ...)`),
-  off in the default class set because logits numerics change. Remaining work is
-  measurement only: `GUFO_DECODE_COPY_CLASSES=ssm_in,ssm_out,attn_qkv,shexp,lm_head`
-  interleaved tg128 A/B + greedy replay. Est. −1.2–1.5 ms/token (head GEMV reads
-  the full untied Q8_0 output matrix every cycle).
+  off in the default class set because logits numerics change. **Measured
+  2026-11-08: +4.9 % decode** (34.99 → 36.70 t/s, −1.33 ms/token) for +0.37 GiB;
+  greedy replay diverges once at a paraphrase and reconverges. Table and replay
+  detail in `LINUX-PERF-PORT.md`. The default is unchanged — flipping it is a
+  quality call, not a measurement one.
 - **`q4` copy classes are live but not default**: `GUFO_DECODE_COPY=q4` adds
   `attn_out` + `hc` (zero code). HC mix + combines are ~5.3 ms/token still on
-  Q8_0. No doc records why `q4` is off-default; same A/B gate decides it.
+  Q8_0. **Measured 2026-11-08: no gain** (35.42 vs 34.99 t/s is drift) for
+  +0.48 GiB, so they stay opt-in.
 - **MTP per-row cost is expert-set growth, closed**: w1 hits 4 expert slices,
   w3 ~10 distinct experts (+~3.3 ms/row of the +5.4); `SmallGemmKernel` and
   `GdnKernel` already batch rows on one weight read and rollback snapshots use
