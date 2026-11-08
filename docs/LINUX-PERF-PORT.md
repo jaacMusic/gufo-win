@@ -2173,3 +2173,93 @@ Next sweep from `0fb50ce4`.
   `c2292921` (Rust PNG dep), `5d2bf02f` (upstream test-only), extension
   framework / cache migration / release-CI commits (architecture the fork
   does not share).
+
+## Upstream open-PR sweep 2026-11-08 (`main` still `0fb50ce4`)
+
+`main` has not moved since the 2026-11-07 sweep, so this pass read upstream's
+29 open pull requests (`gh pr list -R gufo-org/gufo --state open`) instead of
+new commits — the queue carries work the fork can take before it merges.
+
+- Port candidate (perf, tiny): #912 *recover stale MTP backoff after batch
+  observations* (+7/−3). The fork matches upstream's pre-fix shape exactly
+  (`mtp_policy.hpp` `state_.retry_tokens = 16;`, `PendingDecode` carrying
+  `sampled_subset_cost` / `policy_concurrency`, `FinishDecode` → `Observe`).
+  The fix threads a `planned_greedy` flag through `PendingDecode`/`Observe` and
+  adds `else if (recover_backoff) state_.retry_tokens = 0;`. Effect here: a
+  jointly-planned greedy batch keeps its profitable draft evidence while an old
+  solo-autoregressive backoff is still latched, which otherwise drafts up to 16
+  tokens alone. Bit-neutral whenever no backoff is set. Free win for
+  multi-session serving; measure with `gufo bench -ng 2 -md 2 -b 2 -p 128
+  --mtp-method greedy -ngl 2`.
+- Port candidate (perf, small): #969 *fuse batched target FFN HC pair* (+17/−4)
+  and #958 *reuse Q8 activations from batched HC mixing* (+9/−1), same file.
+  `batch.cpp` (target FFN block, `CombineBatch(...)` then `HcMixBatch(...)`) is
+  upstream's pre-fix code verbatim, and every guard the fused path needs is
+  present here (`FusedMixer`, `pending_combine_`, `res_deferred_`,
+  `defer_residual_`, `moe_pending_`, `DropReadyQ8`; ready-Q8 is maintained by
+  `9cd9d2fa`). −6 launches per target-verify step (−3 more with #958). Fork
+  decode gaps are 20 ms of 1313 ms (1.5%), so expect ≤+0.3%; port both and A/B
+  them as one change.
+- Port candidate (build only): #945 *Clang 23 value-style WMMA builtin
+  signatures on gfx1151* — accumulator passed by value in `mma.hpp`, plus
+  `#include <exception>` in `executor.cpp`. No runtime effect; land with the
+  next toolchain bump.
+- Verify-then-port (fix): #944 *retain live frontiers when RAM snapshots are
+  disabled* (309 lines). Production on this host is exactly the broken
+  configuration (`--cache-ram off --cache-disk on`). Upstream lands it in
+  `component_text_cache.cpp`, which the fork lacks; the equivalents are
+  `continuation_cache.cpp`, `continuation_disk_store.cpp` and the
+  `SaveSnapshot` calls in `inference_backend.cpp`. Confirm the stale
+  reused-prefix count before porting.
+- Capacity class, not free: #893 *8-bit K/V rows that grow per session*
+  (+2023/−300) — 1024 B → 576 B per token plus 2 MiB VMM-chunked K/V. It is the
+  only candidate that answers the documented state wall (10.3 GiB/session at
+  262144 → 2 sessions) and it also removes ~1.8× of long-context decode KV
+  traffic. Cost: attention numerics change (the quality gate is not bit-exact)
+  and the continuation / disk format changes. Upstream reports prefill and
+  decode neutral. Largest port in the queue; schedule as its own task.
+- Deferred: #1042 + #1039 *split prompt passes by layers* (drafts, stacked on
+  upstream's unmerged runner framework). Multi-session TTFT win, but it
+  restructures the pass builder; revisit if concurrent-prompt TTFT matters here.
+- Already ours: #910 (DXGI state-capacity fix) is the fix in
+  `src/core/platform/device_memory.cpp` — upstream is importing our change.
+- Not applicable (verified against the fork): #1076 (`Flash-Next` weights load
+  via `pread`; only the ASR/TTS loaders map files), #934 (lives in the
+  component cache and `cache::ResourceLimits` ledger the fork lacks), #568
+  (XDNA2 dense-prefill offload — our `npu/` is a superset: guard, chip-power,
+  telemetry and three lanes, so nothing to take back), #1082 `/tokenize` and
+  #1083 prompt-state admission (no perf; the fork has no `/tokenize` route),
+  #1071 (12 lines, only if a v3.1 shard fails to load), #682 (gfx1150), #904
+  (Qwen3.8-27B GEMM table, no weights), #980 (vision) and the ds4 / image /
+  audio PRs (same model and framework gates as before).
+
+## External engines check 2026-11-08 (llama.cpp, vLLM, bubo)
+
+- llama.cpp `4dd6dd4b` (HIP: 64-row MMQ tiles for some quant types on
+  RDNA3.5): on gfx115x the 64-row / 128-thread tile leaves enough LDS for a
+  *second* workgroup per CU, the 128-row / 256-thread one does not. Median
+  +2.1%, best +26% over 100 MUL_MAT shapes, MUL_MAT_ID median +8%. Our
+  `mmq.hpp` already encodes the same idea (`QFN_WMMA_MMQ_Y = 64`, "four-wave
+  RDNA WMMA tiles cut the decoded-weight LDS footprint enough to admit more
+  workgroups"), and the `mmq_x` cap of 80 was swept on a real 4096-token
+  routed-MoE chunk. Remaining use is as a prior for the open LM-head tile item
+  above (+1.4%): prefer geometries that keep 2 workgroups per CU instead of
+  inventing new tiles.
+- llama.cpp `fccf7166` (broaden MoE `ncols_opt` tile heuristic on RDNA3.5, arch
+  gate `RDNA3_0`→`RDNA3`, +11% pooled MUL_MAT_ID on gfx1151): no equivalent bug
+  here — the fork has no RDNA3/RDNA4 macro gates outside the vendored
+  `mma.hpp`, because the production target is single-arch.
+- GDN prefill: llama.cpp ships the same recurrent per-token scan
+  (`gated_delta_net.cu`, with its own `//TODO: Add chunked kernel for even
+  faster pre-fill`), so nothing to take. The one known way past our 64% of the
+  241 GB/s ceiling is a chunked gated-delta-rule (WY / UT transform, fla or the
+  vLLM Triton `fla/ops` kernels as the numeric oracle) in WMMA. Numerics change
+  and the prize is ~12 ms of a 1455 ms pass (+0.8%); not worth starting now.
+- Reviewed and skipped as at-ceiling or off-target: llama.cpp `2cdae802`
+  (Vulkan mat-vec row batching for Strix Halo — our GEMV is at the HBM
+  ceiling), `5c53396b` (Vulkan hoisted row-id 256→512 experts — our MoE gather
+  is at the ceiling), `a1f96d4f` (ROCm CI fixes for gfx1151).
+- bubo `1d744add..f15d03dc` (v0.1.2): two code commits, both inapplicable —
+  `365708eb` keeps logprobs on one-token decode steps (this fork rejects
+  `logprobs` outright in `openai_chat.cpp`) and `5c548af7` DiffusionGemma tool
+  calls (no `diffusion_gemma` model here). The rest is documentation.
