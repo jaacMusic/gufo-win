@@ -2319,3 +2319,23 @@ pass to the primary stream; the hook also restores all parked state if the
 yield callback throws. 150 soak rounds since are clean (zero stream
 errors, output hash unchanged, prompt 13.3 s / decoder 12.55 s: the extra
 syncs cost about 2% of the port's win).
+
+## Reference build 2026-11-08 ( b3d6f54)
+
+ b3d6f54 (layer-split prefill + race fix + --prefill-chunk deprecation)
+is the new reference binary and baseline for future gates on this machine.
+Single-session bench (release, v3.1 XL UD-Q4_K_XL 4-shard + MTP shared
+Q8_0, -p 2048 -n 128 -d 0,16384 -r 2 --temperature 0, idle engine):
+
+| cell | value |
+| --- | --- |
+| pp2048 | 1631.04 +/- 9.46 |
+| tg128 | 47.92 +/- 0.66 |
+| pp2048 @ d16384 | 1441.33 +/- 0.95 |
+| tg128 @ d16384 | 61.27 +/- 1.22 |
+
+Machine drift between idle sessions is a few percent (the same build
+measured pp 1547-1631 across the day); future A/B gates must use the
+interleaved stash-rebuild method, not these absolute numbers. Multi-session
+reference beside a 17.8k prompt: prompt ~13.3 s, 64-token decoder ~12.6 s,
+greedy decoder hash c74852d38ffcf59.
