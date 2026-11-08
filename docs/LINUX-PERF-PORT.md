@@ -2204,13 +2204,22 @@ new commits — the queue carries work the fork can take before it merges.
   signatures on gfx1151* — accumulator passed by value in `mma.hpp`, plus
   `#include <exception>` in `executor.cpp`. No runtime effect; land with the
   next toolchain bump.
-- Verify-then-port (fix): #944 *retain live frontiers when RAM snapshots are
-  disabled* (309 lines). Production on this host is exactly the broken
-  configuration (`--cache-ram off --cache-disk on`). Upstream lands it in
-  `component_text_cache.cpp`, which the fork lacks; the equivalents are
-  `continuation_cache.cpp`, `continuation_disk_store.cpp` and the
-  `SaveSnapshot` calls in `inference_backend.cpp`. Confirm the stale
-  reused-prefix count before porting.
+- Not applicable (verified in code): #944 *retain live frontiers when RAM
+  snapshots are disabled*. Upstream's bug needs a cache that left snapshot mode,
+  where a commit names the entry with the prompt while the state has advanced
+  into the reply. The fork cannot reach that state:
+  `ContinuationCache::Impl::snapshot_mode()` is capability-derived
+  (`continuation_cache.cpp:71`, and `MakeSnapshotSupport` returns `{}` unless
+  the runner has `snapshot && fork`), not budget-derived, and `TextRunnerPool`
+  builds its cache from exactly that support (`text_model_runner.cpp:528`). So
+  the `capabilities.snapshot && capabilities.fork` test at
+  `text_model_runner.cpp:1363`/`1418` is the same predicate as
+  `retains_snapshots()` upstream adds, and a commit whose RAM reservation
+  failed takes the skip path (`continuation_cache.cpp:794`): no `tokens`/`valid`
+  write at all, while the live frontier is recorded in `live_tokens` (711).
+  Independently, this fork has no RAM-off switch — `--cache-ram-gb 0` means
+  *automatic* (default 6 GiB, capped at 7) — so there is no unsupported
+  configuration to qualify and no failing test state to construct here.
 - Capacity class, not free: #893 *8-bit K/V rows that grow per session*
   (+2023/−300) — 1024 B → 576 B per token plus 2 MiB VMM-chunked K/V. It is the
   only candidate that answers the documented state wall (10.3 GiB/session at
