@@ -57,6 +57,11 @@ incomplete or mismatching results. `--baseline-binary` interleaves two releases
 and also requires identical autoregressive token traces between them.
 `qwen27b/dflash_gemm_bench.hip` measures exact BF16, Q4/Q5/Q6/Q8 and IQ4_XS
 matrix geometries using the production templates; build it with `tools/bench/build.sh` inside Nix.
+`qwen27b/verify_sweep/` measures the 2–8 row launch shapes of
+`verify_gemm_27b.hip` on a GGUF's real projections against the production
+dispatch (exact outputs, weights rotated beyond the MALL cache); build it
+with `tools/bench/build.sh tools/qwen27b/verify_sweep/sweep.hip` and run
+`sweep.py`, see its README.
 This benchmark uses the production `-O2` optimization level. `q3` and `iq4-nl`
 also cover native fourteen/sixteen-position FFNs, for example
 `q3 17408 5120 24 16` or `iq4-nl 17408 5120 24 14`.

@@ -1849,12 +1849,16 @@ with upstream, so no patch applies):
 
 Swept `1fc829ea..4ab04ab8` (11 commits). No immediate-performance port landed.
 
-- `[ ]` **`72dc1a0` #874 "tune Qwen3.8-27B verification GEMM geometries at
+- `[x]` **`72dc1a0` #874 "tune Qwen3.8-27B verification GEMM geometries at
   2-8 rows"** — new `verify_gemm_27b.hip` (tuned tile geometries for the 27B
   dflash verification GEMM at 2–8 rows) plus a sweep tool; hooks into
   `batched_decode.cpp` and `dflash/executor.cpp`, both present in the fork.
-  Deferred: no Qwen27B GGUF on this host, so the fork's byte-identical
-  verification gate cannot run.
+  Was deferred for lack of a Qwen27B GGUF; the kernel, CMake entry and all
+  three call sites landed independently in `ac25adc5`/`2fc5d69f`/`57161f0e`/
+  `0236a1b3` with fork-native Windows tuning that goes beyond upstream's
+  geometries. The remaining upstream delta is only
+  `tools/qwen27b/verify_sweep/` (sweep harness + README), ported 2026-11-08
+  so geometries can be re-swept now that a 27B GGUF is available.
 - Not ported: `538f6e4` #866 (WMMA prefill past 262,144 visible tokens — at
   262,144 ctx the live extent is exactly 2,048 words, inside the old cap, so
   no gain here; port only if contexts > 262,144 are planned; manual merge

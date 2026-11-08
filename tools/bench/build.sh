@@ -72,6 +72,9 @@ for t in "${targets[@]}"; do
     native_sources+=(
       src/models/qwen/hip/kernels/attention_decode_verify_wave64.hip)
   fi
+  if [[ "$src" -ef tools/qwen27b/verify_sweep/sweep.hip ]]; then
+    native_sources+=(src/models/qwen/hip/kernels/verify_gemm_27b.hip)
+  fi
   if ((${#native_sources[@]})); then
     # HIP helpers and their callers must share the native wave size.
     objects="$(mktemp -d "/tmp/${t}.XXXXXX")"
