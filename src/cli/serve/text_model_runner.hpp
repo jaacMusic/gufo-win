@@ -202,8 +202,28 @@ public:
     return prefill_lookahead_;
   }
 
+  /// Beside decoders: split each Prefill pass into
+  /// ceil(pass_tokens / decode_slice_tokens) layer groups; every boundary
+  /// calls YieldPrefill(), which steps this request's decoders on the host
+  /// side. Installed by the scheduler around one Prefill call.
+  void SetPrefillYield(std::size_t decode_slice_tokens,
+                       std::function<void()> yield) {
+    prefill_yield_slice_ = yield ? decode_slice_tokens : 0;
+    prefill_yield_ = std::move(yield);
+  }
+  [[nodiscard]] std::size_t prefill_yield_slice() const noexcept {
+    return prefill_yield_slice_;
+  }
+  /// A runner calls this at layer boundaries inside Prefill.
+  void YieldPrefill() {
+    if (prefill_yield_)
+      prefill_yield_();
+  }
+
 private:
   std::span<const TextRunnerToken> prefill_lookahead_;
+  std::size_t prefill_yield_slice_{0};
+  std::function<void()> prefill_yield_;
 };
 
 /// Immutable model-owned continuation payload.
@@ -430,7 +450,12 @@ public:
     [[nodiscard]] bool prefill_complete() const noexcept;
 
     void PrepareBatchExecution();
-    [[nodiscard]] TextPrefillStep Prefill(std::size_t max_input_tokens);
+    /// With `yield`, the pass is split into groups of about
+    /// `yield_slice_tokens` tokens and `yield` runs between them, so waiting
+    /// decoders keep stepping.
+    [[nodiscard]] TextPrefillStep Prefill(std::size_t max_input_tokens,
+                                          std::size_t yield_slice_tokens = 0,
+                                          std::function<void()> yield = {});
     [[nodiscard]] TextDecodeSelection SelectNext();
     void Advance();
     [[nodiscard]] TextDecodeStep DecodeStep(std::size_t max_tokens);

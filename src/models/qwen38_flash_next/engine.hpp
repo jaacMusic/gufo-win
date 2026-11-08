@@ -131,6 +131,11 @@ public:
   [[nodiscard]] std::size_t SessionBytes(core::SessionMode mode,
                                          std::uint32_t context) const noexcept;
   [[nodiscard]] std::size_t DeferredScratchBytes() const;
+  /// During kPrefill passes, yield to `yield` after each of the layer
+  /// boundaries that split the pass into `groups` groups, so other sessions
+  /// can decode; every layer keeps its unsplit arithmetic. `groups < 2` or an
+  /// empty callback disables the split.
+  void SetPrefillYield(std::size_t groups, std::function<void()> yield) const;
   [[nodiscard]] const std::shared_ptr<qwen::vision::Encoder>& VisionEncoder()
       const noexcept {
     return vision_;

@@ -433,6 +433,16 @@ std::size_t Model::DeferredScratchBytes() const {
   return executor_->DeferredScratchBytes();
 }
 
+void Model::SetPrefillYield(std::size_t groups,
+                            std::function<void()> yield) const {
+  if (groups < 2 || !yield) {
+    executor_->SetLayerHook({}, {});
+    return;
+  }
+  executor_->SetLayerHook(executor_->LayerHookBoundaries(groups),
+                          std::move(yield));
+}
+
 std::size_t Session::AllocatedBytes() const noexcept {
   return session_->AllocatedBytes();
 }

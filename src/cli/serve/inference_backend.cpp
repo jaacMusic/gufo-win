@@ -2543,6 +2543,23 @@ public:
         !lookahead.empty() && lookahead.front() == prompt[next_position]
             ? QwenFlashNextEngineTokens(lookahead)
             : next;
+    // With decoders waiting, split this pass into groups of about one decode
+    // slice so they can step between layer groups; a pass shorter than two
+    // slices keeps one group.
+    const auto slice = state.prefill_yield_slice();
+    auto groups = std::size_t{1};
+    if (slice != 0) {
+      groups = (consumed + slice - 1) / slice;
+      if (groups > 8)
+        groups = 8;
+      if (groups < 2)
+        groups = 1;
+    }
+    struct YieldScope {
+      const QwenFlashNextModel& model;
+      ~YieldScope() { model.SetPrefillYield(1, {}); }
+    } yield_scope{*model_};
+    model_->SetPrefillYield(groups, [&state] { state.YieldPrefill(); });
     std::string error;
     if (!qfn.session().Sync(prefix, &error, next_span)) {
       qfn.set_position(0);

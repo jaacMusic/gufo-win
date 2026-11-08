@@ -2211,3 +2211,92 @@ A/B on v3.1 XL (release build, pp2048/tg128, depths 0 and 16384,
 tg 33.1 at d16384 — all within single-run noise of the documented v3.1
 baseline (1609.5/35.5, 1441.7/33.0). Both ports are perf-neutral as
 expected; #740 only changes allocation.
+
+## Upstream sweep 2026-11-08 (`0fb50ce4..17d6fa25`)
+
+12 commits. Triage against the fork (engine HEAD `ba73f4c9`):
+
+- `[x]` **#1039 + #1042 layered prefill — the item of this window, ported
+  below.** Upstream
+  `1e74ffa4` (runner/scheduler: `TextSchedulingProfile`, `state.YieldPrefill`)
+  and `3888e22e` (qwen38 executor: `SetLayerHook`, `RunLayerHook`, PLE
+  prefetch deferral). A prompt beside decoders keeps the full-size pass
+  (~4,096 rows, ~2.1 s) and yields at up to 8 layer boundaries, where all
+  decoders step in a batched pass (width <= 8) instead of one in turn. The
+  executor parks the ~8 scratch rows a decode shares (res, inject, xn/xn_q8t,
+  block_out/hc_defer_w) around each yield and restores them after. Today the
+  fork interleaves only by shrinking the prefill chunk beside decoders
+  (`prefill_policy.decode_active_tokens` in `StepPrefill`), which pays the
+  small-pass arithmetic tax: layered groups keep every pass full-rate AND cut
+  decoder stall from ~2.1 s to ~0.26 s. Upstream then deprecates
+  `--prefill-chunk` (`12f8d8ab` #1095). Port cost: the executor hook
+  (~200 lines, delicate park/unpark) ports to the fork executor as usual, but
+  the scheduler half rides on `src/sched` + the extension scheduling-profile
+  API the fork does not have — wire `YieldPrefill` into the fork
+  `text_generation_scheduler` by hand. Only affects multi-session serve;
+  single-session pp/tg must be re-gated for hook overhead (groups=1 restores
+  unsplit). qwen27b `90b9745f` and ds4 `cf68c63f` carry the same feature per
+  model; skip unless those run here.
+- `[ ]` **`6d793814` #1082 `/tokenize`** — llama-server-compatible endpoint,
+  +141 lines in `http_server.cpp`/`inference_backend`. Pure API parity, no
+  perf. Cheap; take it only if a client needs it.
+- `[ ]` **`7e8f75a8` #1089** — 3-line functional test tweak (replay a
+  recorded disk-spacing request after restart); the fork has the #348
+  spacing logic, so the test is optional.
+- Skip: `17d6fa25` #1099 (model_bench, not in the fork), `cf86cb27` #1090,
+  `f4c62743` #1091, `8d720250` #1093, `53cc9a51` #1094 (docs/CI).
+
+## Layer-split prefill (2026-11-08, ported)
+
+`1e74ffa4` #1039 and `3888e22e` #1042 are one feature: a prompt beside
+decoders keeps a full-size prefill pass and yields at up to 8 layer
+boundaries, where the decoders step instead of waiting for the whole pass.
+
+Fork adaptation:
+
+- `executor.{hpp,cpp}`: `LayerHookBoundaries`, `SetLayerHook`, `RunLayerHook`
+  and the PLE prefetch deferral are byte-identical to upstream (no `UseYarn`,
+  no `PrefillCheckpoint` plumbing to carry). Rows `[0, kHookParkedRows)` of
+  `res`/`inject`/`xn`(`_half`)/`xn_q8t`/`block_out`/`hc_defer_w` are parked
+  device-to-device around each yield.
+- `engine`: `Model::SetPrefillYield(groups, callback)`.
+- `TextRunnerState::SetPrefillYield` / `YieldPrefill`; `Request::Prefill` grew
+  `yield_slice_tokens` and `yield`; the qwen38 runner arms
+  `min(8, ceil(pass_tokens / slice))` groups and clears them on every path.
+- scheduler: `StepPrefill` takes a yield callback and skips its
+  `decode_active_tokens` shrink when one is armed; `RunYieldRound` steps up to
+  `kMaxYieldDecodeWidth` (8) decoders per boundary. No `src/sched`, no
+  `TextSchedulingProfile`, no `PrefillCheckpoint`: the fork has none.
+
+Gates (release, v3.1 XL + MTP, alternating A/B of the two binaries):
+
+| gate | base | ported |
+| --- | --- | --- |
+| pp2048, idle engine | 1559.3 / 1575.4 | 1578.4 / 1565.2 |
+| pp2048 @ d16384 | 1397.0 / 1399.3 | 1404.2 / 1395.1 |
+| tg128 | 47.6 / 48.5 | 48.1 / 48.4 |
+
+Single-session prefill and decode stay within run-to-run noise; the split is
+only armed when a decoder is runnable.
+
+Multi-session (two sessions, 17,829-token prompt plus a 64-token decoder
+started 1.2 s later, 10 rounds each):
+
+| | base | ported |
+| --- | --- | --- |
+| prompt wall time | 15.71-15.92 s | 12.96-13.19 s (-17%) |
+| decoder wall time, 64 tokens | 14.73-15.01 s | 12.14-12.40 s (-18%) |
+| decoder output | `fc74852d38ffcf59` | identical |
+
+The prompt is faster because each pass keeps its 8,192-token width instead of
+being cut into 512-token chunks between decode rounds, and the decoder keeps
+stepping inside the pass rather than only between chunks. Greedy output is
+byte-identical across all 18 rounds.
+
+`--prefill-chunk` still bounds the non-split path: a runner without a yield
+slice, or a step with no runnable decoder.
+
+Note: one 3-round run of an earlier revision that also resumed pending
+snapshot captures inside a yield failed both streams with
+`generation_failed`. That window is gone (a capture can allocate ~1.2 GB
+while a pass is suspended) and 22 rounds since are clean.

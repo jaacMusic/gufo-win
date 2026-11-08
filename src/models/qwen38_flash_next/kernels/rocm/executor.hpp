@@ -225,6 +225,22 @@ public:
                              bool verify_candidates = false,
                              std::span<const std::int32_t> next = {}) const;
 
+  /// Layer boundaries for splitting a prefill pass into at most `groups`
+  /// groups of about equal depth, never before the PLE layer has read its
+  /// n-gram rows: its table read uses buffers a decode would reuse.
+  [[nodiscard]] std::vector<std::uint32_t> LayerHookBoundaries(
+      std::size_t groups) const;
+  /// During kPrefill passes, after each layer in `after_layers` (ascending,
+  /// from LayerHookBoundaries), call `between` with the pass's cross-layer
+  /// rows parked and its deferred work set aside. `between` may decode other
+  /// sessions; every layer of the pass keeps its unsplit arithmetic. An
+  /// empty hook disables the split.
+  void SetLayerHook(std::vector<std::uint32_t> after_layers,
+                    std::function<void()> between) const {
+    hook_layers_ = std::move(after_layers);
+    hook_ = std::move(between);
+  }
+
   struct BatchItem {
     Session* session;
     std::span<const std::int32_t> tokens;
@@ -241,6 +257,10 @@ public:
   /// Rows a single session may verify at once when every proposal after the
   /// anchor is copied from its history (ForwardWide), or 0 without MTP.
   static constexpr std::uint32_t kWideRows = 64;
+  /// Every decode route, wide copy verification and batched MTP chains
+  /// included, stays below this row of the shared scratch; a layer hook
+  /// parks these rows of the prefill pass it interrupts.
+  static constexpr std::uint32_t kHookParkedRows = kWideRows;
   [[nodiscard]] std::uint32_t max_copy_rows() const noexcept {
     return has_mtp() ? std::min({kWideRows, options_.max_batch, copy_rows_cap_})
                      : 0;
@@ -883,6 +903,15 @@ private:
     std::uint32_t n{0};
   };
   mutable PendingCombine pending_combine_;
+  /// Layer hook (SetLayerHook): the callback, its layer boundaries, and the
+  /// device buffer used to park shared scratch rows around a yield.
+  mutable std::function<void()> hook_;
+  mutable std::vector<std::uint32_t> hook_layers_;
+  mutable void* hook_park_{nullptr};
+  mutable bool ple_cold_{false};  ///< this pass's PLE read was a prefetch
+  mutable bool prefetch_deferred_{false};  ///< prefetch waits for a yield
+  [[nodiscard]] bool RunLayerHook(Session& session,
+                                  std::string* error_msg) const;
   void* hc_fused_state_{nullptr};  ///< HcMixQ8Fused's counters (zeroed)
 };
 
