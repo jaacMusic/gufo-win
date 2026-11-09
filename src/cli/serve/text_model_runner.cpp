@@ -895,7 +895,9 @@ struct TextRunnerPool::Request::Impl {
   /// Chooses one intermediate checkpoint position from the growth of the
   /// snapshot payload. The stable boundary sits near the prompt end and can
   /// exceed the byte budget; a refused boundary does not evict the older
-  /// checkpoint, so reuse would stay pinned to that older prefix.
+  /// checkpoint, so reuse would stay pinned to that older prefix. A grid only
+  /// pays when nothing else keeps the prompt end: restoring the boundary from
+  /// disk beats restoring a 90% grid and prefilling the gap.
   void PlanGridSnapshot() noexcept {
     if (grid_attempted || grid_unneeded || grid_position != 0 ||
         snapshot_capacity == 0 || prefill_offset == 0 ||
@@ -920,6 +922,19 @@ struct TextRunnerPool::Request::Impl {
         static_cast<double>(bytes - grid_sample_bytes) /
         static_cast<double>(prefill_offset - grid_sample_position);
     const auto remaining = snapshot_tokens.size() - prefill_offset;
+    const std::size_t disk_limit =
+        disk_store == nullptr ? 0
+                              : std::min(disk_store->capacity_bytes(),
+                                         disk_store->staging_capacity_bytes());
+    constexpr std::size_t kFileOverheadBytes = 1U << 20;
+    const auto boundary_bytes =
+        static_cast<std::size_t>(static_cast<double>(bytes) +
+                                 per_token * static_cast<double>(remaining));
+    if (boundary_bytes != 0 && boundary_bytes <= disk_limit &&
+        disk_limit - boundary_bytes >= kFileOverheadBytes) {
+      grid_unneeded = true;
+      return;
+    }
     if (static_cast<double>(bytes) +
             per_token * static_cast<double>(remaining) <=
         static_cast<double>(target)) {

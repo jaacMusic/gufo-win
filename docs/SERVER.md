@@ -219,7 +219,13 @@ available after model/session loading when that is smaller. Set
 the environment, and either is capped at 7 GiB and by that available memory.
 When the stable boundary cannot fit, prefill retains one intermediate checkpoint
 at the largest prefix below 90% of the budget, so a long session moves its reuse
-point forward instead of pinning the oldest checkpoint.
+point forward instead of pinning the oldest checkpoint. A disk store that can
+stage the boundary makes that grid unnecessary: restoring the full boundary from
+disk is cheaper than restoring a partial grid and prefilling the gap, so no grid
+is captured then. At 124K prompt tokens with a 3 GiB tier and 3.5 GiB staging the
+boundary (3.26 GB) reached the disk store and RSS settled at 0.74 GiB; the next
+turn restored it in 2.75 s. A 1 GiB staging limit refused that boundary and
+retained a 2.7 GiB grid at 109,676 tokens: 3.5 GiB RSS and 9.43 s.
 Snapshot boundaries larger than the budget are skipped without evicting the
 retained prefix. The automatic staging limit still derives from the budget but stays
 capped at 1 GiB; set `--cache-disk-staging-bytes` explicitly to stage a larger
