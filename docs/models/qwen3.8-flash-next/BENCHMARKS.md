@@ -84,12 +84,11 @@ within 1%, so the shared head is the right default.
 ## Long-context sweep, direct
 
 `gufo bench`, greedy, one process at a time (the 96 GB carve holds one Q4 model
-and its state). Unsloth `UD-Q4_K_XL` + shared-Q8_0 MTP, revision
-`38bb39ee97821de2c9009abb7e93950eec396e66`. Two timed repetitions after one
-untimed pass. Re-measured on the re-pinned Dynamic v3.1 revision
-(`d9620119`) on November 7, 2026 (pp2048/tg128, depths 0 and 16,384, one
-repetition): pp 1609.5/1441.7, tg 35.5/33.0 — within single-run noise of
-the values below, as expected for a repack with identical quantization bytes. Prefill and AR decode use an autoregressive session; MTP decode
+and its state). Unsloth `UD-Q4_K_XL` Dynamic v3.1 (revision `d9620119`, local
+repack directory) + shared-Q8_0 MTP. Two timed repetitions after one
+untimed pass; full sweep re-measured November 8, 2026 (within single-run
+noise of the October 28 `38bb39ee` values, as expected for a repack with
+identical quantization bytes). Prefill and AR decode use an autoregressive session; MTP decode
 uses adaptive MTP (7 draft tokens, minimum 1).
 
 The 256K row prefill is 262,143 tokens and decode depth is 262,015: the
@@ -99,10 +98,10 @@ generated tokens. Other rows use the exact context.
 <!-- bench:context-sweep -->
 | Flash-Next Q4<br>Context (tokens) | Prefill pp (tok/s) | Decode AR (tok/s) | Decode MTP (tok/s) | MTP accepted |
 | ---: | ---: | ---: | ---: | ---: |
-| 8,192 | 1678.35 ± 0.38 | 32.15 ± 2.72 | 50.08 ± 4.51 | 64% (83/130) |
-| 32,768 | 1635.77 ± 0.38 | 32.15 ± 0.17 | 97.15 ± 3.49 | 100% (111/111) |
-| 131,072 | 1570.13 ± 0.05 | 29.44 ± 0.14 | 92.44 ± 3.39 | 100% (111/111) |
-| 262,144 | 1502.72 ± 0.44 | 27.35 ± 0.13 | 87.94 ± 2.67 | 100% (111/111) |
+| 8,192 | 1695.47 ± 9.80 | 32.57 ± 2.11 | 51.58 ± 1.80 | 66% (81/122) |
+| 32,768 | 1642.09 ± 2.41 | 32.22 ± 0.03 | 99.39 ± 2.42 | 100% (112/112) |
+| 131,072 | 1579.40 ± 0.60 | 29.54 ± 0.05 | 94.59 ± 1.97 | 100% (112/112) |
+| 262,144 | 1508.00 ± 0.60 | 27.35 ± 0.09 | 89.40 ± 1.52 | 100% (112/112) |
 <!-- /bench -->
 
 The bench prompt repeats a 20-token pattern. From 32K the model continues that
