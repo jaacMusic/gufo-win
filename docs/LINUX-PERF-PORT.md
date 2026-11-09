@@ -14,7 +14,7 @@ TheRock ROCm 10.0.0 / clang 23 toolchain used for the Windows build.
 
 - Upstream: <https://github.com/gufo-org/gufo>
 - Review clone: `%TEMP%\opencode\gufo-upstream` (bare clone works; fetch +
-  `git show <sha>`). Last swept upstream `718a388d` (2026-11-08) on 2026-11-08,
+  `git show <sha>`). Last swept upstream `8c332a02` (2026-11-08) on 2026-11-08,
   see "Upstream sweep 2026-10-30"
 - Local base: upstream `fee9d2a` (PR #314 fix)
 - Local Windows HEAD at review: `c85aada`
@@ -2401,3 +2401,36 @@ cherry-pick flow yet. Triage of the ones touching this fork's scope:
   the #874 harness run for a model this fork does not serve), #568 (NPU),
   #682 (gfx1150), #861/#862 (qwen-image), #885/#1050/#1086/#943/#998 (H3,
   docs, tests, MTP-keep).
+
+## Upstream fix 2026-11-08 (`718a388d..8c332a02` #1105)
+
+Revisited `8c332a02` #1105 "keep DSpark greedy output equal to plain decoding"
+(listed above as "no weights on this host") and landed it as a code-only DS4
+correctness fix, the way #668 landed: it changes only DS4 code the fork already
+maintains and is gated on the DS4 GPU CI. The DSpark compressor/indexer
+projections in `rocm_graph_encode_layer_attention_batch` ran the multi-token f16
+pair GEMM path (`hip_matmul_f16_f16_input_tensor`, `n_tok >= 128`), whose
+rounding differs from single-token decode, so greedy DSpark drifted from plain
+AR. Three hunks, hand-applied (no shared history):
+
+- `kernels/rocm/detail/ds4_rocm_matmul.hip.hpp`: add
+  `hip_matmul_f16_pair_each_row_as_decode` (loops rows, calling
+  `ds4_gpu_matmul_f16_pair_tensor(..., 1u)`) and route
+  `1 < n_tok <= ds4_rocm_dense_small_batch_rows()` through it; drop the
+  `n_tok >= 128` f16 GEMM branch. `n_tok == 1` and the large-batch two-call
+  fallback are unchanged.
+- `runtime/rocm_graph.cpp`: the attn and indexer compressor+gate projections now
+  call `ds4_gpu_matmul_f16_pair_tensor` once instead of two
+  `ds4_gpu_matmul_f16_tensor`.
+- New `tests/models/deepseek_v4_flash/dspark_verify_test.cpp` (`ds4.verify`),
+  linked to `gufo_deepseek_v4_flash`: loads target+draft, forces DSpark to draft
+  every step, and checks each greedy emitted token equals an autoregressive
+  snapshot at the same position over six `generate`→`evaluate` turns; skips (77)
+  without `GUFO_TEST_MODEL`/`GUFO_DS4_DSPARK_MODEL`. `tools/ds4/check.py` `model`
+  suite now matches `^ds4\.(target|dspark|verify|serving|chat)$` and lists
+  `ds4_dspark_verify_test`.
+
+Not run on this host (no DS4 weights, no HIP build here); `check-format.py`
+passes (592 files) and the engine/`ds4_gpu_tensor` signatures the test uses were
+checked against the fork. Not ported: the upstream `docs/internal/.../QUALITY.md`
+note (different doc path) and #1106. Next sweep from `8c332a02`.

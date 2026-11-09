@@ -14,7 +14,8 @@ SUITES = {
     "kernels": ("^ds4\\.(projections|attention)$",
                 ["ds4_projection_test",
                  "ds4_attention_test"]),
-    "model": ("^ds4\\.(target|dspark|serving|chat)$", ["ds4_quality_test", "ds4_serving_test", "ds4_cli_test"]),
+    "model": ("^ds4\\.(target|dspark|verify|serving|chat)$",
+              ["ds4_quality_test", "ds4_dspark_verify_test", "ds4_serving_test", "ds4_cli_test"]),
 }
 
 
