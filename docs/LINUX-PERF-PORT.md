@@ -2537,4 +2537,39 @@ Next sweep from `8c332a02`.
 - The trace line (`GUFO_TRACE=1`) records both layouts' times, so a future
   host or runtime flip is visible without re-instrumenting.
 
-Next sweep from `9d957936`.
+## Sweep 2026-11-09 (evening)
+
+Upstream `9d957936..017e9249`: 5 commits.
+
+- `77dff828` release 0.33.0 — N/A.
+- `017e9249` #1083 refuse prompts that exceed the host prompt-state budget —
+  the fork already carries the claim side (`prompt_state_bytes_per_token` +
+  `prompt_admission_budget_bytes`, `TryReserve` refusal in
+  `text_generation_scheduler.cpp`, `/metrics` gauges). The only new upstream
+  piece is the `prompt_admission_available_bytes` live-headroom callable
+  (admission takes min(live host headroom, fixed budget)). Useful for
+  multi-tenant servers; the fork is single-user with the fixed budget already
+  measured — skip unless host-memory contention shows up.
+- `12e8b99f` #934 remove disk-only metadata admission limits — upstream
+  `component_text_cache.cpp` absent (fork continuation cache is a different
+  design) — N/A.
+- `b97f3b5c` #1121 disk publication validation sized by candidate —
+  `src/cache/disk.cpp` absent — N/A.
+- `b1899cfa` #1122 Windows table for the Qwen3.8-27B verification GEMM —
+  fork's `src/models/qwen/hip/kernels/verify_gemm_27b.hip` is already tuned
+  on this Windows host (kb27_sweep benches, exact/alternating rounds);
+  merging upstream's table risks regressing the fork's measured shapes —
+  skip.
+
+Open PRs: previously-wait items unchanged. #943 (fix qwen38 migrated GPU
+fixture deps) targets upstream's `_hip` library split the fork doesn't have;
+investigating the fork's never-building `wide_verification_test` target showed
+its source file was a stale local draft that never compiled (references APIs
+that never existed in the fork: `Executor::Builder`,
+`DeviceModelTestAccess::Build`). Deleted the file and its CMake target;
+`session_test`'s `EvaluateBatch` checks cover wide verification against the
+real model. Resolved below.
+
+Community: Strata unchanged since `504b1433`; bubo/others unchanged.
+
+Next sweep from `017e9249`.

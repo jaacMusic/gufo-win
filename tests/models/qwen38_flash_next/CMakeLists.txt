@@ -13,7 +13,6 @@ function(add_qwen38_flash_next_test name library labels)
 endfunction()
 
 add_qwen38_flash_next_test(config gufo_qwen38_flash_next "cpu")
-add_qwen38_flash_next_test(wide_verification wide_verification_test "hip;gpu;gfx1151")
 add_qwen38_flash_next_test(ngram gufo_qwen38_flash_next "cpu")
 add_qwen38_flash_next_test(mtp_sampling gufo_core "cpu")
 add_qwen38_flash_next_test(draft_vocab gufo_core "cpu")
