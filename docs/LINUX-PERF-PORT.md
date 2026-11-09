@@ -2434,3 +2434,40 @@ Not run on this host (no DS4 weights, no HIP build here); `check-format.py`
 passes (592 files) and the engine/`ds4_gpu_tensor` signatures the test uses were
 checked against the fork. Not ported: the upstream `docs/internal/.../QUALITY.md`
 note (different doc path) and #1106. Next sweep from `8c332a02`.
+
+## Sweep 2026-11-08 (evening): upstream unchanged, community scan, nothing portable
+
+- Upstream: fetched `origin/main` — still `8c332a02`, the morning sweep point.
+  All 24 open PRs verified still open via the API, so the "wait" decisions from
+  `f1ba423c`/`fda5854a` hold; nothing merged to port.
+- Community scan (last covered 2026-10-26/27) via the GitHub API plus a fresh
+  Strata clone (`%TEMP%\opencode\re\strata1108`, head `146df3c4`):
+  bubo, qwenllama.cpp and llama.cpp-rockchip have no commits since 2026-10-26.
+  basalt (`..f19f69e6`) and infernix (`..cc1ca419`) activity is entirely
+  CUDA/NVFP4/Blackwell/CPU-AVX/SSD-tier work — no HIP/gfx1151 changes.
+  Strata prefill commits 2026-11-05..09, triaged:
+  - `63f06385` "Q5_0 down layers take the fused F16 matrix-core kernel on
+    gfx1151 under Windows" — not portable as a patch and not needed here. It
+    extends Strata's fused IQ4 prompt kernel (`moe_fused_iq.cu`), a subsystem
+    this fork does not have: its IQ experts take `qfn_mmq_*` / gather +
+    dequant, the UD-IQ4_XS lever was measured 40% below Q4_K_XL and
+    deprioritized (2026-10-31), and the default UD-Q4_K_XL v3.1 artifact has
+    no Q5_0 down anywhere (Q4_K × Q8_0 on every MoE layer). A port would be a
+    new fused IQ4×F16 WMMA prefill kernel for a quant this engine does not
+    run. Skip.
+  - `386f9959` "exact two-pass QSA prompt selection" — TF32/3xTF32 based; the
+    commit itself says it reports "cannot run (HIP, Metal, SYCL)". N/A.
+  - `7bf5ec4e` IQ4 W4A8 int8 experts and `e77bd43b` Q5_0 int8 down: sm_120 /
+    gfx12 targets. N/A on gfx1151.
+  - `0a0e4463` file-tier LRU recheck and `e4b3e632` RSS gate: offload-stager
+    internals (their stager design), only relevant ≥200K contexts; the fork's
+    known stager stall stays open for the same reason. N/A.
+  - `f1386539` DFlash2 tuned pack (their own speculative method) and the
+    Mac-only follow-ups (`af1ffd91`..`146df3c4`): n/a.
+- Consequence: no code change this sweep. Prefill stands as measured on the
+  reference build `0b3d6f54` (pp512 1357.44 / pp2048 1631.27 / pp4096
+  1679.18, 2026-11-08); HEAD adds only serve/DS4 fixes after it. Re-bench on
+  this host is gated by the one-engine rule: the image-engine `gufo.exe` holds
+  unified memory while it runs.
+
+Next sweep from `8c332a02`.
