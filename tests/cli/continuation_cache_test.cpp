@@ -1,5 +1,6 @@
 #include "src/cli/serve/continuation_cache.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdlib>
 #include <iostream>
@@ -305,6 +306,117 @@ void TestByteCapacityEvictsBeforeSnapshotAllocation() {
   Expect(cache.retained_snapshot_bytes() == 12 &&
              cache.reserved_snapshot_bytes() == 0,
          "commit converts the reservation into exact retained bytes");
+}
+
+void TestRefusedCaptureKeepsTheRestoredFrontier() {
+  using gufo::server::SnapshotEventAction;
+  using gufo::server::SnapshotEventReason;
+
+  std::vector<std::size_t> invalidations(1);
+  std::size_t next_id = 0;
+  std::vector<gufo::server::SnapshotEvent> events;
+  gufo::server::ContinuationCache cache(
+      1, [&] { return std::make_unique<FakeState>(next_id++, &invalidations); },
+      {
+          .restore =
+              [](gufo::server::ContinuationState& state,
+                 const gufo::server::ContinuationSnapshot& snapshot) {
+                dynamic_cast<FakeState&>(state).value =
+                    dynamic_cast<const FakeSnapshot&>(snapshot).value;
+              },
+          .capacity_bytes = [] { return 8; },
+          .on_event =
+              [&](const gufo::server::SnapshotEvent& event) {
+                events.push_back(event);
+              },
+      });
+
+  {
+    auto frontier =
+        cache.Acquire(std::vector<gufo::server::ContinuationToken>{1, 2, 3, 4});
+    Expect(frontier.TryReserveSnapshot(8, 4),
+           "frontier snapshot fits the byte budget");
+    Expect(frontier.Commit({1, 2, 3, 4},
+                           std::make_unique<FakeSnapshot>(4, 8)) == 8,
+           "frontier snapshot is retained");
+  }
+
+  auto turn = cache.Acquire(
+      std::vector<gufo::server::ContinuationToken>{1, 2, 3, 4, 5});
+  Expect(turn.cache_hit() && turn.cached_tokens() == 4,
+         "continuing turn restores the frontier");
+  // The deeper capture needs exactly the bytes the frontier holds. Evicting it
+  // would leave the conversation with nothing to restore when the capture is
+  // later refused, so the admission itself must be refused.
+  Expect(!turn.TryReserveSnapshot(8, 5),
+         "admission is refused instead of paid for by the frontier");
+  Expect(cache.retained_snapshot_bytes() == 8,
+         "the restored frontier stays resident");
+  Expect(std::none_of(events.begin(), events.end(),
+                      [](const auto& event) {
+                        return event.action == SnapshotEventAction::kRemoved;
+                      }),
+         "no checkpoint was evicted");
+  Expect(std::any_of(events.begin(), events.end(),
+                     [](const auto& event) {
+                       return event.action == SnapshotEventAction::kSkipped &&
+                              event.reason ==
+                                  SnapshotEventReason::kByteCapacity;
+                     }),
+         "refusal is reported as byte-capacity pressure");
+  turn.Commit({1, 2, 3, 4, 5});
+
+  auto next = cache.Acquire(
+      std::vector<gufo::server::ContinuationToken>{1, 2, 3, 4, 5, 6});
+  Expect(next.cache_hit() && next.cached_tokens() == 4,
+         "next turn still restores the frontier instead of re-reading");
+  next.Invalidate();
+}
+
+void TestPressureStillTakesAnotherConversation() {
+  std::vector<std::size_t> invalidations(2);
+  std::size_t next_id = 0;
+  gufo::server::ContinuationCache cache(
+      2, [&] { return std::make_unique<FakeState>(next_id++, &invalidations); },
+      {
+          .restore =
+              [](gufo::server::ContinuationState& state,
+                 const gufo::server::ContinuationSnapshot& snapshot) {
+                dynamic_cast<FakeState&>(state).value =
+                    dynamic_cast<const FakeSnapshot&>(snapshot).value;
+              },
+          .capacity_bytes = [] { return 16; },
+          .on_event = {},
+      });
+
+  {
+    auto other =
+        cache.Acquire(std::vector<gufo::server::ContinuationToken>{9, 9});
+    Expect(other.TryReserveSnapshot(8, 2), "unrelated snapshot reserves bytes");
+    other.Commit({9, 9}, std::make_unique<FakeSnapshot>(9, 8));
+  }
+  {
+    auto frontier =
+        cache.Acquire(std::vector<gufo::server::ContinuationToken>{1, 2, 3, 4});
+    Expect(frontier.TryReserveSnapshot(8, 4),
+           "frontier snapshot reserves bytes");
+    frontier.Commit({1, 2, 3, 4}, std::make_unique<FakeSnapshot>(4, 8));
+  }
+
+  auto turn = cache.Acquire(
+      std::vector<gufo::server::ContinuationToken>{1, 2, 3, 4, 5});
+  Expect(turn.cache_hit(), "continuing turn restores the frontier");
+  Expect(turn.TryReserveSnapshot(8, 5),
+         "an unrelated checkpoint still pays for the replacement");
+  Expect(cache.retained_snapshot_bytes() == 8,
+         "the unrelated snapshot was evicted");
+  turn.Commit({1, 2, 3, 4, 5}, std::make_unique<FakeSnapshot>(5, 8));
+
+  auto check =
+      cache.Acquire(std::vector<gufo::server::ContinuationToken>{9, 9, 1});
+  Expect(!check.cache_hit(),
+         "the unrelated conversation lost its only checkpoint");
+  check.Commit({9, 9, 1});
 }
 
 void TestConcurrentReservationsCannotOvercommitBudget() {
@@ -673,6 +785,8 @@ int main() {
   TestSnapshotCanBranchIntoTwoIndependentStateSlots();
   TestSnapshotRecordsOutnumberStateSlots();
   TestByteCapacityEvictsBeforeSnapshotAllocation();
+  TestRefusedCaptureKeepsTheRestoredFrontier();
+  TestPressureStillTakesAnotherConversation();
   TestConcurrentReservationsCannotOvercommitBudget();
   TestImpossibleReservationPreservesRetainedEntries();
   TestAbandonedReservationIsReleased();

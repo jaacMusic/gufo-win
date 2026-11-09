@@ -151,6 +151,8 @@ public:
     /// Reserves aggregate retained-snapshot capacity before model allocation.
     ///
     /// Byte-pressure evictions happen synchronously before this returns true.
+    /// The reused conversation's only restorable checkpoint is never evicted;
+    /// such an admission is refused instead.
     [[nodiscard]] bool TryReserveSnapshot(std::size_t snapshot_bytes,
                                           std::size_t token_count,
                                           bool preserve_source = false);

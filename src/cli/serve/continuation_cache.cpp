@@ -567,6 +567,32 @@ bool ContinuationCache::ReserveSnapshot(std::size_t source_index,
       return snapshot_bytes != 0 && used <= impl_->snapshot_capacity_bytes &&
              snapshot_bytes <= impl_->snapshot_capacity_bytes - used;
     };
+    // Byte pressure evicts a victim first and admits the replacement after,
+    // so a refused admission or a later capture failure leaves the victim
+    // gone. When that victim is the only checkpoint the reused conversation
+    // can restore, the next turn re-prefills the whole prompt. Refuse this
+    // admission instead of evicting that last frontier.
+    const Entry* reused = source_index < impl_->entries.size() &&
+                                  impl_->entries[source_index]->valid
+                              ? impl_->entries[source_index].get()
+                              : nullptr;
+    const auto sole_restorable = [&](std::size_t candidate) {
+      if (reused == nullptr || reused->snapshot == nullptr)
+        return false;
+      const auto& entry = *impl_->entries[candidate];
+      if (!entry.valid || entry.snapshot == nullptr ||
+          entry.tokens.size() > reused->tokens.size() ||
+          !IsPrefix(entry.tokens, reused->tokens)) {
+        return false;
+      }
+      // A retained deeper copy still leaves this conversation a frontier.
+      return std::ranges::none_of(impl_->entries, [&](const auto& other) {
+        return other.get() != &entry && other->valid &&
+               other->snapshot != nullptr &&
+               other->tokens.size() > entry.tokens.size() &&
+               IsPrefix(entry.tokens, other->tokens);
+      });
+    };
     const auto oldest_snapshot = [&](bool allow_source) {
       std::size_t selected = impl_->entries.size();
       std::uint64_t oldest = std::numeric_limits<std::uint64_t>::max();
@@ -574,6 +600,7 @@ bool ContinuationCache::ReserveSnapshot(std::size_t source_index,
            ++candidate) {
         const auto& entry = *impl_->entries[candidate];
         if (!entry.valid || entry.snapshot == nullptr ||
+            sole_restorable(candidate) ||
             (!allow_source && candidate == source_index)) {
           continue;
         }
