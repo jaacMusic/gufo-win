@@ -153,31 +153,35 @@ Run notes for future sweeps:
 
 ### Bubo comparison
 
-Bubo `0.1.1` (`bubo-engine` 0.10.0, revision `0cb4bd87`) against Gufo at
-`4800ce14`, both re-run on 2026-11-01 on the same snapshot and bench command:
-greedy, one process at a time, two timed repetitions after one untimed pass.
-The 256K row uses the same 262,143 prompt and 262,015 depth. Bubo 0.1.1's
-`bench` now runs MTP with prompt lookup and the auto draft vocabulary (the
-serve defaults), so the MTP column matches Gufo's bench defaults.
+Bubo `0.1.2` (revision `53e4c3e4b`, engine gufo 0.26.0) against Gufo-win at
+`5377e35e`, both measured 2026-11-08/09 on the same bench command: greedy, one
+process at a time, two timed repetitions. Bubo 0.1.2's stock loader rejects the
+Dynamic v3.1 local repack snapshot (`d9620119`, "Malformed or truncated GGUF"),
+so its rows use the `38bb39ee` snapshot — identical quantization bytes, within
+single-run noise of the repack. The 256K row uses the same 262,143 prompt and
+262,015 depth. Bubo 0.1.2's `bench` runs MTP with prompt lookup and the auto
+draft vocabulary (the serve defaults), so the MTP column matches Gufo's bench
+defaults.
 
 <!-- bench:bubo-context-sweep -->
 | Flash-Next Q4<br>Context (tokens) | Bubo pp | Gufo pp | Bubo AR | Gufo AR | Bubo MTP | Gufo MTP |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 8,192 | 1661.34 ± 14.33 | 1688.89 ± 1.65 | 28.08 ± 1.37 | 33.63 ± 0.46 | 34.97 ± 0.41 | 51.97 ± 1.53 |
-| 32,768 | 1592.46 ± 1.85 | 1642.57 ± 5.30 | 28.66 ± 0.07 | 31.95 ± 0.34 | 96.36 ± 1.81 | 99.36 ± 3.90 |
-| 131,072 | 1523.60 ± 0.72 | 1582.37 ± 0.03 | 27.91 ± 0.09 | 29.34 ± 0.15 | 92.10 ± 1.81 | 94.39 ± 3.25 |
-| 262,144 | 1454.68 ± 0.43 | 1516.19 ± 0.34 | 26.99 ± 0.07 | 27.35 ± 0.16 | 86.84 ± 1.61 | 90.08 ± 3.07 |
+| 8,192 | 1657.78 ± 15.50 | 1695.47 ± 9.80 | 28.64 ± 0.31 | 32.57 ± 2.11 | 44.37 ± 0.81 | 51.58 ± 1.80 |
+| 32,768 | 1588.13 ± 3.38 | 1642.09 ± 2.41 | 28.61 ± 0.06 | 32.22 ± 0.03 | 95.68 ± 2.48 | 99.39 ± 2.42 |
+| 131,072 | 1519.72 ± 0.53 | 1579.40 ± 0.60 | 27.82 ± 0.01 | 29.54 ± 0.05 | 91.53 ± 2.41 | 94.59 ± 1.97 |
+| 262,144 | 1451.21 ± 0.41 | 1508.00 ± 0.60 | 26.94 ± 0.01 | 27.35 ± 0.09 | 86.72 ± 1.82 | 89.40 ± 1.52 |
 <!-- /bench -->
 
-All values are tok/s. Against Bubo 0.1.1, Gufo prefill is 1.7-4.2% higher, AR
-decode is 1.3-19.8% higher (19.8% at 8K; 8K AR ends the turn after 28 tokens on
-Gufo, so treat that row loosely), and MTP decode is 2.5-48.6% higher (48.6% at
-8K, where Bubo's lookup acceptance is weak; from 32K both repeat the pattern
-verbatim at ~100% acceptance and Gufo leads 2.5-3.7%). Bubo's serving launcher
+All values are tok/s. Against Bubo 0.1.2, Gufo prefill is 2.3-3.9% higher, AR
+decode is 1.5-13.7% higher (13.7% at 8K; treat that row loosely — Gufo's 8K AR
+ends the turn after 28 tokens), and MTP decode is 3.1-16.3% higher. Bubo 0.1.2's
+auto draft vocabulary lifted its 8K MTP from 34.97 (0.1.1) to 44.37, closing
+part of the 8K gap; every other cell moved within ~1% of 0.1.1 (pp 1661.34 →
+1657.78, 96.36 → 95.68 at 32K, 86.84 → 86.72 at 256K). Bubo's serving launcher
 also enables survival and vision; these direct bench numbers do not. Logs:
-`artifacts\bench-context-bubo-011` and `artifacts\bench-context-1101`
-(git-ignored). The 0.1.0 comparison of 2026-10-21 showed the same ranking with
-weaker Bubo numbers (Bubo pp 1293.86-1540.60, MTP 33.96-67.36).
+`artifacts\bench-context-bubo-012` and `artifacts\bench-context` (git-ignored).
+The 0.1.0 comparison of 2026-10-21 showed the same ranking with weaker Bubo
+numbers (Bubo pp 1293.86-1540.60, MTP 33.96-67.36).
 
 ### Bubo 0.1.1 cached first-token claim
 
@@ -188,28 +192,29 @@ sessions 1, context 131072, greedy, 16-token replies, same filler prompt and
 snapshot; one cold pass then three cached repeats). Token counts differ slightly
 between engines (32542 vs 32584, 99259 vs 99301) because the tokenizers differ;
 output was byte-identical cold vs cached on both. Gufo rows are from the
-2026-11-02 build (tokenization memoization plus resident-row reuse); the Bubo
-rows are the 2026-11-01 measurement.
+2026-11-08 build (tokenization memoization, resident-row reuse and the pinned
+payload pool); the Bubo rows are the 2026-11-01 measurement.
 
 | prompt chars | Gufo cold | Gufo cached TTFT | Bubo cold | Bubo cached TTFT |
 | ---: | ---: | ---: | ---: | ---: |
-| 168,800 (~32K) | 20,672 ms | 21-23 ms | 20,572 ms | 8.6-9.0 ms |
-| 515,000 (~100K) | 65,352 ms | 27-30 ms | 46,542 ms | 102-113 ms |
+| 168,800 (~32K) | 20,449 ms | 9-12 ms | 20,572 ms | 8.6-9.0 ms |
+| 515,000 (~100K) | 65,026 ms | 11.6-11.8 ms | 46,542 ms | 102-113 ms |
 
-Gufo leads the cached first token at 100K by about 4x and trails at 32K. Bubo
-0.1.1's keep-alive path serves a resident session directly (queue 7-18 ms,
-matching its claim), so its cached turn never touches a snapshot. Gufo restores
-per request; for an exact repeat the request returns to the session that wrote
-the checkpoint, so only the ~240 MB of mutable recurrent state is copied and
-the resident K/V rows stay in place (`Executor::RestoreSnapshot` with
-`reuse_resident_rows`, gated on session identity and epoch). That took 32K from
-57-66 ms to 21-23 ms and 100K from 152-170 ms to 27-30 ms; the earlier 113-132
-and 363-373 ms figures were pre-memoization and, at 100K, a second-repeat
-outlier. The 32K remainder is the mutable copy crossing pageable host memory at
-~11 GB/s; a pinned or device-resident checkpoint would remove it. One cached
-repeat out of three still pays a 70-280 ms queue transition at both sizes
-(90.7 and 231.7 ms above); that time is outside `cache_restore_ms` and is not
-measured yet. Harness: `%TEMP%\opencode\ttft-claim.py`.
+Gufo leads the cached first token at 100K by about 9x and matches Bubo at 32K
+(9-12 ms against 8.6-9.0 ms). Bubo 0.1.1's keep-alive path serves a resident
+session directly (queue 7-18 ms, matching its claim), so its cached turn never
+touches a snapshot. Gufo restores per request; for an exact repeat the request
+returns to the session that wrote the checkpoint, so only the ~240 MB of mutable
+recurrent state is copied and the resident K/V rows stay in place
+(`Executor::RestoreSnapshot` with `reuse_resident_rows`, gated on session
+identity and epoch). That took 32K from 57-66 ms to 21-23 ms and 100K from
+152-170 ms to 27-30 ms; the earlier 113-132 and 363-373 ms figures were
+pre-memoization and, at 100K, a second-repeat outlier. Holding the snapshot
+payloads in a pinned-host pool (2026-11-08) then took 32K to 9-12 ms and 100K to
+11.6-11.8 ms. One cached repeat out of three still pays a 70-280 ms queue
+transition at both sizes (80.4 and 203.1 ms above in the 2026-11-08 runs); that
+time is outside `cache_restore_ms` and is not measured yet. Harness:
+`%TEMP%\opencode\ttft-claim.py`.
 
 Warm-turn anatomy (2026-11-02, `--sessions 1`, MTP on, same harness with
 `cache_snapshot_ms`/`cache_shared_prefix_ms` read out): a follow-up turn that
@@ -221,16 +226,21 @@ checkpoint (1.01 GB D2H) + ~30 ms of actual delta prefill; at 100K it was
 captures are the fixed per-turn cost that earlier delta sweeps measured as
 ~770 ms at 32K; they scale with payload bytes, not delta tokens. Running with
 `--speculative off` leaves the prefill wait unchanged (479 ms for the same
-47-token delta), so MTP catch-up is not a factor. Pinning the snapshot buffers
-with `hipHostMalloc` cut the 32K restore to 10.5 ms and the exact-repeat TTFT
-to 8.5 ms, but a 100K request failed with a 500 once ~5.9 GB of pinned
-snapshots were retained against 7.4 GB of available host memory, so that
-change was reverted; a pinned staging path with a size cap is the safe
-variant if 32K cached TTFT ever needs to drop below ~20 ms. The next real win
-is skipping the shared-prefix capture when this request's own stable-boundary
-snapshot already retains a prefix within `shared_prefix_min_tokens` (128) of
-the divergence point: today both copies of nearly the same 32.5K-token prefix
-are written every turn.
+47-token delta), so MTP catch-up is not a factor. Snapshot payloads now come
+from a 3 GiB pinned-host pool (`hipHostMalloc` in `SessionSnapshot`, falling
+back to pageable memory when the pool is full or the allocation fails), so the
+restore's host-to-device copy reads resident pages instead of faulting 4 KiB at
+a time: restore fell to 8.5-11.8 ms and the exact-repeat TTFT to 9-12 ms at 32K
+(2026-11-08). An unbounded pinning attempt had cut the 32K restore to 10.5 ms
+earlier, but a 100K request failed with a 500 once ~5.9 GB of pinned snapshots
+were retained against 7.4 GB of available host memory; the cap keeps a 100K
+payload (5.7 GB, plus its 4.0 GB shared prefix) pageable, and 100K restores in
+10.7-11.4 ms. When the pool is already full -- for example after a 100K session
+is retained -- a later 32K payload stays pageable and restores in ~17 ms. The
+next real win is skipping the shared-prefix capture when this request's own
+stable-boundary snapshot already retains a prefix within
+`shared_prefix_min_tokens` (128) of the divergence point: today both copies of
+nearly the same 32.5K-token prefix are written every turn.
 
 ## Multiple users, autoregressive
 
