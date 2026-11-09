@@ -1,5 +1,6 @@
 #include "src/models/qwen38_flash_next/engine.hpp"
 
+#include <hip/hip_runtime.h>
 #include <sys/mman.h>
 #include <unistd.h>
 
@@ -579,7 +580,7 @@ std::unique_ptr<SessionSnapshot> Session::SaveSnapshot(
       new SessionSnapshot(host_bytes + executor_bytes));
   snapshot->source_id_ = id_;
   snapshot->source_epoch_ = epoch_;
-  std::uint8_t* out = snapshot->data_.get();
+  std::uint8_t* out = snapshot->data_;
   const SessionSnapshotHeader header{
       .magic = kSessionSnapshotMagic,
       .version = kSnapshotPayloadVersion,
@@ -732,22 +733,62 @@ bool Session::RestorePayload(std::span<const std::uint8_t> payload,
   return true;
 }
 
-SessionSnapshot::SessionSnapshot(std::uint64_t size)
-    : data_(new std::uint8_t[size]), size_(size) {
+namespace {
+
+// A device copy reads resident host pages at full bandwidth; pageable pages
+// fault in 4 KiB at a time. Pin within a bounded pool: one 32K turn keeps its
+// 2.0 GiB and 1.0 GiB snapshots inside the cap, a 100K turn (>5 GiB) stays
+// pageable instead of exhausting host memory as the unbounded try once did.
+constexpr std::uint64_t kPinnedSnapshotBytes = 3ULL << 30;
+std::atomic<std::uint64_t> pinned_snapshot_bytes{0};
+
+std::uint8_t* AllocateSnapshotBytes(std::uint64_t size, bool* pinned) {
+  auto used = pinned_snapshot_bytes.load(std::memory_order_relaxed);
+  while (used + size <= kPinnedSnapshotBytes &&
+         !pinned_snapshot_bytes.compare_exchange_weak(
+             used, used + size, std::memory_order_relaxed)) {
+  }
+  if (used + size <= kPinnedSnapshotBytes) {
+    void* memory = nullptr;
+    if (hipHostMalloc(&memory, size) == hipSuccess) {
+      *pinned = true;
+      return static_cast<std::uint8_t*>(memory);
+    }
+    pinned_snapshot_bytes.fetch_sub(size, std::memory_order_relaxed);
+  }
+  *pinned = false;
+  return new std::uint8_t[size];
+}
+
+}  // namespace
+
+SessionSnapshot::SessionSnapshot(std::uint64_t size) : size_(size) {
+  data_ = AllocateSnapshotBytes(size, &pinned_);
+  if (pinned_)
+    return;
   // Snapshot copies first-touch hundreds of MiB. Let Linux back the interior
   // with transparent huge pages instead of faulting one 4 KiB page at a time.
   // Advise only complete pages belonging to this allocation; this is optional
   // and does not pin memory or change the serialized payload.
   const long page = sysconf(_SC_PAGESIZE);
   if (page > 0) {
-    const auto address = reinterpret_cast<std::uintptr_t>(data_.get());
+    const auto address = reinterpret_cast<std::uintptr_t>(data_);
     const auto skip = (page - address % page) % page;
     if (size > skip) {
       const auto length = (size - skip) / page * page;
       if (length != 0)
-        (void)madvise(data_.get() + skip, length, MADV_HUGEPAGE);
+        (void)madvise(data_ + skip, length, MADV_HUGEPAGE);
     }
   }
+}
+
+SessionSnapshot::~SessionSnapshot() {
+  if (pinned_) {
+    (void)hipHostFree(data_);
+    pinned_snapshot_bytes.fetch_sub(size_, std::memory_order_relaxed);
+    return;
+  }
+  delete[] data_;
 }
 
 bool SessionSnapshot::CopyTo(
@@ -755,7 +796,7 @@ bool SessionSnapshot::CopyTo(
   if (destination.size() != size_) {
     return false;
   }
-  std::memcpy(destination.data(), data_.get(), size_);
+  std::memcpy(destination.data(), data_, size_);
   return true;
 }
 

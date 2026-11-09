@@ -45,15 +45,15 @@ two repetitions, 2026-11-01):
 | 262,144 | **1,516.2** | 1,454.7 | **+4.2%** | **27.4** | 27.0 | **+1.3%** | **90.1** | 86.8 | **+3.8%** |
 
 Gufo-win leads every cell (bold; Δ = Gufo-win ÷ Bubo − 1). The 8K AR cell ends the
-turn after 28 generated tokens. Bubo is faster on the cached first token of a
-32K conversation turn: its serving stack keeps session KV resident and answers
-in 8.6–9.0 ms, against Gufo-win's 21–23 ms (27–30 ms at 100K, where Bubo takes
-102–113 ms). Gufo-win restores a checkpoint by copying only the ~240 MB of mutable
-recurrent state when the request returns to the session that wrote it
-(2026-11-02); that replaced a full 2.0–5.7 GB re-upload and, together with
-tokenization memoization (2026-11-01), took the cached turn from 126 ms to
-21–23 ms at 32K and from ~365 ms to 27–30 ms at 100K. The 32K remainder is that
-copy crossing pageable host memory at ~11 GB/s
+turn after 28 generated tokens. On a cached first token the engines are level at
+32K: Bubo's keep-alive path answers in 8.6–9.0 ms and Gufo-win's restore in
+9–12 ms, while at 100K Gufo-win is ~9x ahead (11.6–11.8 ms against 102–113 ms).
+Gufo-win restores a checkpoint by copying only the ~240 MB of mutable recurrent
+state when the request returns to the session that wrote it (2026-11-02), and
+keeps snapshot payloads in a bounded pinned-host pool so that copy reads resident
+memory (2026-11-08). That replaced a full 2.0–5.7 GB re-upload and, together with
+tokenization memoization (2026-11-01), took the cached turn from 126 ms to 9–12 ms
+at 32K and from ~365 ms to ~12 ms at 100K
 ([TTFT comparison](docs/models/qwen3.8-flash-next/BENCHMARKS.md)).
 
 Against upstream 0.24.0 (the stock `gufo` release binary, same files, same

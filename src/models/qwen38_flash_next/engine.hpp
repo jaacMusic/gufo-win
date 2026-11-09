@@ -385,7 +385,7 @@ private:
 /// memory and persist to disk.
 class SessionSnapshot final {
 public:
-  ~SessionSnapshot() = default;
+  ~SessionSnapshot();
   SessionSnapshot(const SessionSnapshot&) = delete;
   SessionSnapshot& operator=(const SessionSnapshot&) = delete;
   SessionSnapshot(SessionSnapshot&&) = delete;
@@ -393,14 +393,16 @@ public:
 
   [[nodiscard]] std::uint64_t SizeBytes() const noexcept { return size_; }
   [[nodiscard]] std::span<const std::uint8_t> bytes() const noexcept {
-    return {data_.get(), size_};
+    return {data_, size_};
   }
   [[nodiscard]] bool CopyTo(std::span<std::uint8_t> destination) const noexcept;
 
 private:
   explicit SessionSnapshot(std::uint64_t size);
 
-  std::unique_ptr<std::uint8_t[]> data_;
+  std::uint8_t* data_{nullptr};
+  /// Device-pinned allocation; see the destructor.
+  bool pinned_{false};
   std::uint64_t size_{0};
   /// Session that wrote this snapshot; never serialized.
   std::uint64_t source_id_{0};
