@@ -9,11 +9,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <tuple>
 #include <type_traits>
 #include <vector>
 
@@ -786,7 +788,90 @@ std::unique_ptr<Executor> Executor::Create(const DeviceModel& model,
       return nullptr;
     }
   }
+  if (!e->CalibrateDecodeOverlap(error_msg)) {
+    return nullptr;
+  }
   return e;
+}
+
+bool Executor::CalibrateDecodeOverlap(std::string* error_msg) {
+  decode_overlap_ = false;
+  const auto& layers = model_->layers();
+  // Only Q8_0 shared experts overlap (see Moe).
+  if (std::none_of(layers.begin(), layers.end(), [](const DeviceLayer& l) {
+        return l.shexp_gate.type == GgmlType::kQ8_0 &&
+               l.shexp_up.type == GgmlType::kQ8_0 &&
+               l.shexp_down.type == GgmlType::kQ8_0;
+      })) {
+    return true;
+  }
+  // One decode row through every layer: the weights stream from memory as
+  // they do in decode instead of being reread from cache.
+  std::vector<float> row(config().hidden_size);
+  for (std::size_t i = 0; i < row.size(); ++i) {
+    row[i] = 0.1F * std::sin(static_cast<float>(i) * 0.13F);
+  }
+  if (!Check(hipMemcpy(s_.mixed, row.data(), row.size() * sizeof(float),
+                       hipMemcpyHostToDevice),
+             "overlap calibration input", error_msg)) {
+    return false;
+  }
+  // Time eager passes, not graph replays: the fork/join cost ranks the
+  // layouts the same way, and capturing a graph this early slowed that
+  // process's decode. Alternate the layouts and keep each one's fastest
+  // pass; the first round grows the GEMM tier's arena and is not timed.
+  auto state =
+      std::tie(moe_pending_, defer_residual_, res_deferred_, shexp_half_ready_,
+               q8t_src_, q8t_rows_, q8t_cols_, half_src_, half_rows_,
+               half_cols_, half_bf16_, xn_half_, inject_parts_, inject_fused_,
+               q8_slot_, xn_q8_ready_, mixed_q8_ready_, pending_combine_);
+  const auto saved = std::apply(
+      [](const auto&... fields) { return std::make_tuple(fields...); }, state);
+  double best[2] = {std::numeric_limits<double>::infinity(),
+                    std::numeric_limits<double>::infinity()};
+  for (int round = 0; round < 4; ++round) {
+    for (int layout = 0; layout < 2; ++layout) {
+      decode_overlap_ = layout == 1;
+      const auto start = std::chrono::steady_clock::now();
+      for (std::size_t il = 0; il < layers.size(); ++il) {
+        // In decode the HC mixer rewrites each layer's MoE input, which
+        // invalidates the converted-input caches. Clear them here too, so
+        // every layer converts its input instead of reusing the previous
+        // layer's copy of the same s_.mixed.
+        DropReadyQ8();
+        q8t_src_ = nullptr;
+        half_src_ = nullptr;
+        if (!Moe(layers[il], s_.mixed, s_.block_out, 1, error_msg
+#ifdef GUFO_NPU
+                 ,
+                 /*last_only=*/false, /*npu_prefill=*/false,
+                 static_cast<int>(il)
+#endif
+                     )) {
+          return false;
+        }
+      }
+      if (!Check(hipStreamSynchronize(stream_), "overlap calibration",
+                 error_msg)) {
+        return false;
+      }
+      const std::chrono::duration<double> elapsed =
+          std::chrono::steady_clock::now() - start;
+      if (round > 0) {
+        best[layout] = std::min(best[layout], elapsed.count());
+      }
+    }
+  }
+  state = saved;
+  // A tie keeps the serial layout. The layouts' outputs are identical, so
+  // either choice changes only speed.
+  decode_overlap_ = best[1] < best[0];
+  if (Tl().Enabled()) {
+    std::fprintf(stderr,
+                 "qwen38_flash_next: decode overlap %s (%.2f/%.2f ms)\n",
+                 decode_overlap_ ? "on" : "off", best[0] * 1e3, best[1] * 1e3);
+  }
+  return true;
 }
 
 std::unique_ptr<Session> Executor::CreateSession(core::SessionMode mode,
@@ -2731,9 +2816,11 @@ bool Executor::Moe(const DeviceLayer& l, const float* x, float* out,
   // capture through side_start_, and the main stream joins back through
   // side_done_.
   // At n_tokens <= kVecBatch the shared expert is latency-bound, and forking
-  // it costs more than the overlap saves (measured -18% decode).
-  bool overlap = ExpertMatrixRows(n_tokens) && !last_only &&
-                 l.shexp_gate.type == GgmlType::kQ8_0 &&
+  // it costs more than the overlap saves on some runtimes (measured -18%
+  // decode on Windows/TheRock 10.0), so Create measured whether it pays.
+  bool overlap = (ExpertMatrixRows(n_tokens) ||
+                  (decode_overlap_ && n_tokens <= kVecBatch)) &&
+                 !last_only && l.shexp_gate.type == GgmlType::kQ8_0 &&
                  l.shexp_up.type == GgmlType::kQ8_0 &&
                  l.shexp_down.type == GgmlType::kQ8_0;
 #ifdef GUFO_NPU

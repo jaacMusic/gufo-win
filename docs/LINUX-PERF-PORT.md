@@ -2471,3 +2471,70 @@ note (different doc path) and #1106. Next sweep from `8c332a02`.
   unified memory while it runs.
 
 Next sweep from `8c332a02`.
+
+## Sweep 2026-11-09: upstream 10 commits, one conditional port (#1112), community unchanged
+
+- Upstream: fetched `origin/main` -> `8c332a02..9d957936`, ten merges. All 24
+  open PRs still open, so every "wait" decision above still holds. Triage:
+  - `365cc5a5` #1112/#1107 "measure the decode shared-expert overlap before
+    using it": the only candidate. It replaces the fixed rule with a ~120 ms
+    one-time calibration in `Create` (`CalibrateDecodeOverlap`, 4 rounds x 2
+    layouts on one synthetic row, best-of) and keeps serial when the fork/join
+    is not cheaper than running the shared expert serially. Upstream measured
+    +1.5% decode on Linux ROCm 10.1 and ~50 us of join per layer (> the whole
+    shared expert) on Windows/TheRock 10.0. The fork already hard-codes the
+    outcome for this host (overlap only when `ExpertMatrixRows`, "-18% decode"
+    comment at the `Moe` gate), so a port is behavior-neutral here and only
+    removes the assumption (plus `SavedDispatch()`/`DispatchState()` hoist of
+    the dispatch tuple, and a rewrite of
+    `tests/models/qwen38_flash_next/wide_verification_test.cpp`). Port when the
+    production Linux target becomes the measured host; verify with the
+    interleaved A/B and the usual prefill/decode/quality gates, and expect the
+    calibration to land on the same gate on Windows.
+  - `3016d652` #1117 and `fe2694bc` #1104: upstream `src/cache` and
+    `src/core/hip/snapshot_copy.hip`. The fork's continuation cache
+    (`src/cli/serve/continuation_cache.cpp`, `fef0d347`/`cbbd999a`/`f34b4473`)
+    is a different design with no host registration, so both stay N/A.
+  - `9d957936` #1119 `ReleaseMappedPages`: fork has no `prefault.hpp` or
+    mapped file views. N/A.
+  - `3a89a056` #910 DXGI state capacity: the fork already reads the DXGI
+    budget by LUID in `src/core/platform/device_memory.cpp`; the commit only
+    wires upstream's admission abstraction. Skip.
+  - `5f9612c3` #1106 DS4 HC decode kernels: no DS4 weights on this host, so
+    unverifiable; keep the code-only DS4 fixes as the pattern. Skip.
+  - `768a482f` #1110 (audio/WAV), `00d7ccb0` #1050 and `2fd9e460` #1108 (ext
+    framework), `2dac5eeb` README: absent subsystems. N/A.
+- Community: Strata `146df3c4..504b1433` (220 commits) is Qwen4 compiled
+  geometry, release/feed/UI, SYCL/Metal/CUDA and their own DFlash2 defaults.
+  Windows-relevant items are their launcher reserve floor (`d362bc5f` #G16,
+  `e1da007f --vram-reserve-mib 700`) and a Linux expert-arena file-cache
+  credit (`3289d828` #5327): the fork has no reserve floor and no Linux stager,
+  so N/A. bubo, qwenllama.cpp and llama.cpp-rockchip have no new commits.
+- Consequence: #1112 ported the same day (see below); reference numbers
+  stand (`0b3d6f54`).
+
+### Port of #1112 (2026-11-09)
+
+- `fix(qwen38-flash-next): measure the decode shared-expert overlap before
+  using it`. `Executor::Create` now calls `CalibrateDecodeOverlap` once
+  (~120 ms): one synthetic decode row through every layer's `Moe`, 4 rounds x
+  2 layouts, best-of from round 1, eager (not captured; an early capture was
+  slower upstream). The dispatch state (`std::tie` of the 19 producer fields)
+  is saved and restored around it, and the `Moe` overlap gate became
+  `ExpertMatrixRows(n_tokens) || (decode_overlap_ && n_tokens <= kVecBatch)`.
+  Adapted, not copied: this fork has no `ExecutorTestAccess` and its `Run`
+  has no capture-then-execute path, so `DispatchState`/`SavedDispatch` helpers
+  became a local save/restore inside the calibration; the NPU build passes
+  `npu_prefill=false` and the layer index.
+- Verification on the Windows host (Dynamic v3.1 UD-Q4_K_XL + Q8_0 MTP):
+  `session_test --prefill-only` passes (snapshot-during-capture, execution
+  modes, 4096-token prefill chunks exact), and the trace reports
+  `decode overlap off (9.59/13.41 ms)` — overlap measured ~40% slower per
+  layer pass, so the calibrated gate equals the old hard-coded serial gate
+  and steady-state decode is unchanged by construction. No interleaved A/B:
+  both builds select the serial layout; the only runtime delta is the
+  one-time calibration inside `Create` (loading axis, ~0.1 s).
+- The trace line (`GUFO_TRACE=1`) records both layouts' times, so a future
+  host or runtime flip is visible without re-instrumenting.
+
+Next sweep from `9d957936`.

@@ -589,6 +589,11 @@ private:
   bool Run(Session& session, std::uint64_t key, bool graph,
            const std::function<bool()>& body, std::string* error_msg,
            bool synchronize = true, bool bump = false) const;
+  /// Times every layer's one-row MoE with and without the shared-expert
+  /// overlap and keeps the faster layout in decode_overlap_. Create calls it
+  /// once, after allocating scratch (about 120 ms). Touches only scratch and
+  /// restores the dispatch state: no session or model state.
+  bool CalibrateDecodeOverlap(std::string* error_msg);
 
   const DeviceModel* model_{nullptr};
   NgramTable* ngram_{nullptr};
@@ -622,6 +627,12 @@ private:
   hipEvent_t side_start_{nullptr};
   hipEvent_t side_done_{nullptr};
   mutable bool side_pending_{false};
+  /// Whether 1-8-row decode passes run the shared expert on side_stream_.
+  /// The fork/join costs depend on the runtime: cheap on Linux/ROCm 10.1
+  /// (+1.5% decode), ~50 us per layer on Windows/TheRock 10.0, more than the
+  /// whole shared expert takes (#1107). Create measures both layouts.
+  /// Wide and prefill passes always overlap.
+  bool decode_overlap_{false};
   /// True between BeginCapture and EndCapture: overlap guards must keep the
   /// side stream's forks/joins inside the capture.
   mutable bool capturing_{false};
