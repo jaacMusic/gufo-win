@@ -24,7 +24,9 @@ names for tagged releases.
    rewrites, then confirm the remote tip author is
    `jaacMusic <juan.avila97@gmail.com>`).
 5. Tag and push: `git tag -a v0.6.0 -m "v0.6.0" <commit> && git push origin v0.6.0`.
-   Re-pointing a published tag: delete remote and local tag, re-tag, push.
+   Re-pointing a published tag: delete remote and local tag, re-tag, push —
+   and note GitHub turns the release into a **draft** when its tag is deleted;
+   republish with `gh release edit v0.6.0 -R jaacMusic/gufo-win --draft=false`.
 6. Publish with gh, targeting the fork explicitly (a bare `gh` command can
    resolve to the upstream `gufo-org/gufo` repo):
    `gh release create v0.6.0 -R jaacMusic/gufo-win --title "Gufo-win v0.6.0" --notes-file release-0.6.0-notes.md --verify-tag`
