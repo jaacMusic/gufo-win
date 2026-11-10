@@ -1,5 +1,7 @@
 #include "src/cli/serve/continuation_cache.hpp"
 
+#include <unistd.h>
+
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
@@ -14,6 +16,16 @@ namespace gufo::server {
 namespace {
 
 constexpr auto kCancellationPollInterval = std::chrono::milliseconds{10};
+
+/// Physical memory the OS reports as available right now, in bytes. Zero when
+/// unknown. The Windows POSIX shim maps this to GlobalMemoryStatusEx.
+std::uint64_t AvailablePhysicalBytes() noexcept {
+  const long pages = sysconf(_SC_AVPHYS_PAGES);
+  const long page_size = sysconf(_SC_PAGESIZE);
+  if (pages <= 0 || page_size <= 0)
+    return 0;
+  return std::uint64_t(pages) * page_size;
+}
 
 bool IsPrefix(std::span<const ContinuationToken> prefix,
               std::span<const ContinuationToken> tokens) {
@@ -70,6 +82,24 @@ struct ContinuationCache::Impl {
 
   [[nodiscard]] bool snapshot_mode() const noexcept {
     return static_cast<bool>(snapshot_support.restore);
+  }
+
+  /// Snapshot payloads are dirty anonymous pages: once the OS trims them, the
+  /// pagefile absorbs the writes (and restores pay reads). Keep this much
+  /// physical memory free by shrinking the effective capacity: the existing
+  /// byte-pressure admission then evicts cold snapshots, which is pure memory
+  /// reclaim with no disk traffic. No effect while RAM headroom exists.
+  [[nodiscard]] std::size_t EffectiveSnapshotCapacity() const {
+    if (snapshot_capacity_bytes == 0)
+      return 0;
+    constexpr std::uint64_t kHeadroomBytes = 2ULL << 30;
+    const std::uint64_t available = AvailablePhysicalBytes();
+    if (available == 0 || available >= kHeadroomBytes)
+      return snapshot_capacity_bytes;
+    const std::size_t deficit =
+        static_cast<std::size_t>(kHeadroomBytes - available);
+    return retained_snapshot_bytes > deficit ? retained_snapshot_bytes - deficit
+                                             : 0;
   }
 };
 
@@ -548,6 +578,7 @@ bool ContinuationCache::ReserveSnapshot(std::size_t source_index,
   bool admitted = false;
   {
     const std::lock_guard<std::mutex> lock(impl_->mutex);
+    const std::size_t capacity = impl_->EffectiveSnapshotCapacity();
     const auto make_event = [&](SnapshotEventAction action,
                                 SnapshotEventReason reason, std::size_t bytes,
                                 std::size_t tokens) {
@@ -558,14 +589,14 @@ bool ContinuationCache::ReserveSnapshot(std::size_t source_index,
           .token_count = tokens,
           .retained_snapshot_bytes = impl_->retained_snapshot_bytes,
           .reserved_snapshot_bytes = impl_->reserved_snapshot_bytes,
-          .capacity_bytes = impl_->snapshot_capacity_bytes,
+          .capacity_bytes = capacity,
       };
     };
     const auto fits = [&] {
       const std::size_t used =
           impl_->retained_snapshot_bytes + impl_->reserved_snapshot_bytes;
-      return snapshot_bytes != 0 && used <= impl_->snapshot_capacity_bytes &&
-             snapshot_bytes <= impl_->snapshot_capacity_bytes - used;
+      return snapshot_bytes != 0 && used <= capacity &&
+             snapshot_bytes <= capacity - used;
     };
     // Byte pressure evicts a victim first and admits the replacement after,
     // so a refused admission or a later capture failure leaves the victim
@@ -613,10 +644,8 @@ bool ContinuationCache::ReserveSnapshot(std::size_t source_index,
     };
 
     const bool can_fit_after_eviction =
-        snapshot_bytes != 0 &&
-        impl_->reserved_snapshot_bytes <= impl_->snapshot_capacity_bytes &&
-        snapshot_bytes <=
-            impl_->snapshot_capacity_bytes - impl_->reserved_snapshot_bytes;
+        snapshot_bytes != 0 && impl_->reserved_snapshot_bytes <= capacity &&
+        snapshot_bytes <= capacity - impl_->reserved_snapshot_bytes;
     while (can_fit_after_eviction && !fits()) {
       std::size_t target = oldest_snapshot(false);
       if (target == impl_->entries.size() && !preserve_source) {
@@ -733,6 +762,7 @@ std::size_t ContinuationCache::Commit(
     };
 
     auto& state_entry = *impl_->entries.at(index);
+    const std::size_t capacity = impl_->EffectiveSnapshotCapacity();
     if (impl_->snapshot_mode()) {
       if (release_state) {
         state_entry.live_tokens = std::move(live_tokens);
@@ -796,8 +826,7 @@ std::size_t ContinuationCache::Commit(
         }
         const std::size_t used =
             impl_->retained_snapshot_bytes + impl_->reserved_snapshot_bytes;
-        if (used > impl_->snapshot_capacity_bytes ||
-            snapshot_bytes > impl_->snapshot_capacity_bytes - used) {
+        if (used > capacity || snapshot_bytes > capacity - used) {
           retain_snapshot = false;
           skip_reason = SnapshotEventReason::kReservationMismatch;
         } else {
