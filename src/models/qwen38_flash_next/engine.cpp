@@ -747,19 +747,10 @@ std::atomic<std::uint64_t> pinned_snapshot_bytes{0};
 // class and keeps it committed, so distinct allocation sizes accumulate
 // forever. A growing conversation snapshots a new maximum every turn, which
 // would add one cached block per turn. Round to a sparse power-of-two ladder
-// (few classes, reused by the runtime's cache) and charge the budget once per
-// class: the cached block serves later allocations of that class, so they must
-// not be charged again. Only the pageable fallback keeps the exact size.
+// (few classes, reused by the runtime's cache) so cached blocks are recycled.
+// Charge the budget per live allocation: serve holds several snapshots at
+// once, so charging once per class would pin unbounded memory.
 constexpr std::uint64_t kMinSnapshotBlockBytes = 64ULL << 20;
-std::atomic<std::uint64_t> pinned_snapshot_classes{0};
-
-std::uint64_t SnapshotClassBit(std::uint64_t block) noexcept {
-  std::uint64_t bit = 1;
-  for (std::uint64_t b = kMinSnapshotBlockBytes; b < block; b <<= 1) {
-    bit <<= 1;
-  }
-  return bit;
-}
 
 std::uint8_t* AllocateSnapshotBytes(std::uint64_t size, std::uint64_t* capacity,
                                     bool* pinned) {
@@ -768,17 +759,9 @@ std::uint8_t* AllocateSnapshotBytes(std::uint64_t size, std::uint64_t* capacity,
     block <<= 1;
   }
   if (block <= kPinnedSnapshotBytes) {
-    const auto bit = SnapshotClassBit(block);
-    const bool charged = (pinned_snapshot_classes.fetch_or(bit) & bit) == 0;
-    // shortcut: one live snapshot per class is charged on Linux, where
-    // hipHostFree really releases; add a live count if serve caches several.
-    bool fits = true;
-    if (charged) {
-      const auto used =
-          pinned_snapshot_bytes.fetch_add(block, std::memory_order_relaxed);
-      fits = used + block <= kPinnedSnapshotBytes;
-    }
-    if (fits) {
+    const auto used =
+        pinned_snapshot_bytes.fetch_add(block, std::memory_order_relaxed);
+    if (used + block <= kPinnedSnapshotBytes) {
       void* memory = nullptr;
       if (hipHostMalloc(&memory, block) == hipSuccess) {
         *capacity = block;
@@ -786,10 +769,7 @@ std::uint8_t* AllocateSnapshotBytes(std::uint64_t size, std::uint64_t* capacity,
         return static_cast<std::uint8_t*>(memory);
       }
     }
-    if (charged) {
-      pinned_snapshot_classes.fetch_and(~bit);
-      pinned_snapshot_bytes.fetch_sub(block, std::memory_order_relaxed);
-    }
+    pinned_snapshot_bytes.fetch_sub(block, std::memory_order_relaxed);
   }
   *capacity = size;
   *pinned = false;
@@ -800,12 +780,10 @@ void ReleaseSnapshotBytes(std::uint8_t* data, bool pinned,
                           std::uint64_t capacity) {
   if (pinned) {
     (void)hipHostFree(data);
-#ifndef _WIN32
-    // Windows keeps the block in its size-class cache, so its charge stays.
-    // Linux returns the memory, so the class becomes chargeable again.
-    pinned_snapshot_classes.fetch_and(~SnapshotClassBit(capacity));
+    // Windows keeps the block in its size-class cache for reuse; it is
+    // accounted as live until then, which the budget tolerates (one cached
+    // block per class, ~2 GiB across the ladder).
     pinned_snapshot_bytes.fetch_sub(capacity, std::memory_order_relaxed);
-#endif
     return;
   }
   delete[] data;
