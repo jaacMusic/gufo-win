@@ -19,6 +19,10 @@
 
 namespace gufo::json {
 
+namespace detail {
+struct Parser;
+}  // namespace detail
+
 /// Minimal, ordered JSON value with a recursive-descent parser and serializer.
 /// Object member order is preserved via a vector of (key, value) pairs.
 class Value {
@@ -35,6 +39,12 @@ public:
   using Array = std::vector<Value>;
   using Member = std::pair<std::string, Value>;
   using Object = std::vector<Member>;
+
+  /// How dump() writes numbers read by parse(). kCanonical spells every
+  /// number from its double; kAsParsed writes the token parse() read, as
+  /// llama.cpp returns tool-call arguments. Numbers built from C++ values are
+  /// always canonical.
+  enum class Numbers : std::uint8_t { kCanonical, kAsParsed };
 
   Value() = default;
   Value(std::nullptr_t) {}
@@ -173,15 +183,17 @@ public:
     return is_string() ? str_ : def;
   }
 
-  std::string dump() const {
+  std::string dump(Numbers numbers = Numbers::kCanonical) const {
     std::ostringstream o;
-    dump_to(o);
+    dump_to(o, numbers);
     return o.str();
   }
 
 private:
+  friend struct detail::Parser;
+
   // NOLINTNEXTLINE(misc-no-recursion)
-  void dump_to(std::ostream& os) const {
+  void dump_to(std::ostream& os, Numbers numbers) const {
     switch (type_) {
       case Type::kNull:
         os << "null";
@@ -190,6 +202,10 @@ private:
         os << (bool_ ? "true" : "false");
         break;
       case Type::kNumber: {
+        if (numbers == Numbers::kAsParsed && !str_.empty()) {
+          os << str_;
+          break;
+        }
         if (!std::isfinite(num_)) {
           throw std::invalid_argument("JSON numbers must be finite");
         }
@@ -210,7 +226,7 @@ private:
         for (std::size_t i = 0; i < arr_.size(); ++i) {
           if (i)
             os << ',';
-          arr_[i].dump_to(os);
+          arr_[i].dump_to(os, numbers);
         }
         os << ']';
         break;
@@ -221,7 +237,7 @@ private:
           if (i)
             os << ',';
           os << '"' << escape(obj_[i].first) << "\":";
-          obj_[i].second.dump_to(os);
+          obj_[i].second.dump_to(os, numbers);
         }
         os << '}';
         break;
@@ -271,6 +287,7 @@ private:
   Type type_ = Type::kNull;
   bool bool_ = false;
   double num_ = 0.0;
+  // A string's payload, or the validated token of a number read by parse().
   std::string str_;
   Array arr_;
   Object obj_;
@@ -550,7 +567,9 @@ struct Parser {
         !std::isfinite(value)) {
       fail("bad number");
     }
-    return Value(value);
+    Value number(value);
+    number.str_ = tok;
+    return number;
   }
 };
 }  // namespace detail

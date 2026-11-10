@@ -306,31 +306,46 @@ public:
       throw std::logic_error("invalid scheduler fake prefill");
     }
     fake.label = prompt.front();
-    const std::size_t consumed = std::min(
-        {max_input_tokens, prompt.size() - offset, control_->prefill_capacity});
+    const std::size_t target =
+        std::min(max_input_tokens, prompt.size() - offset);
+    const std::size_t slice = state.prefill_yield_slice();
+    std::size_t consumed = 0;
+    while (consumed < target) {
+      const std::size_t piece =
+          std::min({target - consumed, control_->prefill_capacity,
+                    slice == 0 ? target : slice});
 
-    {
-      std::unique_lock<std::mutex> lock(control_->mutex);
-      control_->events.push_back({
-          .kind = EventKind::kPrefill,
-          .label = fake.label,
-          .index = fake.position,
-          .count = consumed,
-      });
-      if (control_->block_prefill_label == fake.label &&
-          !control_->prefill_gate_entered) {
-        control_->prefill_gate_entered = true;
-        control_->prefill_gate_label = fake.label;
-        control_->condition.notify_all();
-        const bool released = control_->condition.wait_for(
-            lock, kTestTimeout, [&] { return control_->release_prefill; });
-        if (!released) {
-          throw std::runtime_error("prefill gate timed out");
+      {
+        std::unique_lock<std::mutex> lock(control_->mutex);
+        control_->events.push_back({
+            .kind = EventKind::kPrefill,
+            .label = fake.label,
+            .index = fake.position,
+            .count = piece,
+        });
+        if (control_->block_prefill_label == fake.label &&
+            !control_->prefill_gate_entered) {
+          control_->prefill_gate_entered = true;
+          control_->prefill_gate_label = fake.label;
+          control_->condition.notify_all();
+          const bool released = control_->condition.wait_for(
+              lock, kTestTimeout, [&] { return control_->release_prefill; });
+          if (!released) {
+            throw std::runtime_error("prefill gate timed out");
+          }
         }
+      }
+
+      fake.position += piece;
+      consumed += piece;
+      if (slice == 0) {
+        break;
+      }
+      if (consumed < target) {
+        state.YieldPrefill();
       }
     }
 
-    fake.position += consumed;
     const bool ready = fake.position == prompt.size();
     if (ready) {
       fake.frontier = fake.label * 100;
@@ -841,9 +856,9 @@ void TestDecodeActivePrefillIsBounded(bool multi_token, bool batched) {
   }
   Expect(b_prefill_chunks == 4,
          "long active-decode prompt is split into bounded chunks");
-  Expect(result_b.prefill_chunks == 4 && result_b.prefill_tokens == 7 &&
-             result_b.active_decode_prefill_chunks == 4 &&
-             result_b.max_prefill_chunk_tokens == 2 &&
+  Expect(result_b.prefill_chunks == 1 && result_b.prefill_tokens == 7 &&
+             result_b.active_decode_prefill_chunks == 1 &&
+             result_b.max_prefill_chunk_tokens == 7 &&
              result_b.max_consecutive_active_prefill_chunks == 1,
          "chunk metrics capture the selected active-decode policy");
 }

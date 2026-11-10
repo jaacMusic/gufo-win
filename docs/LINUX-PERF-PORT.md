@@ -2610,4 +2610,47 @@ over read columns, compensated chunked GDN prefill) — only the GDN
 compensation is conceptually interesting, but it needs a HIP rewrite and a
 quality pass before it is a candidate.
 
-Next sweep from `ca6955c4`.
+## Upstream sweep 2026-11-10 (2026-11-09 evening → 2026-11-10)
+
+Upstream `ca6955c4..3edc2eff`: three commits.
+
+- `bd6b0fdd` #1128 nested-object tool grammar defaults — N/A: the fork has no
+  `src/core/json_constraint.cpp` (no grammar-constraint system).
+- `b62b1674` #1129 remove the unused `cache_shared_bytes` metric — N/A; the
+  fork still reports the field and nothing breaks.
+- `3edc2eff` #1143 nix HRX packaging — N/A.
+
+Open PR worth queueing: **`gufo-org/gufo#1146` "return tool call numbers as the
+model wrote them"** (open, CI green, 2026-11-10). The fork carries the exact
+path: `openai_chat.cpp` `ParseArguments` replays assistant tool-call numbers
+through `json::parse` → double → `dump()`, and `src/core/json.hpp` `dump_to`
+uses `std::to_chars`, so replayed `1.0` becomes `1` (and `1e5` becomes
+`100000`) in the rendered prompt — template drift, miss on checkpoint reuse,
+tool re-runs. Fix keeps the raw number token in `json::Value` for round-trip
+(+50/−4, core/json parser + callers). Ported in this sweep as
+`json::Value::Numbers::kAsParsed`, with tests for XML and JSON tool calls plus
+replayed history; the fork's dump was the same shortest-round-trip shape.
+
+Fork fixes made while checking the port: Windows clang does not link
+`__cpu_model`, so the AVX-512 detection added by `570aeb6d` now lives in
+`src/core/cpu_features.hpp` (CPUID + XCR0 on Windows); and the scheduler test
+fake now honours `prefill_yield_slice()` like the real runner, which restores
+`TestDecodeActivePrefillIsBounded` after the split-pass change (`def7deb9`).
+
+Community:
+
+- bubo: nothing since v0.1.2. Strata: ~60 commits, all packaging, desktop app,
+  Intel SYCL (fp32 router, graph capture) and CUDA — nothing Strix-HIP
+  portable. basalt: serve-console fixes and DeepSeek 4.1 CUDA/NVFP4 — N/A as
+  before. qwenllama.cpp, rockchip: unchanged.
+- infernix (CUDA-only as always) added one hardware-neutral idea:
+  `9b7ba230` "issue longest rows first in BF16 prompt attention" — reverse the
+  query-tile→block map so causal rows with more KV start first; −6.4 to −21.6%
+  on the attention op for 2.3K–16K chunks, bit-identical. If the fork's
+  chunked-prefill attention tiles rows in ascending KV length, the same flip
+  is a one-line experiment worth a pp bench (no quality gate needed since the
+  per-row math is untouched). The rest (staging-ring producer/consumer GEMM
+  `75080af0`, W4A4 row-pair kernel `5f3a0c2e`, CSF expert RAM `b472b4b4`) is
+  NVFP4/wgmma/CUDA-specific rewrites, not ports.
+
+Next sweep from `3edc2eff`.

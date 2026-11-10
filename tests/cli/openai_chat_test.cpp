@@ -781,7 +781,8 @@ void TestQwenToolBoundariesAndSchema() {
     "tools":[{"type":"function","function":{"name":"f","parameters":{
       "type":"object","properties":{"text":{"type":"string"},
       "count":{"type":"integer"},"flag":{"type":"boolean"},
-      "limit":{"type":["integer","null"]},"tags":{"type":"array"}}}}}]
+      "limit":{"type":["integer","null"]},"tags":{"type":"array"},
+      "ratio":{"type":"number"}}}}}]
   })");
   const std::string good =
       "<tool_call><function=f><parameter=text>42</parameter>"
@@ -858,7 +859,19 @@ void TestQwenToolBoundariesAndSchema() {
              0, ""},
         Case{"<tool_call>{\"name\":\"f\",\"arguments\":{\"text\":"
              "\"literal </tool_call>\"}}</tool_call>",
-             1, R"({"text":"literal </tool_call>"})"}}) {
+             1, R"({"text":"literal </tool_call>"})"},
+        // Every number keeps the model's spelling, as in llama.cpp: a double
+        // would change 2^53 + 1, 1.0, 1e5 and -0.0 (#1141).
+        Case{"<tool_call><function=f><parameter=count>9007199254740993"
+             "</parameter><parameter=ratio>1.0</parameter><parameter=limit>"
+             "1e5</parameter><parameter=tags>[-0.0, 1E-7, 2.50]</parameter>"
+             "</function></tool_call>",
+             1,
+             R"({"count":9007199254740993,"ratio":1.0,"limit":1e5,)"
+             R"("tags":[-0.0,1E-7,2.50]})"},
+        Case{"<tool_call>{\"name\":\"f\",\"arguments\":{\"count\":"
+             "9007199254740993,\"ratio\":1.0,\"tags\":[1e5]}}</tool_call>",
+             1, R"({"count":9007199254740993,"ratio":1.0,"tags":[1e5]})"}}) {
     for (bool reasoning : {false, true}) {
       for (bool stream : {false, true}) {
         auto body = schema;
@@ -916,6 +929,39 @@ void TestQwenToolBoundariesAndSchema() {
       }
     }
   }
+}
+
+// A replayed call must render the tokens the model generated, so numbers keep
+// the spelling this server returned; a double would change 2^53 + 1, 1.0 and
+// 1e5, and the continuation checkpoint would be lost (#1141).
+void TestHistoricalToolNumbersKeepSpelling() {
+  const auto body = gufo::json::parse(R"({
+    "model":"test-model",
+    "messages":[
+      {"role":"user","content":"read"},
+      {"role":"assistant","content":null,"tool_calls":[{"id":"call_1",
+       "type":"function","function":{"name":"read","arguments":
+       "{\"id\":9007199254740993,\"ratio\":1.0,\"scale\":1e5,\"zero\":-0.0}"}}]},
+      {"role":"tool","tool_call_id":"call_1","content":"ok"}
+    ],
+    "tools":[{"type":"function","function":{"name":"read","parameters":
+      {"type":"object","properties":{"id":{"type":"integer"},
+       "ratio":{"type":"number"},"scale":{"type":"number"},
+       "zero":{"type":"number"}}}}}]
+  })");
+  FakeBackend backend;
+  Expect(gufo::server::HandleOpenAiChat(Request(body.dump()), backend).status ==
+                 200 &&
+             backend.chat_calls == 1 &&
+             backend.last_request.messages.size() == 3 &&
+             backend.last_request.messages[1].tool_calls.size() == 1,
+         "Historical tool call parses");
+  const auto& arguments =
+      backend.last_request.messages[1].tool_calls[0].arguments;
+  Expect(arguments.size() == 4 && arguments[0].value == "9007199254740993" &&
+             arguments[1].value == "1.0" && arguments[2].value == "1e5" &&
+             arguments[3].value == "-0.0",
+         "Historical tool numbers keep their spelling");
 }
 
 void TestToolChoiceEnforcement() {
@@ -1939,6 +1985,7 @@ int main() {
   TestInvalidToolsFailBeforeGeneration();
   TestToolNameCharacters();
   TestQwenToolBoundariesAndSchema();
+  TestHistoricalToolNumbersKeepSpelling();
   TestDeepSeekToolCallsAreStructured();
   TestDeepSeekRepeatedToolParameters();
   TestWrongModelIsRejected();

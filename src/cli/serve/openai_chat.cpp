@@ -251,10 +251,16 @@ bool ParseArguments(std::string_view arguments,
     *error = "tool arguments must encode a JSON object";
     return false;
   }
+  // Numbers keep the client's spelling: the one this server returned, as the
+  // model generated it. Rendering them from a double would change 2^53 + 1,
+  // 1.0, 1e5 and -0.0, so a replayed turn would miss its continuation
+  // checkpoint.
   for (const auto& [name, value] : parsed.members()) {
     out->push_back({
         .name = name,
-        .value = value.is_string() ? value.get_str() : value.dump(),
+        .value = value.is_string()
+                     ? value.get_str()
+                     : value.dump(json::Value::Numbers::kAsParsed),
         .is_string = value.is_string(),
     });
   }
@@ -933,7 +939,9 @@ std::string ArgumentsJson(
       object[argument.name] = argument.value;
     }
   }
-  return object.dump();
+  // The model's spelling, as llama.cpp returns it; a double would change the
+  // client's arguments and the replayed turn.
+  return object.dump(json::Value::Numbers::kAsParsed);
 }
 
 // Qwen's XML-like arguments carry no type marker. The advertised schema is
@@ -1075,7 +1083,9 @@ void ParseQwenCalls(std::string_view text,
             for (const auto& [name, value] : arguments->members())
               call.arguments.push_back(
                   {.name = name,
-                   .value = value.is_string() ? value.get_str() : value.dump(),
+                   .value = value.is_string()
+                                ? value.get_str()
+                                : value.dump(json::Value::Numbers::kAsParsed),
                    .is_string = value.is_string()});
             complete = true;
             body.remove_prefix(close + end.size());
