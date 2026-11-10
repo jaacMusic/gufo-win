@@ -9,6 +9,8 @@
 #include <unordered_set>
 #include <utility>
 
+#include "src/core/sampling_logit_row.hpp"
+
 namespace gufo::sampling {
 namespace {
 
@@ -814,29 +816,6 @@ double SamplerState::AdjustedLogit(TokenId token, float logit) const noexcept {
           ? static_cast<double>(logit)
           : Penalize(logit, config_, *found);
   return penalized + BiasAt(token);
-}
-
-constexpr std::size_t kSkipBlock = 64;
-
-/// Largest value in a block, ignoring NaN; +inf is returned as is.
-[[nodiscard]] float BlockMaximum(std::span<const float> block) noexcept {
-  if (block.size() == kSkipBlock) {
-    // A fixed trip count with independent lanes lets the compiler vectorize.
-    std::array<float, 8> lanes;
-    lanes.fill(-std::numeric_limits<float>::infinity());
-    for (std::size_t i = 0; i < kSkipBlock; i += lanes.size())
-      for (std::size_t lane = 0; lane < lanes.size(); ++lane)
-        lanes[lane] =
-            block[i + lane] > lanes[lane] ? block[i + lane] : lanes[lane];
-    float maximum = lanes[0];
-    for (const float lane : lanes)
-      maximum = lane > maximum ? lane : maximum;
-    return maximum;
-  }
-  float maximum = -std::numeric_limits<float>::infinity();
-  for (const float value : block)
-    maximum = value > maximum ? value : maximum;
-  return maximum;
 }
 
 TokenId SamplerState::SampleGreedy(std::span<const float> logits) const {

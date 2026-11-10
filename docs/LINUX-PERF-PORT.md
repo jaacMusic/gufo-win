@@ -2573,3 +2573,33 @@ real model. Resolved below.
 Community: Strata unchanged since `504b1433`; bubo/others unchanged.
 
 Next sweep from `017e9249`.
+
+## Sweep 2026-11-09 (late)
+
+Upstream `017e9249..ca6955c4`: 3 commits.
+
+- `ca6955c4` #1127 AVX-512 block maxima, IQ4_NL codebook dequant, bf16 row
+  decode and division-free n-gram hashing — ported. Upstream's
+  `__GNUC__ && __x86_64__` guard is false on the Windows clang-cl target
+  (`__clang__`/`__x86_64__` only), which would have compiled every scalar
+  fallback; both guards now accept clang. `BlockMaximum` moved to
+  `src/core/sampling_logit_row.hpp` (upstream layout) so the tail/NaN test
+  can call it; `ngram_remainder.hpp` carries `HeadRemainder`. Upstream
+  isolated gains 1.17–25x; end-to-end neutral by its own bench, so this is
+  CPU margin, not tok/s. Tests: `logit_sampler_test`, `ggml_dequant_test`,
+  `qwen38_flash_next_ngram_test` extended (exact IQ4_NL, all bf16 bits,
+  remainder edge cases, every block tail).
+- `f4bc1adb` #1124 deprecate `--draft-tokens`, `--min-draft-tokens`,
+  `--draft-policy` — N/A. Those are the fork's documented production knobs
+  (`--mtp-policy survival`, DFlash2 validation), so removing them is a
+  behavior change, not a fix or perf port.
+- `6a021263` #1125 routed GEMM prefill bounds — test/docs only, N/A.
+
+Community: Strata `504b1433` and qwenllama/rockchip unchanged. bubo v0.1.2
+adds serve logprob fixes for its own engine; basalt remains DeepSeek/NVFP4
+CUDA; infernix added CUDA flash-next work (copy-ahead guess, last-layer MoE
+over read columns, compensated chunked GDN prefill) — only the GDN
+compensation is conceptually interesting, but it needs a HIP rewrite and a
+quality pass before it is a candidate.
+
+Next sweep from `ca6955c4`.
