@@ -1859,6 +1859,14 @@ Swept `1fc829ea..4ab04ab8` (11 commits). No immediate-performance port landed.
   geometries. The remaining upstream delta is only
   `tools/qwen27b/verify_sweep/` (sweep harness + README), ported 2026-11-08
   so geometries can be re-swept now that a 27B GGUF is available.
+  Swept 2026-11-09 on the Qwen3.8-27B TurboFCFusion IQ4_XS GGUF (DavidAU
+  merge): added IQ4_XS entries for attn_gate 6144x5120, ffn_down 5120x17408
+  (rows 2, 4-8), ssm_alpha 48x5120, ssm_out 5120x6144, packed ffn_gate+up
+  34816x5120, attn_k 1024x5120, attn_q 12288x5120 (+13-48% over generic), and
+  Q5_K attn_v 1024x5120 rows 2-7 plus ssm_qkv rows 5 (+6-53%). Re-sweep
+  confirmed production hits every new shape (residuals ±2%); each candidate
+  was verified bit-exact against the generic dispatch on real weights. The
+  merge GGUF itself is not servable here (chat template SHA not pinned).
 - Not ported: `538f6e4` #866 (WMMA prefill past 262,144 visible tokens — at
   262,144 ctx the live extent is exactly 2,048 words, inside the old cap, so
   no gain here; port only if contexts > 262,144 are planned; manual merge

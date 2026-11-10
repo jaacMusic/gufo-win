@@ -45,10 +45,17 @@ bool LaunchQ5K(const void* w, const float* x, float* y, std::size_t batch,
   const bool ssm_gate = Is(m, k, 6144, 5120);
   const bool attn_q = Is(m, k, 12288, 5120);
   const bool out_6144 = Is(m, k, 5120, 6144);  // ssm_out, attn_output
+  const bool attn_v = Is(m, k, 1024, 5120);    // 27B IQ4_XS mix attention V
   const bool any =
       ffn_up || ffn_down || ssm_qkv || ssm_gate || attn_q || out_6144;
   switch (batch) {
+    // attn_v at 2-7 rows and ssm_qkv at 5 rows: verify_sweep 2026-11-09,
+    // +6-53% over the generic dispatch.
+    case 2:
+      if (attn_v) return Launch<T, 2, 8, 4, 2, 2, 4, 32>(w, x, y, m, k, stream);
+      return false;
     case 3:
+      if (attn_v) return Launch<T, 3, 8, 4, 2, 3, 4, 32>(w, x, y, m, k, stream);
       if (ffn_down) return Launch<T, 3, 16, 4, 1, 1>(w, x, y, m, k, stream);
       if (ssm_qkv) return Launch<T, 3, 16, 4, 1>(w, x, y, m, k, stream);
       if (ssm_gate) return Launch<T, 3, 8, 4, 1, 1>(w, x, y, m, k, stream);
@@ -57,6 +64,7 @@ bool LaunchQ5K(const void* w, const float* x, float* y, std::size_t batch,
         return Launch<T, 3, 4, 4, 1, 1, 4, 16>(w, x, y, m, k, stream);
       return false;
     case 4:
+      if (attn_v) return Launch<T, 4, 8, 4, 1, 1, 4, 32>(w, x, y, m, k, stream);
       if (ffn_up) return Launch<T, 4, 16, 4, 1, 1>(w, x, y, m, k, stream);
       if (ffn_down || ssm_qkv || ssm_gate || attn_q)
         return Launch<T, 4, 8, 4, 1, 4, 4, 16>(w, x, y, m, k, stream);
@@ -64,16 +72,18 @@ bool LaunchQ5K(const void* w, const float* x, float* y, std::size_t batch,
         return Launch<T, 4, 4, 4, 1, 1, 4, 16>(w, x, y, m, k, stream);
       return false;
     case 5:
+      if (attn_v) return Launch<T, 5, 16, 4, 2, 5, 4, 32>(w, x, y, m, k, stream);
       if (ssm_gate) return Launch<T, 5, 4, 4, 1>(w, x, y, m, k, stream);
+      if (ssm_qkv) return Launch<T, 5, 8, 4, 1, 5, 8, 16>(w, x, y, m, k, stream);
       if (ffn_down || out_6144)
         return Launch<T, 5, 16, 4, 2>(w, x, y, m, k, stream);
       return false;
-    // 6-8 rows (kb27_sweep5, 2026-09-27): 16-lane groups, 22-38% faster
-    // than the 32-lane shapes on every projection.
     case 6:
+      if (attn_v) return Launch<T, 6, 8, 4, 1, 1, 4, 32>(w, x, y, m, k, stream);
       if (any) return Launch<T, 6, 4, 4, 1, 6, 8, 16>(w, x, y, m, k, stream);
       return false;
     case 7:
+      if (attn_v) return Launch<T, 7, 8, 4, 2, 7, 4, 32>(w, x, y, m, k, stream);
       if (any) return Launch<T, 7, 4, 4, 1, 7, 8, 16>(w, x, y, m, k, stream);
       return false;
     case 8:
@@ -84,25 +94,98 @@ bool LaunchQ5K(const void* w, const float* x, float* y, std::size_t batch,
   }
 }
 
-// Target FFN gate.
+// Target FFN gate, and the Qwen3.8-27B IQ4_XS projections
+// (tools/qwen27b/verify_sweep on the TurboFCFusion IQ4_XS GGUF, 2026-11-09;
+// only gains of 5% or more over the generic dispatch are kept, ffn_down at
+// 3 rows stayed generic).
 bool LaunchIQ4XS(const void* w, const float* x, float* y, std::size_t batch,
                  std::size_t m, std::size_t k, hipStream_t stream) {
   constexpr auto T = GgmlType::kIQ4_XS;
-  if (!Is(m, k, 17408, 5120))
+  const bool ffn_gate = Is(m, k, 17408, 5120);
+  if (ffn_gate) {
+    if (batch == 2) return Launch<T, 2, 4, 3, 2>(w, x, y, m, k, stream);
+    if (batch == 3) return Launch<T, 3, 4, 4, 2, 3, 1>(w, x, y, m, k, stream);
+    if (batch == 4)
+      return Launch<T, 4, 8, 4, 1, 4, 8, 16>(w, x, y, m, k, stream);
+    if (batch == 5)
+      return Launch<T, 5, 4, 4, 1, 5, 4, 16>(w, x, y, m, k, stream);
+    if (batch == 6)
+      return Launch<T, 6, 4, 4, 1, 6, 4, 16>(w, x, y, m, k, stream);
+    if (batch == 7)
+      return Launch<T, 7, 4, 4, 1, 7, 4, 16>(w, x, y, m, k, stream);
+    if (batch == 8)
+      return Launch<T, 8, 4, 4, 1, 8, 4, 16>(w, x, y, m, k, stream);
     return false;
-  if (batch == 2) return Launch<T, 2, 4, 3, 2>(w, x, y, m, k, stream);
-  if (batch == 3) return Launch<T, 3, 4, 4, 2, 3, 1>(w, x, y, m, k, stream);
-  if (batch == 4)
-    return Launch<T, 4, 8, 4, 1, 4, 8, 16>(w, x, y, m, k, stream);
-  if (batch == 5)
-    return Launch<T, 5, 4, 4, 1, 5, 4, 16>(w, x, y, m, k, stream);
-  if (batch == 6)
-    return Launch<T, 6, 4, 4, 1, 6, 4, 16>(w, x, y, m, k, stream);
-  if (batch == 7)
-    return Launch<T, 7, 4, 4, 1, 7, 4, 16>(w, x, y, m, k, stream);
-  if (batch == 8)
-    return Launch<T, 8, 4, 4, 1, 8, 4, 16>(w, x, y, m, k, stream);
-  return false;
+  }
+  const bool attn_gate = Is(m, k, 6144, 5120);
+  const bool ffn_down = Is(m, k, 5120, 17408);
+  const bool ssm_alpha = Is(m, k, 48, 5120);
+  const bool ssm_out = Is(m, k, 5120, 6144);
+  const bool ffn_gate_up = Is(m, k, 34816, 5120);  // packed gate+up
+  const bool attn_k = Is(m, k, 1024, 5120);
+  const bool attn_q = Is(m, k, 12288, 5120);
+  const bool small = ssm_alpha || attn_k;
+  const bool wide = ffn_down || ssm_out || ffn_gate_up || attn_q;
+  switch (batch) {
+    case 2:
+      if (attn_gate)
+        return Launch<T, 2, 4, 3, 1, 2, 8, 16>(w, x, y, m, k, stream);
+      if (small) return Launch<T, 2, 8, 4, 2, 2, 4, 32>(w, x, y, m, k, stream);
+      if (wide) return Launch<T, 2, 16, 4, 1, 2, 4, 16>(w, x, y, m, k, stream);
+      return false;
+    case 3:
+      if (attn_gate)
+        return Launch<T, 3, 4, 3, 1, 3, 8, 16>(w, x, y, m, k, stream);
+      if (ssm_alpha)
+        return Launch<T, 3, 8, 4, 2, 3, 4, 32>(w, x, y, m, k, stream);
+      if (attn_k) return Launch<T, 3, 16, 4, 2, 3, 4, 32>(w, x, y, m, k, stream);
+      if (ssm_out)
+        return Launch<T, 3, 16, 4, 1, 3, 8, 16>(w, x, y, m, k, stream);
+      if (ffn_gate_up || attn_q)
+        return Launch<T, 3, 16, 4, 1, 3, 4, 16>(w, x, y, m, k, stream);
+      return false;  // ffn_down 3 rows: generic measured equal
+    case 4:
+      if (attn_gate || ssm_alpha)
+        return Launch<T, 4, 8, 4, 2, 4, 4, 32>(w, x, y, m, k, stream);
+      if (ffn_down)
+        return Launch<T, 4, 4, 4, 1, 4, 8, 16>(w, x, y, m, k, stream);
+      if (ssm_out || ffn_gate_up || attn_q)
+        return Launch<T, 4, 8, 4, 1, 4, 8, 16>(w, x, y, m, k, stream);
+      if (attn_k) return Launch<T, 4, 8, 4, 1, 1, 4, 32>(w, x, y, m, k, stream);
+      return false;
+    case 5:
+      if (attn_gate || ssm_alpha)
+        return Launch<T, 5, 8, 4, 2, 5, 4, 32>(w, x, y, m, k, stream);
+      if (ffn_down)
+        return Launch<T, 5, 4, 4, 1, 5, 4, 16>(w, x, y, m, k, stream);
+      if (ssm_out) return Launch<T, 5, 8, 4, 1, 5, 8, 16>(w, x, y, m, k, stream);
+      if (ffn_gate_up || attn_q)
+        return Launch<T, 5, 4, 4, 1, 5, 8, 16>(w, x, y, m, k, stream);
+      if (attn_k) return Launch<T, 5, 8, 4, 1, 1, 4, 32>(w, x, y, m, k, stream);
+      return false;
+    case 6:
+      if (attn_gate || wide)
+        return Launch<T, 6, 4, 4, 1, 6, 8, 16>(w, x, y, m, k, stream);
+      if (ssm_alpha)
+        return Launch<T, 6, 8, 4, 2, 6, 4, 32>(w, x, y, m, k, stream);
+      if (attn_k) return Launch<T, 6, 16, 4, 2, 6, 4, 32>(w, x, y, m, k, stream);
+      return false;
+    case 7:
+      if (attn_gate)
+        return Launch<T, 7, 4, 4, 1, 7, 4, 16>(w, x, y, m, k, stream);
+      if (wide) return Launch<T, 7, 4, 4, 1, 7, 8, 16>(w, x, y, m, k, stream);
+      if (ssm_alpha)
+        return Launch<T, 7, 8, 4, 2, 7, 4, 32>(w, x, y, m, k, stream);
+      if (attn_k) return Launch<T, 7, 8, 4, 1, 1, 4, 32>(w, x, y, m, k, stream);
+      return false;
+    case 8:
+      if (attn_gate || wide)
+        return Launch<T, 8, 4, 4, 1, 8, 4, 16>(w, x, y, m, k, stream);
+      if (small) return Launch<T, 8, 8, 4, 2, 8, 4, 32>(w, x, y, m, k, stream);
+      return false;
+    default:
+      return false;
+  }
 }
 
 // Output head (shared by verification and the draft) and attention V.
