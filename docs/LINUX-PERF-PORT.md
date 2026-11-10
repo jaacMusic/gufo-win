@@ -2679,8 +2679,14 @@ Community (heads as of 2026-11-10):
 - bubo: nothing since v0.1.2. basalt: DeepSeek V4.1 CUDA/NVFP4 and
   serve-console fixes, N/A as before. qwenllama.cpp (BeeLlama/llama.cpp
   tracking) and llama.cpp-rockchip (RK3588): unchanged verdicts.
-- infernix: no new commits. `9b7ba230` "issue longest rows first in BF16
-  prompt attention" — tried on this fork's `WmmaCausalAttentionKernel`
+- infernix: one later commit was untriaged at that point: `09c8d4d9`
+  "proportional split shares for BF16 KV from three rows" gives long rows
+  more key splits than short rows, which needs mixed-context decode
+  batches. The fork's decode batch is MTP draft rows over one session
+  prefix, so rows are homogeneous and `SplitKDecodePartition` is already
+  per-row even. N/A. The rest of the batch (`9b7ba230`, `75080af0`,
+  `5f3a0c2e`, `b472b4b4`) is as triaged below or CUDA-only.
+  `9b7ba230` "issue longest rows first in BF16 prompt attention" — tried on this fork's `WmmaCausalAttentionKernel`
   (reverse the query-group dispatch so causal rows with the most KV start
   first; each CTA keeps its work). Measured Q4_K_XL, r=3, iGPU-only: pp2048
   d0 1666.23 → 1671.43, pp8192 1681.21 → 1686.23, pp16384 1658.00 →
