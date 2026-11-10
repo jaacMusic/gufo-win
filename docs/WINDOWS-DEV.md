@@ -146,7 +146,8 @@ gufo bench --model "$env:USERPROFILE\models\qwen38-flash-next-v31\
 Built executables resolve shared libraries at launch. Exit code
 `0xC0000135` (DLL not found) means a root below is missing from `PATH`; the
 build itself is fine. Find any binary's full list with
-`dumpbin /DEPENDENTS <exe>` and check it against these roots:
+`dumpbin /DEPENDENTS <exe>`, or with `pefile` when no Visual Studio shell is
+installed, and check it against these roots:
 
 - `C:\dev\TheRock\build\bin` — `amdhip64_7.dll`, `hipblas`, `rocblas`,
   `libhipblaslt`, `MIOpen`, `hiprtc0715` and friends.
@@ -156,6 +157,12 @@ build itself is fine. Find any binary's full list with
   pulls in NPU staging: `gufo.exe` and the `qwen27b` test binaries at current
   HEAD. A host without an XRT install cannot start those binaries at all;
   the `npu-xrt` build directory only carries `xrt_coreutil.lib`.
+- Debug-suffixed vcpkg imports (`libcurl-d.dll` and other `*-d.dll`) appear
+  when the build links the debug triplet. If only the release DLL is
+  installed, copy it under the debug name into a shim directory on `PATH`
+  (`copy` `libcurl.dll` to `libcurl-d.dll`); the export sets are identical.
+  Without that the binary dies with `0xC0000135` before `main` and `ctest`
+  reports it as a plain launch failure.
 
 CPU/core tests (`logit_sampler_test`, `openai_chat_test`, `http_server_test`,
 `qwen_chat_template_test`) run with only the first two roots. The launcher
