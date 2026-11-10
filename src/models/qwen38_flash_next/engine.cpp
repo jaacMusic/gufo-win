@@ -13,8 +13,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <type_traits>
+#include <vector>
 
 #include "src/core/gguf_reader.hpp"
 #include "src/core/platform/tuning.hpp"
@@ -736,34 +738,83 @@ bool Session::RestorePayload(std::span<const std::uint8_t> payload,
 namespace {
 
 // A device copy reads resident host pages at full bandwidth; pageable pages
-// fault in 4 KiB at a time. Pin within a bounded pool: one 32K turn keeps its
-// 2.0 GiB and 1.0 GiB snapshots inside the cap, a 100K turn (>5 GiB) stays
-// pageable instead of exhausting host memory as the unbounded try once did.
-constexpr std::uint64_t kPinnedSnapshotBytes = 3ULL << 30;
+// fault in 4 KiB at a time. Pin within a bounded lifetime budget; overflow
+// uses the heap, which returns memory to the OS on free.
+constexpr std::uint64_t kPinnedSnapshotBytes = 2ULL << 30;
 std::atomic<std::uint64_t> pinned_snapshot_bytes{0};
 
-std::uint8_t* AllocateSnapshotBytes(std::uint64_t size, bool* pinned) {
-  auto used = pinned_snapshot_bytes.load(std::memory_order_relaxed);
-  while (used + size <= kPinnedSnapshotBytes &&
-         !pinned_snapshot_bytes.compare_exchange_weak(
-             used, used + size, std::memory_order_relaxed)) {
+// The HIP runtime on Windows caches every hipHostFree'd pinned block by size
+// class and keeps it committed, so distinct allocation sizes accumulate
+// forever. A growing conversation snapshots a new maximum every turn, which
+// would add one cached block per turn. Round to a sparse power-of-two ladder
+// (few classes, reused by the runtime's cache) and charge the budget once per
+// class: the cached block serves later allocations of that class, so they must
+// not be charged again. Only the pageable fallback keeps the exact size.
+constexpr std::uint64_t kMinSnapshotBlockBytes = 64ULL << 20;
+std::atomic<std::uint64_t> pinned_snapshot_classes{0};
+
+std::uint64_t SnapshotClassBit(std::uint64_t block) noexcept {
+  std::uint64_t bit = 1;
+  for (std::uint64_t b = kMinSnapshotBlockBytes; b < block; b <<= 1) {
+    bit <<= 1;
   }
-  if (used + size <= kPinnedSnapshotBytes) {
-    void* memory = nullptr;
-    if (hipHostMalloc(&memory, size) == hipSuccess) {
-      *pinned = true;
-      return static_cast<std::uint8_t*>(memory);
+  return bit;
+}
+
+std::uint8_t* AllocateSnapshotBytes(std::uint64_t size, std::uint64_t* capacity,
+                                    bool* pinned) {
+  std::uint64_t block = kMinSnapshotBlockBytes;
+  while (block < size) {
+    block <<= 1;
+  }
+  if (block <= kPinnedSnapshotBytes) {
+    const auto bit = SnapshotClassBit(block);
+    const bool charged = (pinned_snapshot_classes.fetch_or(bit) & bit) == 0;
+    // shortcut: one live snapshot per class is charged on Linux, where
+    // hipHostFree really releases; add a live count if serve caches several.
+    bool fits = true;
+    if (charged) {
+      const auto used =
+          pinned_snapshot_bytes.fetch_add(block, std::memory_order_relaxed);
+      fits = used + block <= kPinnedSnapshotBytes;
     }
-    pinned_snapshot_bytes.fetch_sub(size, std::memory_order_relaxed);
+    if (fits) {
+      void* memory = nullptr;
+      if (hipHostMalloc(&memory, block) == hipSuccess) {
+        *capacity = block;
+        *pinned = true;
+        return static_cast<std::uint8_t*>(memory);
+      }
+    }
+    if (charged) {
+      pinned_snapshot_classes.fetch_and(~bit);
+      pinned_snapshot_bytes.fetch_sub(block, std::memory_order_relaxed);
+    }
   }
+  *capacity = size;
   *pinned = false;
   return new std::uint8_t[size];
+}
+
+void ReleaseSnapshotBytes(std::uint8_t* data, bool pinned,
+                          std::uint64_t capacity) {
+  if (pinned) {
+    (void)hipHostFree(data);
+#ifndef _WIN32
+    // Windows keeps the block in its size-class cache, so its charge stays.
+    // Linux returns the memory, so the class becomes chargeable again.
+    pinned_snapshot_classes.fetch_and(~SnapshotClassBit(capacity));
+    pinned_snapshot_bytes.fetch_sub(capacity, std::memory_order_relaxed);
+#endif
+    return;
+  }
+  delete[] data;
 }
 
 }  // namespace
 
 SessionSnapshot::SessionSnapshot(std::uint64_t size) : size_(size) {
-  data_ = AllocateSnapshotBytes(size, &pinned_);
+  data_ = AllocateSnapshotBytes(size, &capacity_, &pinned_);
   if (pinned_)
     return;
   // Snapshot copies first-touch hundreds of MiB. Let Linux back the interior
@@ -774,8 +825,8 @@ SessionSnapshot::SessionSnapshot(std::uint64_t size) : size_(size) {
   if (page > 0) {
     const auto address = reinterpret_cast<std::uintptr_t>(data_);
     const auto skip = (page - address % page) % page;
-    if (size > skip) {
-      const auto length = (size - skip) / page * page;
+    if (capacity_ > skip) {
+      const auto length = (capacity_ - skip) / page * page;
       if (length != 0)
         (void)madvise(data_ + skip, length, MADV_HUGEPAGE);
     }
@@ -783,12 +834,7 @@ SessionSnapshot::SessionSnapshot(std::uint64_t size) : size_(size) {
 }
 
 SessionSnapshot::~SessionSnapshot() {
-  if (pinned_) {
-    (void)hipHostFree(data_);
-    pinned_snapshot_bytes.fetch_sub(size_, std::memory_order_relaxed);
-    return;
-  }
-  delete[] data_;
+  ReleaseSnapshotBytes(data_, pinned_, capacity_);
 }
 
 bool SessionSnapshot::CopyTo(

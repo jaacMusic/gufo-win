@@ -404,6 +404,8 @@ private:
   /// Device-pinned allocation; see the destructor.
   bool pinned_{false};
   std::uint64_t size_{0};
+  /// Allocated buffer size, rounded to a block for recycling; >= size_.
+  std::uint64_t capacity_{0};
   /// Session that wrote this snapshot; never serialized.
   std::uint64_t source_id_{0};
   std::uint64_t source_epoch_{0};
