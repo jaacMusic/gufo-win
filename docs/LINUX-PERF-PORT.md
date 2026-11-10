@@ -2654,3 +2654,38 @@ Community:
   NVFP4/wgmma/CUDA-specific rewrites, not ports.
 
 Next sweep from `3edc2eff`.
+
+## Sweep 2026-11-10 (late)
+
+Upstream `3edc2eff..0e2de43e`: two commits, no new port.
+
+- `4e95aecb` #1146 merged upstream as landed — the fork already carries it
+  (`c926d4e1`, ported from the open PR the same morning). Verified
+  semantically identical: same `json::Value::Numbers` dump mode, same parser
+  token capture, all three `openai_chat.cpp` call sites. Upstream's extra
+  `tojson()` kCanonical default guards a grammar-constraint path the fork
+  does not have; nothing to take.
+- `0e2de43e` #1147 nix HRX stream queues + Loom tools — N/A, packaging.
+
+Open PRs unchanged since the 2026-11-08 triage: #893 still wait-for-merge,
+#969/#958/#912 stay reverted (measured `66d07011`), #682 gfx1150, #1118
+breaking audio refactor still iterating upstream, rest features/docs/other
+models.
+
+Community (heads as of 2026-11-10):
+
+- strata `504b1433..87dfca0e`: all test hermeticity, packaging, desktop-app
+  CI and Intel SYCL — nothing Strix-HIP portable, verdict unchanged.
+- bubo: nothing since v0.1.2. basalt: DeepSeek V4.1 CUDA/NVFP4 and
+  serve-console fixes, N/A as before. qwenllama.cpp (BeeLlama/llama.cpp
+  tracking) and llama.cpp-rockchip (RK3588): unchanged verdicts.
+- infernix: no new commits. `9b7ba230` "issue longest rows first in BF16
+  prompt attention" — tried on this fork's `WmmaCausalAttentionKernel`
+  (reverse the query-group dispatch so causal rows with the most KV start
+  first; each CTA keeps its work). Measured Q4_K_XL, r=3, iGPU-only: pp2048
+  d0 1666.23 → 1671.43, pp8192 1681.21 → 1686.23, pp16384 1658.00 →
+  1660.26, pp2048 d32768 1448.57 → 1451.69; tg unchanged (34.8/31.4).
+  Landed as `[x]`: +0.2..+0.5 % prefill, greedy 64-token output
+  byte-identical.
+
+Next sweep from `0e2de43e`.

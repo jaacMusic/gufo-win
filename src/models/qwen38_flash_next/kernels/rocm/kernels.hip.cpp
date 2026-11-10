@@ -3906,18 +3906,22 @@ __launch_bounds__(256, 2) __global__ void WmmaCausalAttentionKernel(
   const std::uint32_t sub = lane & 15u;
   const std::uint32_t half_id = lane >> 4u;
 
-  // Keep the two KV heads of nearby queries together in the launch order.
-  // This improves cache reuse without changing any query's key sweep.
+  // Longest rows first, like infernix 9b7ba230: the last query group sweeps
+  // the most keys (causal), so its blocks (both KV heads stay adjacent in
+  // the launch order for cache reuse) are issued first and the short rows
+  // fill the tail wave. Each CTA keeps its work, so outputs are bit-
+  // identical; only the dispatch order changes.
   const std::uint32_t linear = blockIdx.y * gridDim.x + blockIdx.x;
+  const std::uint32_t head_part = linear % gridDim.y;
   const std::uint32_t query_group =
-      first_query_group + (kPackHeads ? linear / kWmmaKvHeads : blockIdx.x);
+      first_query_group + (gridDim.x - 1 - linear / gridDim.y);
   const std::uint32_t query_start = query_group * kQueryRows;
   const std::uint32_t kv_head =
-      kPackHeads ? linear % kWmmaKvHeads : blockIdx.y / (kWmmaGqa / kWmmaHeads);
+      kPackHeads ? head_part : head_part / (kWmmaGqa / kWmmaHeads);
   const std::uint32_t first_query_head =
       kPackHeads ? kv_head * kWmmaGqa
                  : (kv_head * kWmmaGqa) +
-                       ((blockIdx.y % (kWmmaGqa / kWmmaHeads)) * kWmmaHeads);
+                       ((head_part % (kWmmaGqa / kWmmaHeads)) * kWmmaHeads);
   constexpr float attention_scale = 1.0F / 16.0F;
 
   // Row (row block rb, row r) -> (local query, query head, live).
