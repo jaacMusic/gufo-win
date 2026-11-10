@@ -2690,8 +2690,19 @@ Community (heads as of 2026-11-10):
   (reverse the query-group dispatch so causal rows with the most KV start
   first; each CTA keeps its work). Measured Q4_K_XL, r=3, iGPU-only: pp2048
   d0 1666.23 → 1671.43, pp8192 1681.21 → 1686.23, pp16384 1658.00 →
-  1660.26, pp2048 d32768 1448.57 → 1451.69; tg unchanged (34.8/31.4).
-  Landed as `[x]`: +0.2..+0.5 % prefill, greedy 64-token output
-  byte-identical.
+  1660.26, pp2048 d32768 1448.57 → 1451.69. Landed as `630cd08e` and
+  reverted the same day: +0.1..+0.3 % prefill does not clear run-to-run
+  spread at r=3 here, and the permuted head/group index math is not worth
+  that much. Dispatch is back to the plain launch order that keeps nearby
+  queries' KV heads adjacent; outputs are bit-identical either way.
+
+Fork-side, dropped the same day: shrinking the effective snapshot capacity
+whenever free host RAM dips below a 2 GiB headroom (on top of the
+per-allocation pinned budget of `bb4c74d3`) was landed as `e3932aa1` and
+reverted right after. The pinned pool is already bounded by live host
+availability at startup (`HostSnapshotBudgetBytes`), and on a
+unified-memory part a transient free-RAM reading mostly reflects GPU
+pressure the budget already prices in, so the extra shrink only evicts
+snapshots that restore fine from the pinned pool.
 
 Next sweep from `0e2de43e`.
