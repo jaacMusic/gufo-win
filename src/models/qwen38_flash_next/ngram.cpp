@@ -15,6 +15,7 @@
 #include <cstring>
 #include <unordered_map>
 
+#include "src/core/cpu_features.hpp"
 #include "src/core/quant/ggml_dequant.hpp"
 
 namespace gufo::models::qwen38_flash_next {
@@ -182,7 +183,7 @@ void NgramTable::DecodeRow(const std::uint8_t* src, float* dst) const {
     gufo::quant::DequantizeQ8_0(src, dst, row_dim_);
   } else {
 #if (defined(__clang__) || defined(__GNUC__)) && defined(__x86_64__)
-    static const bool has_avx512f = __builtin_cpu_supports("avx512f");
+    static const bool has_avx512f = gufo::HasAvx512f();
     if (has_avx512f) {
       DecodeBf16Avx512(src, dst, row_dim_);
       return;

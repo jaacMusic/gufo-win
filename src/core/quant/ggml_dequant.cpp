@@ -1,5 +1,7 @@
 #include "src/core/quant/ggml_dequant.hpp"
 
+#include "src/core/cpu_features.hpp"
+
 #if (defined(__clang__) || defined(__GNUC__)) && defined(__x86_64__)
 #include <immintrin.h>
 #endif
@@ -634,7 +636,7 @@ void DequantizeIQ4_NL(const void* src, float* dst, std::size_t k) {
   const auto* blocks = static_cast<const block_iq4_nl*>(src);
   const std::size_t nb = k / 32;
 #if (defined(__clang__) || defined(__GNUC__)) && defined(__x86_64__)
-  static const bool has_avx512f = __builtin_cpu_supports("avx512f");
+  static const bool has_avx512f = gufo::HasAvx512f();
   if (has_avx512f) {
     DequantizeIQ4_NLAvx512(blocks, dst, nb);
     return;

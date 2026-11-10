@@ -9,6 +9,8 @@
 #include <limits>
 #include <span>
 
+#include "src/core/cpu_features.hpp"
+
 #if (defined(__clang__) || defined(__GNUC__)) && defined(__x86_64__)
 #include <immintrin.h>
 #endif
@@ -53,7 +55,7 @@ __attribute__((target("avx512f"))) inline float BlockMaximumAvx512(
 /// Largest value in a block, ignoring NaN; +inf is returned as is.
 [[nodiscard]] inline float BlockMaximum(std::span<const float> block) noexcept {
 #if (defined(__clang__) || defined(__GNUC__)) && defined(__x86_64__)
-  static const bool has_avx512f = __builtin_cpu_supports("avx512f");
+  static const bool has_avx512f = gufo::HasAvx512f();
   if (has_avx512f)
     return BlockMaximumAvx512(block.data(), block.size());
 #endif
