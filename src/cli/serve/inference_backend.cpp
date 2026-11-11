@@ -3737,6 +3737,61 @@ void InferenceBackend::set_reasoning_defaults(
 #endif
 }
 
+bool InferenceBackend::UpdateSchedulerPolicy(const TextSchedulerPolicy& policy) {
+#if defined(ENGINE_ENABLE_HIP)
+  const auto state = impl_->Snapshot();
+  if (state == nullptr || state->scheduler == nullptr) {
+    return false;
+  }
+  state->scheduler->UpdatePolicy(policy);
+  return true;
+#else
+  (void)policy;
+  return false;
+#endif
+}
+
+std::optional<TextSchedulerPolicy> InferenceBackend::SchedulerPolicy() const {
+#if defined(ENGINE_ENABLE_HIP)
+  const auto state = impl_->Snapshot();
+  if (state == nullptr || state->scheduler == nullptr) {
+    return std::nullopt;
+  }
+  return state->scheduler->PolicySnapshot();
+#else
+  return std::nullopt;
+#endif
+}
+
+bool InferenceBackend::UpdateDiskCacheBudget(std::size_t capacity_bytes,
+                                             std::size_t staging_capacity_bytes) {
+#if defined(ENGINE_ENABLE_HIP)
+  const auto state = impl_->Snapshot();
+  if (state == nullptr || state->scheduler == nullptr) {
+    return false;
+  }
+  return state->scheduler->SetDiskCacheBudget(capacity_bytes,
+                                              staging_capacity_bytes);
+#else
+  (void)capacity_bytes;
+  (void)staging_capacity_bytes;
+  return false;
+#endif
+}
+
+std::optional<TextRunnerDiskCacheBudget> InferenceBackend::DiskCacheBudget()
+    const {
+#if defined(ENGINE_ENABLE_HIP)
+  const auto state = impl_->Snapshot();
+  if (state == nullptr || state->scheduler == nullptr) {
+    return std::nullopt;
+  }
+  return state->scheduler->DiskCacheBudget();
+#else
+  return std::nullopt;
+#endif
+}
+
 InferenceBackend::Result InferenceBackend::complete(
     std::string_view prompt, std::size_t max_tokens,
     const sampling::SamplingConfig& sampling_config,

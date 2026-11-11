@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "src/cli/serve/generation_metrics.hpp"
+#include "src/cli/serve/runtime_config.hpp"
 #include "src/cli/serve/text_generation_backend.hpp"
 
 namespace gufo::server {
@@ -86,6 +87,8 @@ struct HttpServerOptions {
   std::size_t max_request_body_bytes{static_cast<std::size_t>(8) * 1024 * 1024};
   std::size_t max_connections{16};
   std::string api_key;
+  /// Receives the server-owned limits and, from the CLI, the model limits.
+  std::shared_ptr<RuntimeConfig> runtime;
 };
 
 /// Minimal bounded HTTP/1.1 server for trusted-LAN model serving.
@@ -125,6 +128,9 @@ private:
   struct ConnectionState;
 
   HttpResponse handle_request(const HttpRequest& req);
+  HttpResponse handle_admin_config(const HttpRequest& req);
+  /// Registers max-connections, max-request-bytes, and api-key.
+  void register_runtime_entries();
   void handle_connection(int client_fd,
                          const std::shared_ptr<ConnectionState>& connection);
   void reap_workers();
@@ -137,7 +143,11 @@ private:
   std::shared_ptr<TtsService> tts_;
   std::shared_ptr<AsrService> asr_;
   std::shared_ptr<ImageService> images_;
-  HttpServerOptions options_;
+  std::shared_ptr<RuntimeConfig> runtime_;
+  std::atomic<std::size_t> max_request_body_bytes_;
+  std::atomic<std::size_t> max_connections_;
+  /// Guards `api_key_hash_`, which a runtime update can replace.
+  std::mutex api_key_mutex_;
   std::string api_key_hash_;
   int listen_fd_ = -1;
   std::atomic<bool> stopped_{false};

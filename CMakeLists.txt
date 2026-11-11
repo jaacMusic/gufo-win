@@ -467,6 +467,12 @@ if (BUILD_TESTING)
   set_tests_properties(continuation_disk_store_test PROPERTIES
     LABELS "cpu;server;cache;disk;state;lifecycle")
 
+  add_executable(runtime_config_test tests/cli/runtime_config_test.cpp)
+  target_link_libraries(runtime_config_test PRIVATE gufo_core)
+  add_test(NAME runtime_config_test COMMAND runtime_config_test)
+  set_tests_properties(runtime_config_test PROPERTIES
+    LABELS "cpu;server;config;json")
+
   add_executable(logit_sampler_test tests/cli/logit_sampler_test.cpp)
   target_link_libraries(logit_sampler_test PRIVATE gufo_core)
   add_test(NAME logit_sampler_test COMMAND logit_sampler_test)

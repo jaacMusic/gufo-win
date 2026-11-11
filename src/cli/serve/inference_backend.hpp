@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -138,6 +139,14 @@ public:
   void set_sampling_defaults(std::size_t max_tokens,
                              const sampling::SamplingConfig& sampling);
   void set_reasoning_defaults(const ReasoningOptions& reasoning);
+  /// Applies scheduler admission limits to requests submitted from now on.
+  /// Returns false when no model is loaded.
+  bool UpdateSchedulerPolicy(const TextSchedulerPolicy& policy);
+  [[nodiscard]] std::optional<TextSchedulerPolicy> SchedulerPolicy() const;
+  /// Resizes the continuation disk cache; false when the cache is disabled.
+  bool UpdateDiskCacheBudget(std::size_t capacity_bytes,
+                             std::size_t staging_capacity_bytes);
+  [[nodiscard]] std::optional<TextRunnerDiskCacheBudget> DiskCacheBudget() const;
 
   /// Plain text completion (no chat framing).
   Result complete(std::string_view prompt, std::size_t max_tokens,

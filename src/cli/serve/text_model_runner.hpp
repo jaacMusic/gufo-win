@@ -48,7 +48,7 @@ struct TextRunnerDiskCacheOptions {
       std::size_t{1} * 1024U * 1024U * 1024U;
   std::filesystem::path directory;
   std::size_t capacity_bytes{kDefaultCapacityBytes};
-  /// Zero selects 1/8 of available host RAM, capped at 1 GiB and
+  /// Zero selects a quarter of the snapshot budget, capped at 1 GiB and
   /// capacity_bytes.
   std::size_t staging_capacity_bytes{0};
   /// Shared prefixes shorter than this are cheaper to prefill than to restore.
@@ -64,12 +64,26 @@ struct TextRunnerDiskCacheOptions {
   std::size_t min_checkpoint_step_tokens{2048};
 };
 
+/// Snapshot budget policy: zero selects 75% of available host RAM; an explicit
+/// value wins but cannot exceed what is available.
+[[nodiscard]] std::size_t SnapshotBudgetBytes(std::size_t available_bytes,
+                                              std::uint64_t requested_gb);
+
 /// Host snapshot budget after accounting for cgroup limits and headroom.
 [[nodiscard]] std::size_t HostSnapshotBudgetBytes();
 
 /// Overrides the host snapshot budget in GiB for this process. Zero restores
 /// the automatic/environment behavior.
 void SetHostSnapshotBudgetGb(std::uint64_t gigabytes) noexcept;
+
+/// The explicit override in GiB; zero while the budget is automatic.
+[[nodiscard]] std::uint64_t HostSnapshotBudgetGb() noexcept;
+
+/// Current disk-cache byte budgets of a pool with a persistent store.
+struct TextRunnerDiskCacheBudget {
+  std::size_t capacity_bytes{0};
+  std::size_t staging_capacity_bytes{0};
+};
 
 enum class TextExecutionPlanKind : std::uint8_t {
   kSerial,
@@ -496,6 +510,13 @@ public:
 
   [[nodiscard]] const TextModelRunner& runner() const noexcept;
   [[nodiscard]] std::size_t capacity() const noexcept;
+  /// Null when the pool runs without a persistent continuation store.
+  [[nodiscard]] std::optional<TextRunnerDiskCacheBudget> disk_cache_budget()
+      const;
+  /// Resizes the persistent store, evicting least-recently-used entries when it
+  /// shrinks. Returns false when no store is configured.
+  bool SetDiskCacheBudget(std::size_t capacity_bytes,
+                          std::size_t staging_capacity_bytes);
   /// The validated resource claim of the pool's runner.
   [[nodiscard]] const TextRunnerResourceClaim& resource_claim() const noexcept;
   [[nodiscard]] TextExecutionPlan SelectDecodePlan(

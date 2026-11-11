@@ -19,18 +19,26 @@
 
 namespace gufo::server {
 
-/// The automatic budget leaves half of available memory to the live state.
-/// Operators can raise it, up to a ceiling that still leaves the host usable.
-constexpr std::uint64_t kDefaultSnapshotBudgetGb = 6;
-constexpr std::uint64_t kMaxSnapshotBudgetGb = 7;
-
 /// An intermediate checkpoint must recover at least this much replay to be
 /// worth the copy it costs during prefill.
 constexpr std::size_t kMinGridTokens = 1024;
 
 namespace {
-std::uint64_t snapshot_budget_gb = 0;
+std::atomic<std::uint64_t> snapshot_budget_gb{0};
 }  // namespace
+
+/// The automatic budget leaves a quarter of available memory to the live state
+/// and scratch; operators can hard-set a different budget.
+std::size_t SnapshotBudgetBytes(std::size_t available_bytes,
+                                std::uint64_t requested_gb) {
+  if (requested_gb == 0)
+    return available_bytes - available_bytes / 4;
+  constexpr std::uint64_t kBytesPerGiB = 1ULL << 30;
+  const auto gigabytes = std::min<std::uint64_t>(
+      requested_gb, std::numeric_limits<std::size_t>::max() / kBytesPerGiB);
+  return std::min(available_bytes,
+                  static_cast<std::size_t>(gigabytes * kBytesPerGiB));
+}
 
 /// Ordinary host allocations use the host budget, not HIP's device capacity.
 std::size_t HostSnapshotBudgetBytes() {
@@ -73,35 +81,28 @@ std::size_t HostSnapshotBudgetBytes() {
   }
   const auto available_size = static_cast<std::size_t>(std::min<std::uint64_t>(
       available, std::numeric_limits<std::size_t>::max()));
-  // A long session pins reuse to the oldest checkpoint unless the budget can
-  // reach its context. Cap the automatic half-of-available budget at 6 GiB;
-  // an operator can request up to 7 GiB when the host has room.
-  const auto default_bytes =
-      static_cast<std::size_t>(kDefaultSnapshotBudgetGb << 30);
-  const auto budget_for_gigabytes = [&](std::uint64_t gigabytes) {
-    return std::min(available_size,
-                    static_cast<std::size_t>(
-                        std::min(gigabytes, kMaxSnapshotBudgetGb) << 30));
-  };
-  if (snapshot_budget_gb != 0) {
-    return budget_for_gigabytes(snapshot_budget_gb);
-  }
-  std::size_t budget = std::min(available_size / 2, default_bytes);
-  if (const char* text = std::getenv("GUFO_CACHE_RAM_GB")) {
-    std::uint64_t gigabytes = 0;
-    const std::string_view value(text);
-    const auto parsed =
-        std::from_chars(value.data(), value.data() + value.size(), gigabytes);
-    if (parsed.ec == std::errc{} && parsed.ptr == value.data() + value.size() &&
-        gigabytes != 0) {
-      budget = budget_for_gigabytes(gigabytes);
+  std::uint64_t requested_gb = snapshot_budget_gb;
+  if (requested_gb == 0) {
+    if (const char* text = std::getenv("GUFO_CACHE_RAM_GB")) {
+      std::uint64_t gigabytes = 0;
+      const std::string_view value(text);
+      const auto parsed =
+          std::from_chars(value.data(), value.data() + value.size(), gigabytes);
+      if (parsed.ec == std::errc{} &&
+          parsed.ptr == value.data() + value.size() && gigabytes != 0) {
+        requested_gb = gigabytes;
+      }
     }
   }
-  return budget;
+  return SnapshotBudgetBytes(available_size, requested_gb);
+}
+
+std::uint64_t HostSnapshotBudgetGb() noexcept {
+  return snapshot_budget_gb.load(std::memory_order_relaxed);
 }
 
 void SetHostSnapshotBudgetGb(std::uint64_t gigabytes) noexcept {
-  snapshot_budget_gb = gigabytes;
+  snapshot_budget_gb.store(gigabytes, std::memory_order_relaxed);
 }
 
 namespace {
@@ -1480,6 +1481,31 @@ const TextModelRunner& TextRunnerPool::runner() const noexcept {
 
 std::size_t TextRunnerPool::capacity() const noexcept {
   return impl_->cache.capacity();
+}
+
+std::optional<TextRunnerDiskCacheBudget> TextRunnerPool::disk_cache_budget()
+    const {
+  if (impl_->disk_store == nullptr) {
+    return std::nullopt;
+  }
+  return TextRunnerDiskCacheBudget{
+      .capacity_bytes = impl_->disk_store->capacity_bytes(),
+      .staging_capacity_bytes = impl_->disk_store->staging_capacity_bytes(),
+  };
+}
+
+bool TextRunnerPool::SetDiskCacheBudget(std::size_t capacity_bytes,
+                                        std::size_t staging_capacity_bytes) {
+  if (impl_->disk_store == nullptr) {
+    return false;
+  }
+  impl_->disk_store->SetCapacities(capacity_bytes, staging_capacity_bytes);
+  Logger::Info("cache",
+               "event=disk_cache_resized capacity_bytes=" +
+                   std::to_string(capacity_bytes) +
+                   " staging_capacity_bytes=" +
+                   std::to_string(staging_capacity_bytes));
+  return true;
 }
 
 const TextRunnerResourceClaim& TextRunnerPool::resource_claim() const noexcept {

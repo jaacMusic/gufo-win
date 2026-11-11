@@ -230,6 +230,18 @@ struct TextGenerationScheduler::Request::Impl {
 };
 
 struct TextGenerationScheduler::Impl {
+  static void ValidateSchedulerPolicy(const TextSchedulerPolicy& policy) {
+    if (policy.max_pending_requests == 0 ||
+        policy.max_pending_requests_per_client == 0 ||
+        policy.max_pending_requests_per_client > policy.max_pending_requests ||
+        policy.max_output_bytes_per_request == 0 ||
+        policy.max_buffered_output_bytes_per_request == 0 ||
+        policy.max_buffered_output_bytes_total == 0 ||
+        policy.request_timeout.count() < 0) {
+      throw std::invalid_argument("invalid text scheduler limits");
+    }
+  }
+
   Impl(std::shared_ptr<TextRunnerPool> model_runner_pool,
        TextPrefillPolicy model_prefill_policy,
        TextSchedulerPolicy model_scheduler_policy)
@@ -246,16 +258,7 @@ struct TextGenerationScheduler::Impl {
       throw std::invalid_argument(
           "active-decode prefill budget must be at least one token");
     }
-    if (scheduler_policy.max_pending_requests == 0 ||
-        scheduler_policy.max_pending_requests_per_client == 0 ||
-        scheduler_policy.max_pending_requests_per_client >
-            scheduler_policy.max_pending_requests ||
-        scheduler_policy.max_output_bytes_per_request == 0 ||
-        scheduler_policy.max_buffered_output_bytes_per_request == 0 ||
-        scheduler_policy.max_buffered_output_bytes_total == 0 ||
-        scheduler_policy.request_timeout.count() < 0) {
-      throw std::invalid_argument("invalid text scheduler limits");
-    }
+    ValidateSchedulerPolicy(scheduler_policy);
     incremental_prefill_supported =
         runner_pool->runner().Descriptor().capabilities.incremental_prefill;
     final_token_advance_required =
@@ -294,6 +297,19 @@ struct TextGenerationScheduler::Impl {
   Impl& operator=(const Impl&) = delete;
   Impl(Impl&&) = delete;
   Impl& operator=(Impl&&) = delete;
+
+  [[nodiscard]] TextSchedulerPolicy PolicySnapshotInternal() const {
+    const std::lock_guard<std::mutex> lock(queue_mutex);
+    return scheduler_policy;
+  }
+
+  void UpdatePolicyInternal(const TextSchedulerPolicy& policy) {
+    ValidateSchedulerPolicy(policy);
+    const std::lock_guard<std::mutex> lock(queue_mutex);
+    scheduler_policy = policy;
+    output_budget->max_buffered_bytes.store(
+        policy.max_buffered_output_bytes_total, std::memory_order_relaxed);
+  }
 
   [[nodiscard]] std::shared_ptr<ScheduledRequest> PopQueued() {
     const std::lock_guard<std::mutex> lock(queue_mutex);
@@ -1497,6 +1513,25 @@ std::size_t TextGenerationScheduler::capacity() const noexcept {
   return impl_->runner_pool->capacity();
 }
 
+TextSchedulerPolicy TextGenerationScheduler::PolicySnapshot() const {
+  return impl_->PolicySnapshotInternal();
+}
+
+void TextGenerationScheduler::UpdatePolicy(const TextSchedulerPolicy& policy) {
+  impl_->UpdatePolicyInternal(policy);
+}
+
+std::optional<TextRunnerDiskCacheBudget>
+TextGenerationScheduler::DiskCacheBudget() const {
+  return impl_->runner_pool->disk_cache_budget();
+}
+
+bool TextGenerationScheduler::SetDiskCacheBudget(
+    std::size_t capacity_bytes, std::size_t staging_capacity_bytes) {
+  return impl_->runner_pool->SetDiskCacheBudget(capacity_bytes,
+                                                staging_capacity_bytes);
+}
+
 std::size_t TextGenerationScheduler::buffered_output_bytes() const noexcept {
   return impl_->output_budget->buffered_bytes.load(std::memory_order_relaxed);
 }
@@ -1574,15 +1609,13 @@ TextGenerationScheduler::Request TextGenerationScheduler::Submit(
   request->publish_token_pieces = publish_token_pieces;
   request->request_start = metadata.request_start;
   request->deadline = metadata.deadline;
-  if (!request->deadline.has_value() &&
-      impl_->scheduler_policy.request_timeout.count() > 0) {
-    request->deadline =
-        request->request_start + impl_->scheduler_policy.request_timeout;
+  const TextSchedulerPolicy policy = impl_->PolicySnapshotInternal();
+  if (!request->deadline.has_value() && policy.request_timeout.count() > 0) {
+    request->deadline = request->request_start + policy.request_timeout;
   }
-  request->max_output_bytes =
-      impl_->scheduler_policy.max_output_bytes_per_request;
+  request->max_output_bytes = policy.max_output_bytes_per_request;
   request->max_buffered_output_bytes =
-      impl_->scheduler_policy.max_buffered_output_bytes_per_request;
+      policy.max_buffered_output_bytes_per_request;
   request->output_budget = impl_->output_budget;
 
   // Larger prompts claim more host state (prefill K/V checkpoints); charge

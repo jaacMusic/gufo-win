@@ -206,17 +206,17 @@ its changed suffix again.
 
 `SIGINT` and `SIGTERM` cancel active requests and drain accepted disk writes
 before exiting. `--cache-disk DIR` defaults to 8 GiB retained on disk.
-`--cache-disk-staging-bytes 0` (the default) selects the smallest of 1 GiB,
-one eighth of available host RAM after model/session loading (including cgroup
-limits), and the disk budget. This bounds queued captures/writes and each disk
-read separately; it allocates nothing upfront. Live model state and retained
-RAM snapshots have separate budgets.
+`--cache-disk-staging-bytes 0` (the default) selects the smallest of 1 GiB, a
+quarter of the retained snapshot budget, and the disk budget. This bounds queued
+captures/writes and each disk read separately; it allocates nothing upfront.
+Live model state and retained RAM snapshots have separate budgets.
 
-The retained snapshot budget defaults to 6 GiB, or half of the host memory
-available after model/session loading when that is smaller. Set
+The retained snapshot budget defaults to 75% of the host memory available after
+model/session loading (including cgroup limits). Set
 `GUFO_CACHE_RAM_GB=<gigabytes>` before starting the server, or pass
-`--cache-ram-gb <gigabytes>`, to choose a different budget; the option wins over
-the environment, and either is capped at 7 GiB and by that available memory.
+`--cache-ram-gb <gigabytes>`, to hard-set a different budget; the option wins
+over the environment. An explicit value is still bounded by that available
+memory, and `0` keeps the automatic 75%.
 When the stable boundary cannot fit, prefill retains one intermediate checkpoint
 at the largest prefix below 90% of the budget, so a long session moves its reuse
 point forward instead of pinning the oldest checkpoint. A disk store that can
@@ -714,8 +714,37 @@ positions and speculative state participate in restoration and cache isolation.
 
 `GET /health` reports process liveness. `GET /ready` returns 503 until a model
 service is ready, then reports `status` and the active model. It does not expose
-a GPU health matrix. HTTP model replacement and persistent Responses
-conversations are not implemented.
+a GPU health matrix. Model replacement and persistent Responses conversations
+are not implemented; flags a running server can change are listed under
+[Runtime configuration](#runtime-configuration).
+
+## Runtime configuration
+
+`GET /admin/config` reports the flags the running server can change without a
+restart. `POST /admin/config` takes a JSON object of flag names to values and
+answers `{"applied": [...], "rejected": [{"flag": ..., "reason": ...}]}`. A
+rejected flag keeps its value; every other member of the same request still
+applies.
+
+Runtime flags: `served-model-name`, `max-tokens`, the sampling defaults
+(`temperature`, `top-k`, `top-p`, `min-p`, `min-keep`, `seed`,
+`repeat-penalty`, `repeat-last-n`, `frequency-penalty`, `presence-penalty`),
+the reasoning defaults (`think`, `reasoning-effort`, `preserve-thinking`), the
+scheduler limits (`max-pending`, `max-pending-per-client`, `max-output-bytes`,
+`max-buffered-output-bytes`, `max-buffered-output-total`,
+`request-timeout-ms`), `cache-ram-gb` (0 restores the automatic budget),
+`cache-disk-bytes` and `cache-disk-staging-bytes` (only with `--cache-disk`),
+`max-connections`, `max-request-bytes`, and `api-key`. The key is write-only;
+reads report whether one is set.
+
+Everything else is bound at load time: model artifacts, `--context`,
+`--sessions`, speculative decoding, `--prefill-batch`, `--host`, `--port`, and
+the `--cache-disk` directory. Posting one of those is rejected so the client
+restarts the process. Weights are memory-mapped and the page cache stays warm,
+so the relaunch does not read the model from disk again.
+
+Limits apply to requests submitted after the update; queued requests keep what
+they were admitted with. Lowering a disk budget evicts snapshots immediately.
 
 ## Metrics
 
@@ -741,8 +770,8 @@ without `stream_options.include_usage`. `prompt_n` counts newly processed
 tokens; `cache_n` counts reused tokens. llama-swap uses these fields on every
 turn. Gufo-specific details stay in `usage.gufo`.
 
-TODO: real slot/KV metrics, a validated administrative reload/drain interface,
-and automatic recovery after device reset or suspend/resume.
+TODO: real slot/KV metrics, drain-before-exit administration, and automatic
+recovery after device reset or suspend/resume.
 
 ## Troubleshooting logs
 

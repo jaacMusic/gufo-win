@@ -611,8 +611,8 @@ struct ContinuationDiskStore::Impl {
       throw std::invalid_argument("continuation disk capacity must be nonzero");
     }
     if (options.staging_capacity_bytes == 0) {
-      // The host snapshot budget already leaves half of available RAM free.
-      // Disk staging gets a quarter of that budget and a conservative hard cap.
+      // The host snapshot budget already leaves a quarter of available RAM
+      // free. Disk staging gets a quarter of that budget and a hard cap.
       options.staging_capacity_bytes =
           std::min({options.capacity_bytes,
                     TextRunnerDiskCacheOptions::kAutomaticStagingMaxBytes,
@@ -1608,6 +1608,19 @@ std::size_t ContinuationDiskStore::capacity_bytes() const noexcept {
 
 std::size_t ContinuationDiskStore::staging_capacity_bytes() const noexcept {
   return impl_->options.staging_capacity_bytes;
+}
+
+void ContinuationDiskStore::SetCapacities(std::size_t capacity_bytes,
+                                          std::size_t staging_capacity_bytes) {
+  if (capacity_bytes == 0 || staging_capacity_bytes == 0) {
+    throw std::invalid_argument("continuation disk budgets must be nonzero");
+  }
+  // Same order as Save(): writers first, then the metadata permit.
+  const std::lock_guard write_lock(impl_->write_mutex);
+  ScopedOperationPermit permit(impl_->operation_gate);
+  impl_->options.capacity_bytes = capacity_bytes;
+  impl_->options.staging_capacity_bytes = staging_capacity_bytes;
+  impl_->EvictToCapacity();
 }
 
 }  // namespace gufo::server

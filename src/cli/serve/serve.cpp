@@ -19,6 +19,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -304,6 +305,283 @@ std::optional<ReasoningOptions> ResolveReasoningDefaults(
     return std::nullopt;
   }
   return options;
+}
+
+const char* ReasoningModeName(const ReasoningOptions& options) {
+  return options.enabled.has_value() ? (*options.enabled ? "on" : "off")
+                                     : "auto";
+}
+
+const char* ReasoningPreserveName(const ReasoningOptions& options) {
+  return options.preserve_thinking.has_value()
+             ? (*options.preserve_thinking ? "on" : "off")
+             : "auto";
+}
+
+const char* ReasoningEffortName(const ReasoningOptions& options) {
+  if (!options.effort.has_value()) {
+    return "auto";
+  }
+  switch (*options.effort) {
+    case ReasoningEffort::kMinimal:
+      return "minimal";
+    case ReasoningEffort::kLow:
+      return "low";
+    case ReasoningEffort::kMedium:
+      return "medium";
+    case ReasoningEffort::kHigh:
+      return "high";
+    case ReasoningEffort::kXHigh:
+      return "xhigh";
+    case ReasoningEffort::kMax:
+      return "max";
+  }
+  return "auto";
+}
+
+/// `gufo serve llm` flags a running server accepts through /admin/config.
+///
+/// Everything else -- model artifacts, context, sessions, speculative decoding,
+/// sockets, prefill shape, and the cache directory itself -- is still fixed at
+/// load time, so /admin/config rejects it and the caller restarts the process.
+void AddRuntimeConfigEntries(server::RuntimeConfig& config,
+                             std::shared_ptr<server::InferenceBackend> backend) {
+  config.Add(
+      "served-model-name",
+      [backend] { return json::Value(backend->model_id()); },
+      [backend](const json::Value& value) -> std::string {
+        if (!value.is_string() || value.str().empty()) {
+          return "served-model-name must be a non-empty string";
+        }
+        backend->set_model_id(value.str());
+        return {};
+      });
+
+  config.Add(
+      "max-tokens",
+      [backend] { return json::Value(backend->sampling_defaults().max_tokens); },
+      [backend](const json::Value& value) -> std::string {
+        const double numeric = value.as_double(-2.0);
+        if (!value.is_number() || numeric < -1.0) {
+          return "max-tokens must be -1 (unlimited) or positive";
+        }
+        const auto defaults = backend->sampling_defaults();
+        try {
+          backend->set_sampling_defaults(
+              numeric < 0.0 ? 0 : static_cast<std::size_t>(numeric),
+              defaults.sampling);
+        } catch (const std::exception& error) {
+          return error.what();
+        }
+        return {};
+      });
+
+  const auto add_sampling = [&config, backend]<typename Member>(
+                                const char* name,
+                                Member sampling::SamplingConfig::* member) {
+    config.Add(
+        name,
+        [backend, member] {
+          return json::Value(backend->sampling_defaults().sampling.*member);
+        },
+        [backend, member](const json::Value& value) -> std::string {
+          const double numeric = value.as_double(0.0);
+          if (!value.is_number()) {
+            return "value must be a number";
+          }
+          if constexpr (!std::is_same_v<Member, std::int64_t>) {
+            if (numeric < 0.0) {
+              return "value must not be negative";
+            }
+          }
+          const auto defaults = backend->sampling_defaults();
+          auto updated = defaults.sampling;
+          updated.*member = static_cast<Member>(numeric);
+          try {
+            backend->set_sampling_defaults(defaults.max_tokens, updated);
+          } catch (const std::exception& error) {
+            return error.what();
+          }
+          return {};
+        });
+  };
+  add_sampling("temperature", &sampling::SamplingConfig::temperature);
+  add_sampling("top-k", &sampling::SamplingConfig::top_k);
+  add_sampling("top-p", &sampling::SamplingConfig::top_p);
+  add_sampling("min-p", &sampling::SamplingConfig::min_p);
+  add_sampling("min-keep", &sampling::SamplingConfig::min_keep);
+  add_sampling("seed", &sampling::SamplingConfig::seed);
+  add_sampling("repeat-penalty", &sampling::SamplingConfig::repeat_penalty);
+  add_sampling("repeat-last-n", &sampling::SamplingConfig::repeat_last_n);
+  add_sampling("frequency-penalty",
+               &sampling::SamplingConfig::frequency_penalty);
+  add_sampling("presence-penalty", &sampling::SamplingConfig::presence_penalty);
+
+  const auto apply_reasoning = [backend](std::string_view mode,
+                                         std::string_view effort,
+                                         std::string_view preserve)
+      -> std::string {
+    std::string error;
+    const auto resolved =
+        ResolveReasoningDefaults(mode, effort, preserve, &error);
+    if (!resolved.has_value()) {
+      return error;
+    }
+    backend->set_reasoning_defaults(*resolved);
+    return {};
+  };
+  config.Add(
+      "think",
+      [backend] {
+        return json::Value(ReasoningModeName(backend->reasoning_defaults()));
+      },
+      [backend, apply_reasoning](const json::Value& value) -> std::string {
+        if (!value.is_string()) {
+          return "think must be on, off, or auto";
+        }
+        const auto options = backend->reasoning_defaults();
+        return apply_reasoning(value.str(), ReasoningEffortName(options),
+                               ReasoningPreserveName(options));
+      });
+  config.Add(
+      "reasoning-effort",
+      [backend] {
+        return json::Value(ReasoningEffortName(backend->reasoning_defaults()));
+      },
+      [backend, apply_reasoning](const json::Value& value) -> std::string {
+        if (!value.is_string()) {
+          return "reasoning-effort must be auto, minimal, low, medium, high, "
+                 "xhigh, or max";
+        }
+        const auto options = backend->reasoning_defaults();
+        return apply_reasoning(ReasoningModeName(options), value.str(),
+                               ReasoningPreserveName(options));
+      });
+  config.Add(
+      "preserve-thinking",
+      [backend] {
+        return json::Value(ReasoningPreserveName(backend->reasoning_defaults()));
+      },
+      [backend, apply_reasoning](const json::Value& value) -> std::string {
+        if (!value.is_string()) {
+          return "preserve-thinking must be on, off, or auto";
+        }
+        const auto options = backend->reasoning_defaults();
+        return apply_reasoning(ReasoningModeName(options),
+                               ReasoningEffortName(options), value.str());
+      });
+
+  const auto add_scheduler_limit =
+      [&config, backend](const char* name,
+                         std::size_t server::TextSchedulerPolicy::* member) {
+        config.Add(
+            name,
+            [backend, member] {
+              const auto policy = backend->SchedulerPolicy();
+              return json::Value(policy.has_value() ? (*policy).*member
+                                                    : std::size_t{0});
+            },
+            [backend, member](const json::Value& value) -> std::string {
+              const std::size_t parsed = value.as_size(0);
+              if (!value.is_number() || parsed == 0) {
+                return "value must be a positive integer";
+              }
+              auto policy = backend->SchedulerPolicy();
+              if (!policy.has_value()) {
+                return "no text model is loaded";
+              }
+              (*policy).*member = parsed;
+              try {
+                backend->UpdateSchedulerPolicy(*policy);
+              } catch (const std::exception& error) {
+                return error.what();
+              }
+              return {};
+            });
+      };
+  add_scheduler_limit("max-pending",
+                      &server::TextSchedulerPolicy::max_pending_requests);
+  add_scheduler_limit(
+      "max-pending-per-client",
+      &server::TextSchedulerPolicy::max_pending_requests_per_client);
+  add_scheduler_limit("max-output-bytes",
+                      &server::TextSchedulerPolicy::max_output_bytes_per_request);
+  add_scheduler_limit(
+      "max-buffered-output-bytes",
+      &server::TextSchedulerPolicy::max_buffered_output_bytes_per_request);
+  add_scheduler_limit(
+      "max-buffered-output-total",
+      &server::TextSchedulerPolicy::max_buffered_output_bytes_total);
+
+  config.Add(
+      "request-timeout-ms",
+      [backend] {
+        const auto policy = backend->SchedulerPolicy();
+        return json::Value(policy.has_value()
+                               ? (*policy).request_timeout.count()
+                               : std::chrono::milliseconds::rep{0});
+      },
+      [backend](const json::Value& value) -> std::string {
+        if (!value.is_number()) {
+          return "request-timeout-ms must be a number";
+        }
+        auto policy = backend->SchedulerPolicy();
+        if (!policy.has_value()) {
+          return "no text model is loaded";
+        }
+        (*policy).request_timeout = std::chrono::milliseconds{
+            static_cast<std::chrono::milliseconds::rep>(value.as_size(0))};
+        try {
+          backend->UpdateSchedulerPolicy(*policy);
+        } catch (const std::exception& error) {
+          return error.what();
+        }
+        return {};
+      });
+
+  config.Add(
+      "cache-ram-gb",
+      [] { return json::Value(server::HostSnapshotBudgetGb()); },
+      [](const json::Value& value) -> std::string {
+        if (!value.is_number()) {
+          return "cache-ram-gb must be a number; 0 restores the automatic "
+                 "budget";
+        }
+        server::SetHostSnapshotBudgetGb(value.as_size(0));
+        return {};
+      });
+
+  const auto add_disk_cache =
+      [&config, backend](const char* name, bool staging) {
+        config.Add(
+            name,
+            [backend, staging] {
+              const auto budget = backend->DiskCacheBudget();
+              return json::Value(
+                  budget.has_value()
+                      ? (staging ? budget->staging_capacity_bytes
+                                 : budget->capacity_bytes)
+                      : std::size_t{0});
+            },
+            [backend, staging](const json::Value& value) -> std::string {
+              const std::size_t parsed = value.as_size(0);
+              if (!value.is_number() || parsed == 0) {
+                return "value must be a positive integer";
+              }
+              auto budget = backend->DiskCacheBudget();
+              if (!budget.has_value()) {
+                return "--cache-disk is disabled";
+              }
+              (staging ? budget->staging_capacity_bytes : budget->capacity_bytes) =
+                  parsed;
+              return backend->UpdateDiskCacheBudget(
+                         budget->capacity_bytes, budget->staging_capacity_bytes)
+                         ? std::string{}
+                         : "--cache-disk is disabled";
+            });
+      };
+  add_disk_cache("cache-disk-bytes", false);
+  add_disk_cache("cache-disk-staging-bytes", true);
 }
 
 struct SpeechOptions {
@@ -596,11 +874,12 @@ void PrintServeHelp(std::string_view program_name,
                      "Cache", &cache_disk_bytes);
     parser.AddOption("", "--cache-disk-staging-bytes", "N",
                      "RAM limit for queued snapshots and each disk read "
-                     "(default: 0 = auto, at most 1 GiB and 1/8 available RAM)",
+                     "(default: 0 = auto, at most 1 GiB and a quarter of the "
+                     "snapshot budget)",
                      "Cache", &cache_disk_staging_bytes);
     parser.AddOption("", "--cache-ram-gb", "N",
-                     "Snapshot budget in GiB (0 = automatic, default 6, "
-                     "capped at 7)",
+                     "Snapshot budget in GiB (0 = automatic, 75% of "
+                     "available RAM)",
                      "Cache", &cache_ram_gb);
     ServerOptionHelpTargets server_help;
     AddServerOptionsForHelp(parser, &server_help);
@@ -743,6 +1022,7 @@ int RunServe(std::span<const char* const> args) {
   std::string parse_err;
 
   std::shared_ptr<server::InferenceBackend> backend;
+  std::shared_ptr<server::RuntimeConfig> runtime;
   std::shared_ptr<server::VideoJobService> video_jobs;
   std::shared_ptr<server::TtsService> tts;
   std::shared_ptr<server::AsrService> asr;
@@ -1074,11 +1354,12 @@ int RunServe(std::span<const char* const> args) {
     llm_parser.AddOption(
         "", "--cache-disk-staging-bytes", "N",
         "RAM limit for queued snapshots and each disk read "
-        "(default: 0 = auto, at most 1 GiB and 1/8 available RAM)",
+        "(default: 0 = auto, at most 1 GiB and a quarter of the snapshot "
+        "budget)",
         "Cache", &cache_disk_staging_bytes);
     llm_parser.AddOption("", "--cache-ram-gb", "N",
-                         "Snapshot budget in GiB (0 = automatic, default 6, "
-                         "capped at 7)",
+                         "Snapshot budget in GiB (0 = automatic, 75% of "
+                         "available RAM)",
                          "Cache", &cache_ram_gb);
 
     add_server_options(llm_parser);
@@ -1239,6 +1520,8 @@ int RunServe(std::span<const char* const> args) {
         std::to_string(backend->max_context()) + " speculative=" + speculation +
         " draft_limit=" + std::to_string(speculative_config.max_draft_tokens) +
         " disk_cache=" + (cache_disk_directory.empty() ? "off" : "enabled"));
+    runtime = std::make_shared<server::RuntimeConfig>();
+    AddRuntimeConfigEntries(*runtime, backend);
   }
 
   server::HttpServer server(
@@ -1247,6 +1530,7 @@ int RunServe(std::span<const char* const> args) {
           .max_request_body_bytes = max_request_body_bytes,
           .max_connections = max_connections,
           .api_key = std::move(api_key),
+          .runtime = std::move(runtime),
       },
       images);
   std::string err;

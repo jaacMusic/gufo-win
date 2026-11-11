@@ -1427,21 +1427,26 @@ void TestSnapshotCaptureFailureReleasesReservationAndKeepsRequestSuccessful() {
 }
 
 void TestCacheRamBudgetOverride() {
+  constexpr std::size_t kGiB = 1ULL << 30;
   const auto automatic = gufo::server::HostSnapshotBudgetBytes();
-  Expect(automatic > 0 && automatic <= static_cast<std::size_t>(6ULL << 30),
-         "the automatic budget is capped at 6 GiB");
+  Expect(automatic > 0, "the automatic budget is nonzero");
+  Expect(gufo::server::SnapshotBudgetBytes(8 * kGiB, 0) == 6 * kGiB,
+         "the automatic budget is 75% of available RAM");
+  Expect(gufo::server::SnapshotBudgetBytes(8 * kGiB, 2) == 2 * kGiB,
+         "an explicit budget wins");
+  Expect(gufo::server::SnapshotBudgetBytes(8 * kGiB, 99) == 8 * kGiB,
+         "an explicit budget is bounded by available RAM");
   ::setenv("GUFO_CACHE_RAM_GB", "2", 1);
   const auto two = gufo::server::HostSnapshotBudgetBytes();
-  Expect(two > 0 && two <= static_cast<std::size_t>(2ULL << 30),
+  Expect(two > 0 && two <= 2 * kGiB,
          "GUFO_CACHE_RAM_GB sizes the budget in gigabytes");
   ::setenv("GUFO_CACHE_RAM_GB", "99", 1);
-  const auto capped = gufo::server::HostSnapshotBudgetBytes();
-  Expect(capped >= two && capped <= static_cast<std::size_t>(7ULL << 30),
-         "GUFO_CACHE_RAM_GB is capped at 7 GiB");
+  const auto large = gufo::server::HostSnapshotBudgetBytes();
+  Expect(large >= two, "GUFO_CACHE_RAM_GB accepts large values");
   ::setenv("GUFO_CACHE_RAM_GB", "2", 1);
   gufo::server::SetHostSnapshotBudgetGb(1);
   const auto cli = gufo::server::HostSnapshotBudgetBytes();
-  Expect(cli > 0 && cli <= static_cast<std::size_t>(1ULL << 30),
+  Expect(cli > 0 && cli <= 1 * kGiB,
          "--cache-ram-gb overrides the environment");
   gufo::server::SetHostSnapshotBudgetGb(0);
   ::unsetenv("GUFO_CACHE_RAM_GB");

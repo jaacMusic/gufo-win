@@ -196,6 +196,10 @@ public:
   [[nodiscard]] std::size_t retained_bytes() const noexcept;
   [[nodiscard]] std::size_t capacity_bytes() const noexcept;
   [[nodiscard]] std::size_t staging_capacity_bytes() const noexcept;
+  /// Replaces the retained and per-write byte budgets. Shrinking evicts the
+  /// least-recently-used entries before returning. Both values must be nonzero.
+  void SetCapacities(std::size_t capacity_bytes,
+                     std::size_t staging_capacity_bytes);
 
 private:
   struct Impl;

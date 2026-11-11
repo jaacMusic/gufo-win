@@ -1668,11 +1668,53 @@ void TestPromptStateAdmissionBudget() {
   Expect(!second.cancelled, "a prompt that fits after release completes");
 }
 
+void TestRuntimePolicyUpdate() {
+  auto control = std::make_shared<FakeControl>();
+  control->max_context = 256;
+  auto scheduler = MakeScheduler(control, 2);
+  TextSchedulerPolicy policy{};
+  policy.max_pending_requests = 2;
+  policy.max_pending_requests_per_client = 1;
+  policy.request_timeout = std::chrono::milliseconds{1234};
+  scheduler->UpdatePolicy(policy);
+  const auto snapshot = scheduler->PolicySnapshot();
+  Expect(snapshot.max_pending_requests == 2 &&
+             snapshot.max_pending_requests_per_client == 1 &&
+             snapshot.request_timeout == std::chrono::milliseconds{1234},
+         "an updated policy is what later snapshots report");
+
+  const auto expect_rejected = [&](TextSchedulerPolicy invalid) {
+    bool rejected = false;
+    try {
+      scheduler->UpdatePolicy(invalid);
+    } catch (const std::invalid_argument&) {
+      rejected = true;
+    }
+    Expect(rejected, "an invalid runtime policy is rejected");
+  };
+  TextSchedulerPolicy client_over_global{};
+  client_over_global.max_pending_requests_per_client =
+      client_over_global.max_pending_requests + 1;
+  expect_rejected(client_over_global);
+  TextSchedulerPolicy zero_pending{};
+  zero_pending.max_pending_requests = 0;
+  expect_rejected(zero_pending);
+  Expect(scheduler->PolicySnapshot().max_pending_requests == 2,
+         "a rejected policy leaves the running limits untouched");
+
+  // No --cache-disk directory means there is nothing to resize.
+  Expect(!scheduler->DiskCacheBudget().has_value(),
+         "a model without a continuation store reports no disk budget");
+  Expect(!scheduler->SetDiskCacheBudget(1, 1),
+         "resizing a missing continuation store reports failure");
+}
+
 int main() {
   TestStopSequenceChunkBoundaries();
   TestStopSequencesPreserveExecutedState();
   TestStopPrefixFlushAndBatchIsolation();
   TestCancellationWithBufferedStopPrefix();
+  TestRuntimePolicyUpdate();
   for (const bool speculative : {false, true}) {
     for (const bool preview : {false, true}) {
       auto control = std::make_shared<FakeControl>();

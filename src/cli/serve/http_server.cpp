@@ -1120,13 +1120,16 @@ HttpServer::HttpServer(std::string host, int port,
       tts_(std::move(tts)),
       asr_(std::move(asr)),
       images_(std::move(images)),
-      options_(std::move(options)) {
-  if (options_.max_request_body_bytes == 0 || options_.max_connections == 0) {
+      runtime_(std::move(options.runtime)),
+      max_request_body_bytes_(options.max_request_body_bytes),
+      max_connections_(options.max_connections) {
+  if (max_request_body_bytes_.load() == 0 || max_connections_.load() == 0) {
     throw std::invalid_argument("HTTP server limits must be positive");
   }
-  if (!options_.api_key.empty()) {
-    api_key_hash_ = CredentialHash(options_.api_key);
+  if (!options.api_key.empty()) {
+    api_key_hash_ = CredentialHash(options.api_key);
   }
+  register_runtime_entries();
   register_routes();
 }
 
@@ -1168,6 +1171,16 @@ void HttpServer::register_routes() {
   add("GET", "/v1/slots", LlamaSlots);
   add("GET", "/metrics", LlamaMetrics);
   add("GET", "/v1/metrics", LlamaMetrics);
+
+  // ---- runtime configuration ----
+  add("GET", "/admin/config",
+      [this](const HttpRequest& req, TextGenerationBackend&) {
+        return handle_admin_config(req);
+      });
+  add("POST", "/admin/config",
+      [this](const HttpRequest& req, TextGenerationBackend&) {
+        return handle_admin_config(req);
+      });
 
   // ---- sdapi ----
   add("POST", "/sdapi/v1/txt2img", NotImplemented);
@@ -1261,9 +1274,9 @@ void HttpServer::run(bool handle_signals) {
   Logger::Info(
       "server",
       "event=listening address=http://" + host_ + ":" + std::to_string(port_) +
-          " auth=" + (options_.api_key.empty() ? "off" : "bearer") +
-          " max_connections=" + std::to_string(options_.max_connections) +
-          " max_body_bytes=" + std::to_string(options_.max_request_body_bytes));
+          " auth=" + (api_key_hash_.empty() ? "off" : "bearer") +
+          " max_connections=" + std::to_string(max_connections_.load()) +
+          " max_body_bytes=" + std::to_string(max_request_body_bytes_.load()));
   while (!stopped_.load(std::memory_order_acquire)) {
     if (handle_signals) {
       const int signal = shutdown_signal.load(std::memory_order_relaxed);
@@ -1327,7 +1340,8 @@ void HttpServer::run(bool handle_signals) {
     {
       const std::lock_guard<std::mutex> lock(workers_mutex_);
       overloaded = stopped_.load(std::memory_order_acquire) ||
-                   workers_.size() >= options_.max_connections;
+                   workers_.size() >=
+                       max_connections_.load(std::memory_order_relaxed);
       if (!overloaded) {
         auto connection = std::make_shared<ConnectionState>();
         connection->fd = client_fd;
@@ -1398,8 +1412,93 @@ void HttpServer::reap_workers() {
   }
 }
 
+void HttpServer::register_runtime_entries() {
+  if (runtime_ == nullptr) {
+    return;
+  }
+  const auto require_positive = [](const json::Value& value,
+                                   std::size_t* out) {
+    if (!value.is_number() || value.as_size() == 0) {
+      return std::string("must be a positive integer");
+    }
+    *out = value.as_size();
+    return std::string();
+  };
+  runtime_->Add(
+      "max-connections", [this] { return json::Value(max_connections_.load()); },
+      [this, require_positive](const json::Value& value) {
+        std::size_t limit = 0;
+        if (auto error = require_positive(value, &limit); !error.empty()) {
+          return error;
+        }
+        max_connections_.store(limit);
+        return std::string();
+      });
+  runtime_->Add(
+      "max-request-bytes",
+      [this] { return json::Value(max_request_body_bytes_.load()); },
+      [this, require_positive](const json::Value& value) {
+        std::size_t limit = 0;
+        if (auto error = require_positive(value, &limit); !error.empty()) {
+          return error;
+        }
+        max_request_body_bytes_.store(limit);
+        return std::string();
+      });
+  runtime_->Add(
+      "api-key",
+      [this] {
+        const std::lock_guard<std::mutex> lock(api_key_mutex_);
+        // Report whether a key is configured; the key itself is write-only.
+        return json::Value(!api_key_hash_.empty());
+      },
+      [this](const json::Value& value) {
+        if (!value.is_string()) {
+          return std::string("must be a string");
+        }
+        std::string hash;
+        if (!value.str().empty()) {
+          try {
+            hash = CredentialHash(value.str());
+          } catch (const std::exception& exception) {
+            return std::string(exception.what());
+          }
+        }
+        const std::lock_guard<std::mutex> lock(api_key_mutex_);
+        api_key_hash_ = std::move(hash);
+        return std::string();
+      });
+}
+
+HttpResponse HttpServer::handle_admin_config(const HttpRequest& req) {
+  if (runtime_ == nullptr) {
+    return Err(404, "Not Found", "runtime configuration is not available",
+               "invalid_request_error", "not_found");
+  }
+  if (req.method == "GET") {
+    return Ok(runtime_->Snapshot());
+  }
+  json::Value body;
+  try {
+    body = json::parse(req.body);
+  } catch (const std::exception& e) {
+    return Err(400, "Bad Request", e.what(), "invalid_request_error",
+               "parse_error");
+  }
+  if (!body.is_object()) {
+    return Err(400, "Bad Request", "expected an object of flag values",
+               "invalid_request_error", "invalid_config");
+  }
+  return Ok(runtime_->Apply(body));
+}
+
 HttpResponse HttpServer::handle_request(const HttpRequest& req) {
-  if (!IsAuthorized(req, api_key_hash_)) {
+  std::string api_key_hash;
+  {
+    const std::lock_guard<std::mutex> lock(api_key_mutex_);
+    api_key_hash = api_key_hash_;
+  }
+  if (!IsAuthorized(req, api_key_hash)) {
     auto response = Err(401, "Unauthorized", "missing or invalid API key",
                         "authentication_error", "invalid_api_key");
     response.headers.emplace_back("WWW-Authenticate", "Bearer");
@@ -1593,7 +1692,8 @@ void HttpServer::handle_connection(
             content_length > body.size() ? content_length - body.size() : 0;
         if (!valid_headers || !parsed_length.has_value()) {
           ok = false;
-        } else if (content_length > options_.max_request_body_bytes) {
+        } else if (content_length >
+                   max_request_body_bytes_.load(std::memory_order_relaxed)) {
           payload_too_large = true;
         } else if (content_length > 0) {
           if (remaining > 0) {

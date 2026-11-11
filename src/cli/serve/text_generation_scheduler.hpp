@@ -109,6 +109,19 @@ public:
 
   [[nodiscard]] const TextModelRunner& runner() const noexcept;
   [[nodiscard]] std::size_t capacity() const noexcept;
+  /// Current admission limits.
+  [[nodiscard]] TextSchedulerPolicy PolicySnapshot() const;
+  /// Replaces the admission limits for requests submitted from now on.
+  /// Requests already queued keep the deadline and output caps they were
+  /// admitted with.
+  void UpdatePolicy(const TextSchedulerPolicy& policy);
+  /// Null when the model runs without a persistent continuation store.
+  [[nodiscard]] std::optional<TextRunnerDiskCacheBudget> DiskCacheBudget()
+      const;
+  /// Resizes the persistent continuation store, evicting entries when it
+  /// shrinks. Returns false when the model has no such store.
+  bool SetDiskCacheBudget(std::size_t capacity_bytes,
+                          std::size_t staging_capacity_bytes);
   [[nodiscard]] std::size_t buffered_output_bytes() const noexcept;
   [[nodiscard]] std::size_t max_buffered_output_bytes() const noexcept;
   /// Budget of host bytes for prompt KV state and the bytes already claimed,
