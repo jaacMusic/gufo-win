@@ -161,6 +161,9 @@ private:
   std::uint32_t draft_specials_{0};
   /// Prefix and special tokens: always in the small head.
   [[nodiscard]] bool InDraftSubset(std::int32_t token) const;
+  /// Expert caching pool for Q8_0 tensor residency management.
+  /// (defined in src/core/pool.h; full integration deferred to follow-up).
+  void *pool_;
 
   friend class Session;
 };
