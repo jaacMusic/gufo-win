@@ -202,6 +202,7 @@ class EvalHttpTest(unittest.TestCase):
         questions: int,
         *,
         greedy: bool = False,
+        max_completion_tokens: int | None = None,
         environment: dict[str, str] | None = None,
     ) -> tuple[subprocess.CompletedProcess[str], dict[str, Any] | None, Path]:
         temporary = tempfile.TemporaryDirectory()
@@ -217,6 +218,8 @@ class EvalHttpTest(unittest.TestCase):
             "--output",
             str(output),
         ]
+        if max_completion_tokens is not None:
+            command += ["--max-completion-tokens", str(max_completion_tokens)]
         if greedy:
             command.append("--greedy")
         process = subprocess.run(
@@ -324,6 +327,34 @@ class EvalHttpTest(unittest.TestCase):
         assert report is not None
         self.assertEqual(report["run"]["temperature"], 0)
         self.assertEqual(report["run"]["temperature_policy"], "greedy")
+
+    def test_max_completion_tokens_budget_is_requested_and_recorded(self) -> None:
+        state = FixtureState([completion("Answer: B")])
+        with fixture_server(state) as base_url:
+            process, report, _ = self.run_eval(
+                base_url, 1, max_completion_tokens=256
+            )
+        self.assertEqual(process.returncode, 0, process.stderr)
+        self.assertIsNotNone(report)
+        assert report is not None
+        self.assertEqual(state.requests[0]["max_completion_tokens"], 256)
+        self.assertEqual(report["run"]["max_completion_tokens"], 256)
+        self.assertEqual(
+            report["run"]["command"],
+            "gufo eval --base-url <endpoint> --questions 1 "
+            "--max-completion-tokens 256 --output <output>",
+        )
+
+    def test_zero_completion_budget_is_rejected(self) -> None:
+        state = FixtureState([])
+        with fixture_server(state) as base_url:
+            process, report, _ = self.run_eval(
+                base_url, 1, max_completion_tokens=0
+            )
+        self.assertEqual(process.returncode, 2)
+        self.assertIsNone(report)
+        self.assertIn("--max-completion-tokens must be at least 1", process.stderr)
+        self.assertEqual(state.requests, [])
 
     def test_failure_classes_are_distinct(self) -> None:
         state = FixtureState(

@@ -11,6 +11,8 @@ results and qualification gaps live in:
 - [MiniMax H3](models/minimax-h3/BENCHMARKS.md)
 
 End-to-end coding-agent session against Bubo: [agent session](AGENT-SESSION.md).
+Quality at a fixed wall-clock budget, and structured-output checks under
+speculation (method and rejected alternatives): [NCM review](NCM-REVIEW.md).
 
 ## Model benchmark driver
 

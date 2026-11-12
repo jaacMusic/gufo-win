@@ -43,12 +43,13 @@ using gufo::eval::HttpResult;
 using gufo::json::Value;
 
 constexpr std::size_t kMaximumQuestions = 75;
-constexpr std::size_t kMaximumCompletionTokens = 16000;
+constexpr std::size_t kDefaultCompletionTokens = 16000;
 constexpr std::string_view kDefaultBaseUrl = "http://127.0.0.1:8080/v1";
 
 struct EvalOptions {
   std::string base_url{kDefaultBaseUrl};
   std::size_t questions{kMaximumQuestions};
+  std::size_t max_completion_tokens{kDefaultCompletionTokens};
   bool greedy{false};
   std::filesystem::path output;
 };
@@ -246,11 +247,12 @@ Value MessagesJson(std::string_view system, std::string_view user) {
   return messages;
 }
 
-Value RequestJson(const ModelInfo& model, Value messages, bool greedy) {
+Value RequestJson(const ModelInfo& model, Value messages, bool greedy,
+                  std::size_t max_completion_tokens) {
   Value request = Value::object();
   request["model"] = model.id;
   request["messages"] = std::move(messages);
-  request["max_completion_tokens"] = kMaximumCompletionTokens;
+  request["max_completion_tokens"] = max_completion_tokens;
   request["stream"] = false;
   if (greedy) {
     request["temperature"] = 0;
@@ -375,6 +377,9 @@ std::string SanitizedCommand(const EvalOptions& options) {
   if (options.questions != kMaximumQuestions) {
     command << " --questions " << options.questions;
   }
+  if (options.max_completion_tokens != kDefaultCompletionTokens) {
+    command << " --max-completion-tokens " << options.max_completion_tokens;
+  }
   if (options.greedy) {
     command << " --greedy";
   }
@@ -418,6 +423,10 @@ int Execute(const EvalOptions& options) {
     std::cerr << "eval: --output is required\n";
     return 2;
   }
+  if (options.max_completion_tokens == 0) {
+    std::cerr << "eval: --max-completion-tokens must be at least 1\n";
+    return 2;
+  }
 
   std::string bearer_token = Environment("OPENAI_API_KEY");
   if (bearer_token.empty()) {
@@ -457,7 +466,7 @@ int Execute(const EvalOptions& options) {
   run["questions"] = options.questions;
   run["request_order"] = "sequential";
   run["independent_requests"] = true;
-  run["max_completion_tokens"] = kMaximumCompletionTokens;
+  run["max_completion_tokens"] = options.max_completion_tokens;
   run["request_timeout_ms"] =
       std::chrono::duration_cast<std::chrono::milliseconds>(
           gufo::eval::HttpClient::kRequestTimeout)
@@ -516,7 +525,8 @@ int Execute(const EvalOptions& options) {
     Value request_messages = MessagesJson(suite->system_prompt, user_prompt);
     Value report_messages = MessagesJson(suite->system_prompt, user_prompt);
     const Value request =
-        RequestJson(model, std::move(request_messages), options.greedy);
+        RequestJson(model, std::move(request_messages), options.greedy,
+                    options.max_completion_tokens);
     const auto response = client.PostJson("/chat/completions", request.dump());
 
     Value item = Value::object();
@@ -649,6 +659,9 @@ EvalOptions ParseOptions(std::span<const char* const> args,
   parser.AddOption("", "--questions", "N",
                    "Run the first N pinned cases (default: 75)", "Evaluation",
                    &options.questions);
+  parser.AddOption("", "--max-completion-tokens", "N",
+                   "Requested completion budget per case (default: 16000)",
+                   "Evaluation", &options.max_completion_tokens);
   parser.AddFlag("", "--greedy",
                  "Send temperature: 0 (otherwise omit temperature)",
                  "Evaluation", &options.greedy);
@@ -678,6 +691,9 @@ void PrintEvalHelp(std::string_view) {
   parser.AddOption("", "--questions", "N",
                    "Run the first N pinned cases (default: 75)", "Evaluation",
                    &options.questions);
+  parser.AddOption("", "--max-completion-tokens", "N",
+                   "Requested completion budget per case (default: 16000)",
+                   "Evaluation", &options.max_completion_tokens);
   parser.AddFlag("", "--greedy",
                  "Send temperature: 0 (otherwise omit temperature)",
                  "Evaluation", &options.greedy);
