@@ -2706,3 +2706,62 @@ pressure the budget already prices in, so the extra shrink only evicts
 snapshots that restore fine from the pinned pool.
 
 Next sweep from `0e2de43e`.
+
+## Sweep 2026-11-11 (upstream `0e2de43e..4b030049`, 17 commits)
+
+- `be3a81af` #1164 do not charge prompt state for preallocated session runners -
+  **ported**, fix, unmeasured. The claim already charges
+  `per_request_state_bytes = SessionBytes(mode, max_context)` per request, so
+  `Config::PromptKvBytesPerToken` billed the same K/V rows twice and could
+  refuse prompts that fit. Dropped the helper, its `config_test` case and the
+  two claim fields; the scheduler's optional prompt budget now stays unset,
+  which is how upstream left it.
+- `850b5271` #1154/#1158 continue the live frontier after a re-tokenized
+  answer - upstream edits `component_text_cache.cpp` (+220 lines, +147 test),
+  which this fork does not have; its analogue is
+  `src/cli/serve/continuation_cache.cpp`, so it is a re-implementation, not a
+  transferable diff. Not started.
+- `53193819` #1168 cap JSON numbers at llama.cpp's 16 digits - N/A: the cap
+  lives in `json_constraint.cpp`, absent here.
+- `f01a4570`/`5f12c753`/`49b5df18` (#969/#958/#912) re-land upstream what this
+  fork measured and reverted on 2026-11-08 (`66d07011`). Stay skipped.
+- `4b030049` #1159 httparse request heads, `b50ef159` #1149, `77b6ccf6` #1118
+  Rust audio/WebSocket refactors, HRX pins, extensions, H3 - N/A (packaging or
+  breaking refactors).
+
+Open PRs unchanged in scope: #893 (8-bit K/V rows, +2023/-422) is still the
+only large performance item and still needs the re-implementation, #944
+(retain live frontiers when RAM snapshots are disabled) open. Next sweep from
+`4b030049`.
+
+### llama.cpp `#31838` ROCm fixed hipBLAS workspace - measured, reverted
+
+`43243363` gives each hipBLAS handle a fixed 32 MiB workspace on ROCm 7+
+instead of letting rocBLAS allocate one per call. Implemented as
+`hip::SetBlasWorkspace` and wired into the Flash-Next executor, then A/B'd on
+one binary pair, 2026-11-11, Qwen3.8-Flash-Next UD-Q4_K_XL, AR
+(`gufo bench -p 2048 -n 64 -d 0,16384 -r 2 --speculative off`):
+
+| cell | workspace | none | delta |
+| --- | --- | --- | --- |
+| pp2048 | 1665.66 +- 6.90 | 1664.94 +- 10.46 | noise |
+| pp2048 @ d16384 | 1476.17 +- 0.12 | 1470.62 +- 1.93 | +0.4% |
+| tg64 | 33.58 +- 3.69 | 36.09 +- 0.12 | worse |
+| tg64 @ d16384 | 32.90 +- 0.10 | 33.27 +- 0.02 | -1.1% |
+
+No cell gains outside noise, decode loses ~1% and it costs 32 MiB device per
+handle, so the change is gone rather than kept as a guess. The wide
+projections that reach hipBLAS already pick hipBLASLt (its own workspace), and
+decode's 1-token GEMMs take the `SmallGemm` path, which is why a per-call
+rocBLAS workspace never showed up in the profile. Re-measure only if a future
+kernel routes real traffic through plain hipBLAS.
+
+### Removed: the libosmos port track
+
+`PORT_FROM_LIBOSMOS.md`, `PERFORMANCE_RANKING.md`, `COMPLETED_SUMMARY.md`,
+`src/core/hip/{lane,quant,rope}.h` and `kernels/ops.h` claimed a libosmos port
+worth 15-40%. None of it was real: nothing included those headers, they were
+unbuildable (`lane_exp` returned `hypotf`, `lane.hpp:81` has an unmatched
+paren, `rope.h`'s YaRN base is not YaRN) and they duplicated the existing
+`lane.hpp`/`quant_dev.hpp`/`rope.hpp`. Deleted; the only port status this
+repo has is this file.

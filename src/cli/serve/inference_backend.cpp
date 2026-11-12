@@ -2424,9 +2424,11 @@ public:
         // reserve its remaining lazy buffers once from aggregate capacity.
         .temporary_scratch_bytes = 0,
         .retained_snapshot_capacity_bytes = HostSnapshotBudgetBytes(),
-        .prompt_state_bytes_per_token =
-            model_->config().PromptKvBytesPerToken(use_mtp_),
-        .prompt_admission_budget_bytes = HostSnapshotBudgetBytes(),
+        // No prompt_state_bytes_per_token: a prompt's K/V rows live in the
+        // per-request session state this claim already charges, so billing
+        // them again per token only refused prompts that fit (upstream #1164).
+        .prompt_state_bytes_per_token = std::nullopt,
+        .prompt_admission_budget_bytes = std::nullopt,
         .requires_device_runtime_lock = true,
     };
   }
@@ -3737,7 +3739,8 @@ void InferenceBackend::set_reasoning_defaults(
 #endif
 }
 
-bool InferenceBackend::UpdateSchedulerPolicy(const TextSchedulerPolicy& policy) {
+bool InferenceBackend::UpdateSchedulerPolicy(
+    const TextSchedulerPolicy& policy) {
 #if defined(ENGINE_ENABLE_HIP)
   const auto state = impl_->Snapshot();
   if (state == nullptr || state->scheduler == nullptr) {
@@ -3763,8 +3766,8 @@ std::optional<TextSchedulerPolicy> InferenceBackend::SchedulerPolicy() const {
 #endif
 }
 
-bool InferenceBackend::UpdateDiskCacheBudget(std::size_t capacity_bytes,
-                                             std::size_t staging_capacity_bytes) {
+bool InferenceBackend::UpdateDiskCacheBudget(
+    std::size_t capacity_bytes, std::size_t staging_capacity_bytes) {
 #if defined(ENGINE_ENABLE_HIP)
   const auto state = impl_->Snapshot();
   if (state == nullptr || state->scheduler == nullptr) {

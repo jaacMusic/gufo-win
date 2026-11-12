@@ -211,8 +211,9 @@ quarter of the retained snapshot budget, and the disk budget. This bounds queued
 captures/writes and each disk read separately; it allocates nothing upfront.
 Live model state and retained RAM snapshots have separate budgets.
 
-The retained snapshot budget defaults to 75% of the host memory available after
-model/session loading (including cgroup limits). Set
+The retained snapshot budget defaults to 75% of the host memory available when
+loading finished (including cgroup limits), less what the loaded process already
+holds, so the engine's whole host footprint stays inside that 75%. Set
 `GUFO_CACHE_RAM_GB=<gigabytes>` before starting the server, or pass
 `--cache-ram-gb <gigabytes>`, to hard-set a different budget; the option wins
 over the environment. An explicit value is still bounded by that available
@@ -703,7 +704,13 @@ as the bearer credential when it is set.
 
 The HTTP transport bounds connection count and request-body size. The scheduler
 bounds admission and output buffering and propagates client cancellation to
-model runners. An in-flight GPU operation may finish before its request retires.
+model runners. An in-flight GPU operation may finish before its request retires:
+cancellation is polled at the top of each model layer, so a streaming request
+whose socket closes retires in about 8 ms mid-decode and 137 ms mid-prefill
+(measured on gfx1151). A client that stops reading but keeps the socket open has
+not cancelled anything - that request runs to `max_tokens`. The request log
+distinguishes them: `finish=cancelled` marks a cancelled turn and
+`outcome=disconnected` the socket whose peer went away.
 See [CLI.md](CLI.md) for supported configuration flags.
 
 Cancellation retains the last successfully executed conversation frontier and
@@ -736,6 +743,13 @@ scheduler limits (`max-pending`, `max-pending-per-client`, `max-output-bytes`,
 `cache-disk-bytes` and `cache-disk-staging-bytes` (only with `--cache-disk`),
 `max-connections`, `max-request-bytes`, and `api-key`. The key is write-only;
 reads report whether one is set.
+
+`cache-ram-gb` is re-read at every snapshot admission, so it works on a running
+server with snapshots already retained: a lower value evicts the oldest
+checkpoints until the pool fits, a higher one admits bigger captures, and the
+reclaim lands as traffic continues rather than at the instant of the POST. The
+value is still bounded by the host memory available at that moment, so it can
+shrink the pool but never promise more than the box has.
 
 Everything else is bound at load time: model artifacts, `--context`,
 `--sessions`, speculative decoding, `--prefill-batch`, `--host`, `--port`, and
