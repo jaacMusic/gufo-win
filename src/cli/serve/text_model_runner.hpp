@@ -64,9 +64,11 @@ struct TextRunnerDiskCacheOptions {
   std::size_t min_checkpoint_step_tokens{2048};
 };
 
-/// Snapshot budget policy: zero selects 75% of available host RAM; an explicit
+/// Snapshot budget policy: zero grows the whole footprint to 75% of total host
+/// RAM (`available - 25% of total`, so usage already counts); an explicit
 /// value wins but cannot exceed what is available.
 [[nodiscard]] std::size_t SnapshotBudgetBytes(std::size_t available_bytes,
+                                              std::size_t total_bytes,
                                               std::uint64_t requested_gb);
 
 /// Host snapshot budget after accounting for cgroup limits and headroom.

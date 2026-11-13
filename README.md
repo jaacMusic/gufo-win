@@ -340,7 +340,7 @@ Text LLM server (`/v1/chat/completions`, `/v1/completions`, `/v1/responses`).
 | `--cache-disk <DIR>` | off | Opt-in restart-safe continuation cache directory |
 | `--cache-disk-bytes <N>` | 8589934592 | Retained disk-cache byte budget |
 | `--cache-disk-staging-bytes <N>` | 0 = auto, at most 1 GiB and a quarter of the snapshot budget | RAM limit for queued snapshots and each disk read |
-| `--cache-ram-gb <N>` | none | Snapshot budget in GiB (0 = automatic, 75% of available RAM) |
+| `--cache-ram-gb <N>` | none | Snapshot budget in GiB (0 = automatic, 75% of total RAM minus current usage) |
 | `-i`, `--host <IP>` | 127.0.0.1 | Bind address |
 | `-p`, `--port <N>` | 8080 | Port to listen on |
 | `-j`, `--sessions <N>` | 1 | Preallocated GPU request sessions |
@@ -451,7 +451,7 @@ Qwen-Image-2.1 (`/v1/images/generations`, `/v1/images/edits`).
 | `--cache-disk <DIR>` | off | Opt-in restart-safe continuation cache directory |
 | `--cache-disk-bytes <N>` | 8589934592 | Retained disk-cache byte budget |
 | `--cache-disk-staging-bytes <N>` | 0 = auto, at most 1 GiB and a quarter of the snapshot budget | RAM limit for queued snapshots and each disk read |
-| `--cache-ram-gb <N>` | none | Snapshot budget in GiB (0 = automatic, 75% of available RAM) |
+| `--cache-ram-gb <N>` | none | Snapshot budget in GiB (0 = automatic, 75% of total RAM minus current usage) |
 | `-i`, `--host <IP>` | 127.0.0.1 | Bind address |
 | `-p`, `--port <N>` | 8080 | Port to listen on |
 | `-j`, `--sessions <N>` | 1 | Preallocated GPU request sessions |

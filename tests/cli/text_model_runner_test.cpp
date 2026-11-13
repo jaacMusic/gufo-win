@@ -1430,11 +1430,14 @@ void TestCacheRamBudgetOverride() {
   constexpr std::size_t kGiB = 1ULL << 30;
   const auto automatic = gufo::server::HostSnapshotBudgetBytes();
   Expect(automatic > 0, "the automatic budget is nonzero");
-  Expect(gufo::server::SnapshotBudgetBytes(8 * kGiB, 0) == 6 * kGiB,
-         "the automatic budget is 75% of available RAM");
-  Expect(gufo::server::SnapshotBudgetBytes(8 * kGiB, 2) == 2 * kGiB,
+  Expect(
+      gufo::server::SnapshotBudgetBytes(20 * kGiB, 32 * kGiB, 0) == 12 * kGiB,
+      "the automatic budget is 75% of total RAM minus current usage");
+  Expect(gufo::server::SnapshotBudgetBytes(6 * kGiB, 32 * kGiB, 0) == 0,
+         "a busy host leaves no automatic budget");
+  Expect(gufo::server::SnapshotBudgetBytes(8 * kGiB, 32 * kGiB, 2) == 2 * kGiB,
          "an explicit budget wins");
-  Expect(gufo::server::SnapshotBudgetBytes(8 * kGiB, 99) == 8 * kGiB,
+  Expect(gufo::server::SnapshotBudgetBytes(8 * kGiB, 32 * kGiB, 99) == 8 * kGiB,
          "an explicit budget is bounded by available RAM");
   ::setenv("GUFO_CACHE_RAM_GB", "2", 1);
   const auto two = gufo::server::HostSnapshotBudgetBytes();

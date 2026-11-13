@@ -211,13 +211,14 @@ quarter of the retained snapshot budget, and the disk budget. This bounds queued
 captures/writes and each disk read separately; it allocates nothing upfront.
 Live model state and retained RAM snapshots have separate budgets.
 
-The retained snapshot budget defaults to 75% of the host memory available when
-loading finished (including cgroup limits), less what the loaded process already
-holds, so the engine's whole host footprint stays inside that 75%. Set
+The retained snapshot budget defaults to the room below 75% of total host
+RAM, measured when loading finished (including cgroup limits): current usage
+by other processes and what the loaded process already holds both count, so
+the engine's whole host footprint stays inside 75% of total RAM. Set
 `GUFO_CACHE_RAM_GB=<gigabytes>` before starting the server, or pass
 `--cache-ram-gb <gigabytes>`, to hard-set a different budget; the option wins
 over the environment. An explicit value is still bounded by that available
-memory, and `0` keeps the automatic 75%.
+memory, and `0` keeps the automatic 65%.
 When the stable boundary cannot fit, prefill retains one intermediate checkpoint
 at the largest prefix below 90% of the budget, so a long session moves its reuse
 point forward instead of pinning the oldest checkpoint. A disk store that can

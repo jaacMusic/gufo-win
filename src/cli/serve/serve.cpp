@@ -878,8 +878,8 @@ void PrintServeHelp(std::string_view program_name,
                      "snapshot budget)",
                      "Cache", &cache_disk_staging_bytes);
     parser.AddOption("", "--cache-ram-gb", "N",
-                     "Snapshot budget in GiB (0 = automatic, 75% of "
-                     "available RAM)",
+                     "Snapshot budget in GiB (0 = automatic: 75% of "
+                     "total RAM minus current usage)",
                      "Cache", &cache_ram_gb);
     ServerOptionHelpTargets server_help;
     AddServerOptionsForHelp(parser, &server_help);
@@ -1358,8 +1358,8 @@ int RunServe(std::span<const char* const> args) {
         "budget)",
         "Cache", &cache_disk_staging_bytes);
     llm_parser.AddOption("", "--cache-ram-gb", "N",
-                         "Snapshot budget in GiB (0 = automatic, 75% of "
-                         "available RAM)",
+                         "Snapshot budget in GiB (0 = automatic: 75% of "
+                         "total RAM minus current usage)",
                          "Cache", &cache_ram_gb);
 
     add_server_options(llm_parser);

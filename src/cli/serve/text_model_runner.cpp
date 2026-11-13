@@ -25,14 +25,23 @@ constexpr std::size_t kMinGridTokens = 1024;
 
 namespace {
 std::atomic<std::uint64_t> snapshot_budget_gb{0};
+/// Sampled once: capacity is asked for repeatedly while snapshots accumulate,
+/// and a budget that shrank as the pool filled would evict itself into a loop.
+std::atomic<std::size_t> automatic_budget_bytes{
+    std::numeric_limits<std::size_t>::max()};
 }  // namespace
 
-/// The automatic budget leaves a quarter of available memory to the live state
-/// and scratch; operators can hard-set a different budget.
+/// The automatic budget grows the process until its footprint reaches 75% of
+/// total RAM: with `available = total - used`, the pool may take
+/// `available - 25% of total`, so current usage already counts against it;
+/// operators can hard-set a different budget.
 std::size_t SnapshotBudgetBytes(std::size_t available_bytes,
+                                std::size_t total_bytes,
                                 std::uint64_t requested_gb) {
-  if (requested_gb == 0)
-    return available_bytes - available_bytes / 4;
+  if (requested_gb == 0) {
+    const std::size_t reserve = total_bytes / 4;
+    return available_bytes > reserve ? available_bytes - reserve : 0;
+  }
   constexpr std::uint64_t kBytesPerGiB = 1ULL << 30;
   const auto gigabytes = std::min<std::uint64_t>(
       requested_gb, std::numeric_limits<std::size_t>::max() / kBytesPerGiB);
@@ -40,13 +49,35 @@ std::size_t SnapshotBudgetBytes(std::size_t available_bytes,
                   static_cast<std::size_t>(gigabytes * kBytesPerGiB));
 }
 
+/// What the process already holds, so the automatic cap bounds the whole
+/// footprint and not just the one pool it sizes.
+std::size_t CurrentResidentBytes() {
+#ifdef _WIN32
+  return static_cast<std::size_t>(gufo_resident_bytes());
+#else
+  std::ifstream status("/proc/self/status");
+  for (std::string line; std::getline(status, line);) {
+    if (line.starts_with("VmRSS:")) {
+      std::istringstream fields(line.substr(6));
+      std::uint64_t kib = 0;
+      if (fields >> kib)
+        return static_cast<std::size_t>(kib * 1024);
+      break;
+    }
+  }
+  return 0;
+#endif
+}
+
 /// Ordinary host allocations use the host budget, not HIP's device capacity.
 std::size_t HostSnapshotBudgetBytes() {
   const long pages = sysconf(_SC_AVPHYS_PAGES);
   const long page_size = sysconf(_SC_PAGESIZE);
-  if (pages <= 0 || page_size <= 0)
+  const long total_pages = sysconf(_SC_PHYS_PAGES);
+  if (pages <= 0 || page_size <= 0 || total_pages <= 0)
     return 0;
   std::uint64_t available = std::uint64_t(pages) * page_size;
+  std::uint64_t total = std::uint64_t(total_pages) * page_size;
   std::ifstream meminfo("/proc/meminfo");
   for (std::string line; std::getline(meminfo, line);) {
     if (line.starts_with("MemAvailable:")) {
@@ -54,6 +85,11 @@ std::size_t HostSnapshotBudgetBytes() {
       std::uint64_t kib = 0;
       if (fields >> kib)
         available = kib * 1024;
+    } else if (line.starts_with("MemTotal:")) {
+      std::istringstream fields(line.substr(9));
+      std::uint64_t kib = 0;
+      if (fields >> kib)
+        total = kib * 1024;
       break;
     }
   }
@@ -72,8 +108,10 @@ std::size_t HostSnapshotBudgetBytes() {
       std::ifstream limit_file(path / "memory.max");
       std::ifstream used_file(path / "memory.current");
       std::uint64_t limit = 0, used = 0;
-      if ((limit_file >> limit) && (used_file >> used))
+      if ((limit_file >> limit) && (used_file >> used)) {
         available = std::min(available, limit > used ? limit - used : 0);
+        total = std::min(total, limit);
+      }
       if (path == root)
         break;
     }
@@ -81,6 +119,8 @@ std::size_t HostSnapshotBudgetBytes() {
   }
   const auto available_size = static_cast<std::size_t>(std::min<std::uint64_t>(
       available, std::numeric_limits<std::size_t>::max()));
+  const auto total_size = static_cast<std::size_t>(
+      std::min<std::uint64_t>(total, std::numeric_limits<std::size_t>::max()));
   std::uint64_t requested_gb = snapshot_budget_gb;
   if (requested_gb == 0) {
     if (const char* text = std::getenv("GUFO_CACHE_RAM_GB")) {
@@ -94,7 +134,20 @@ std::size_t HostSnapshotBudgetBytes() {
       }
     }
   }
-  return SnapshotBudgetBytes(available_size, requested_gb);
+  // The automatic cap is a ceiling for the whole process, so a quarter of
+  // total RAM on top of what the model already holds overruns it: at
+  // load the weights alone can be several GiB. A hard-set budget is the pool
+  // size the operator asked for, unchanged.
+  if (requested_gb != 0)
+    return SnapshotBudgetBytes(available_size, total_size, requested_gb);
+  std::size_t cached = automatic_budget_bytes;
+  if (cached == std::numeric_limits<std::size_t>::max()) {
+    const auto cap = SnapshotBudgetBytes(available_size, total_size, 0);
+    const auto resident = CurrentResidentBytes();
+    cached = std::max<std::size_t>(1, cap > resident ? cap - resident : 0);
+    automatic_budget_bytes = cached;
+  }
+  return cached;
 }
 
 std::uint64_t HostSnapshotBudgetGb() noexcept {
@@ -1500,11 +1553,10 @@ bool TextRunnerPool::SetDiskCacheBudget(std::size_t capacity_bytes,
     return false;
   }
   impl_->disk_store->SetCapacities(capacity_bytes, staging_capacity_bytes);
-  Logger::Info("cache",
-               "event=disk_cache_resized capacity_bytes=" +
-                   std::to_string(capacity_bytes) +
-                   " staging_capacity_bytes=" +
-                   std::to_string(staging_capacity_bytes));
+  Logger::Info("cache", "event=disk_cache_resized capacity_bytes=" +
+                            std::to_string(capacity_bytes) +
+                            " staging_capacity_bytes=" +
+                            std::to_string(staging_capacity_bytes));
   return true;
 }
 
