@@ -652,6 +652,10 @@ void GatherArgmaxCandidates(const float* logits, const std::uint32_t* ids,
                             ArgmaxCandidate* out, std::uint32_t rows,
                             std::uint32_t vocab, hipStream_t stream);
 
+/// Quantize Q8_0 to Q4_K using the mmq mmo vector function.
+void QuantizeQ8_0ToQ4K(const void* q8, void* q4k, std::size_t rows, std::uint32_t cols,
+                       hipStream_t stream);
+
 /// Draft logits of empty table slots (table[i] < 0) become -infinity.
 void MaskDraftLogits(float* logits, const std::int32_t* table, std::uint32_t n,
                      hipStream_t stream);

@@ -22,6 +22,7 @@
 #endif
 
 namespace gufo::models::qwen38_flash_next::rocm {
+using core::GgmlType;
 namespace {
 
 /// The quantized GEMM tier reads whole 256-element k-iterations, so a row

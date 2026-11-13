@@ -110,6 +110,7 @@ WeightType SmallType(GgmlType type) {
 // The tier's tiled kernels compute whole column tiles; below this width the
 // matrix-vector kernels read each weight once per row and win outright.
 constexpr std::uint32_t kVecBatch = 8;
+constexpr std::uint32_t kDraftHeadRows = 8;
 // Keep prompt arithmetic independent of chunk width. A scoped, per-thread
 // policy also lets the output head retain its existing logits-row arithmetic.
 thread_local bool prefill_phase = false;
@@ -701,6 +702,8 @@ std::unique_ptr<Executor> Executor::Create(const DeviceModel& model,
     s.mtp_argmax = Alloc<ArgmaxCandidate>(a, kArgmaxParts, error_msg);
     // The draft token and its confidence (float bits), one host transfer.
     s.mtp_token = Alloc<std::int32_t>(a, 2, error_msg);
+    // Draft head IDs (8 rows, zero-filled by Alloc's hipMemset).
+    s.draft_head_ids = Alloc<std::int32_t>(a, kDraftHeadRows, error_msg);
     const auto candidate_ids = std::max<std::size_t>(
         MtpCandidateWorkspaceSize(c.vocab_size),
         e->options_.max_speculative * kArgmaxParts *
@@ -1521,6 +1524,16 @@ bool Executor::DenseF16Route(const DeviceTensor& w,
 
 bool Executor::Dense(const DeviceTensor& w, const float* x, float* out,
                      std::uint32_t n_tokens, std::string* error_msg) const {
+  if (w.type == GgmlType::kQ4_K && model_->draft_output().type == GgmlType::kQ4_K &&
+      s_.draft_head_ids != nullptr) {
+    int rc = 0;
+    const int M = static_cast<int>(w.rows);
+    const int K = static_cast<int>(w.cols);
+    const int T = static_cast<int>(n_tokens);
+    rc = qfn_mmq_moe_vec(static_cast<int>(w.type), w.data, x, s_.draft_head_ids, out,
+                         M, K, T, 1, 1, stream_);
+    if (rc != 0) { AssignError(error_msg, "Q4_K draft GEMM failed"); return false; }
+  }
   if (w.type == GgmlType::kQ8_0) {
     if (!MatrixRows(n_tokens)) {
       Q8Input q;

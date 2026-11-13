@@ -65,11 +65,15 @@ if (ENGINE_ENABLE_HIP)
     ${QFN_ROCM_DIR}/device_model.cpp
     ${QFN_ROCM_DIR}/executor.cpp
     ${QFN_ROCM_DIR}/batch.cpp
+    ${QFN_ROCM_DIR}/draft_head.hip.cpp
     engine.cpp)
   target_sources(gufo_qwen38_flash_next PRIVATE ${QFN_HIP_SOURCES})
   set_source_files_properties(${QFN_ROCM_DIR}/kernels.hip.cpp PROPERTIES LANGUAGE HIP)
   set_source_files_properties(${QFN_ROCM_DIR}/w8a8_wave64.hip
     PROPERTIES COMPILE_OPTIONS "-mwavefrontsize64")
+  set_source_files_properties(${QFN_ROCM_DIR}/draft_head.hip.cpp PROPERTIES
+    LANGUAGE HIP
+    COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off")
   target_compile_definitions(gufo_qwen38_flash_next PRIVATE QFN_ROCM_BUILD=1)
   target_compile_options(gufo_qwen38_flash_next PRIVATE
     $<$<COMPILE_LANGUAGE:CXX>:-O2>
