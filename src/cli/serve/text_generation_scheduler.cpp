@@ -242,6 +242,13 @@ struct TextGenerationScheduler::Impl {
     }
   }
 
+  struct SessionsData {
+    std::mutex mutex;
+    std::vector<std::unique_ptr<ScheduledRequest>> requests;
+  };
+
+  std::unique_ptr<SessionsData> sessions;
+
   Impl(std::shared_ptr<TextRunnerPool> model_runner_pool,
        TextPrefillPolicy model_prefill_policy,
        TextSchedulerPolicy model_scheduler_policy)
@@ -249,7 +256,8 @@ struct TextGenerationScheduler::Impl {
         prefill_policy(model_prefill_policy),
         scheduler_policy(model_scheduler_policy),
         output_budget(std::make_shared<OutputBudget>(
-            model_scheduler_policy.max_buffered_output_bytes_total)) {
+            model_scheduler_policy.max_buffered_output_bytes_total)),
+        sessions(std::make_unique<SessionsData>()) {
     if (runner_pool == nullptr) {
       throw std::invalid_argument(
           "text generation scheduler runner pool must not be null");
@@ -325,6 +333,12 @@ struct TextGenerationScheduler::Impl {
       queued_clients.push_back(std::move(client));
     }
     return request;
+  }
+
+  [[nodiscard]] std::size_t FreeSessions() const {
+    const std::lock_guard<std::mutex> lock(sessions->mutex);
+    return static_cast<std::size_t>(std::count(
+        sessions->requests.begin(), sessions->requests.end(), nullptr));
   }
 
   [[nodiscard]] bool RemoveQueued(
@@ -1617,6 +1631,19 @@ TextGenerationScheduler::Request TextGenerationScheduler::Submit(
   request->max_buffered_output_bytes =
       policy.max_buffered_output_bytes_per_request;
   request->output_budget = impl_->output_budget;
+  // Admission decision flags (set when queue is full per --max-pending policy).
+  bool refused = false;
+  TextGenerationErrorCode refusal_code{};
+  std::string refusal_message;
+  std::string refusal_reason;
+  std::size_t decision_client_queued = 0;
+  if (!request->deadline.has_value() && policy.request_timeout.count() > 0) {
+    request->deadline = request->request_start + policy.request_timeout;
+  }
+  request->max_output_bytes = policy.max_output_bytes_per_request;
+  request->max_buffered_output_bytes =
+      policy.max_buffered_output_bytes_per_request;
+  request->output_budget = impl_->output_budget;
 
   // Larger prompts claim more host state (prefill K/V checkpoints); charge
   // the prompt budget before queueing so many concurrent prompts cannot
@@ -1647,20 +1674,31 @@ TextGenerationScheduler::Request TextGenerationScheduler::Submit(
       throw TextGenerationError(TextGenerationErrorCode::kSchedulerStopping,
                                 "text generation scheduler is stopping");
     }
-    if (impl_->queued_count >= impl_->scheduler_policy.max_pending_requests) {
-      throw TextGenerationError(TextGenerationErrorCode::kQueueFull,
-                                "text generation pending queue is full");
+    // Queued requests first claim the free sessions; only the rest wait, so
+    // only they count against the pending limits. `--max-pending 0` thus
+    // admits work for a free session and refuses everything else (#1206).
+    const std::size_t free_sessions = impl_->FreeSessions();
+    if (impl_->queued_count >=
+        impl_->scheduler_policy.max_pending_requests + free_sessions) {
+      refused = true;
+      refusal_code = TextGenerationErrorCode::kQueueFull;
+      refusal_message = "text generation pending queue is full";
     }
     auto client =
         std::find_if(impl_->queued_clients.begin(), impl_->queued_clients.end(),
                      [&](const PendingClient& pending) {
                        return pending.client_id == request->client_id;
                      });
-    if (client != impl_->queued_clients.end() &&
-        client->requests.size() >=
-            impl_->scheduler_policy.max_pending_requests_per_client) {
-      throw TextGenerationError(TextGenerationErrorCode::kClientQueueFull,
-                                "text generation client pending queue is full");
+    const std::size_t client_queued =
+        client != impl_->queued_clients.end() ? client->requests.size() : 0;
+    if (client_queued >=
+        impl_->scheduler_policy.max_pending_requests_per_client +
+            free_sessions) {
+      refused = true;
+      refusal_code = TextGenerationErrorCode::kClientQueueFull;
+      refusal_message = "text generation client pending queue is full";
+      refusal_reason = "client_quota";
+      decision_client_queued = client_queued;
     }
     if (prompt_state_bytes_per_token.has_value()) {
       const auto& resource_claim = impl_->runner_pool->resource_claim();
