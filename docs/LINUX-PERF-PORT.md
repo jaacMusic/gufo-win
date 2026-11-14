@@ -2765,3 +2765,85 @@ unbuildable (`lane_exp` returned `hypotf`, `lane.hpp:81` has an unmatched
 paren, `rope.h`'s YaRN base is not YaRN) and they duplicated the existing
 `lane.hpp`/`quant_dev.hpp`/`rope.hpp`. Deleted; the only port status this
 repo has is this file.
+
+## Sweep 2026-11-13 (upstream `4b030049..192f9ac5`, 24 commits)
+
+Port candidates:
+
+- `a33323f2` #1209 draft MTP proposals with a Q4_K copy of the head prefix -
+  **the perf item.** Upstream measured +2.6% sampled / +3.2..5.7% greedy
+  decode (C1), acceptance 0.628 -> 0.633, neutral load, output distribution
+  unchanged (draft-side only; byte-identical greedy replies). Lands a new
+  `draft_head.hip.cpp` (device q4_K quantizer + shared-Q8_0->Q4_K prefix
+  copy, 222 lines) wired through `batch.cpp`/`device_model`/`executor`
+  plus a 247-line `mtp_ops_test`. Fork`s `kernels/rocm` has diverged, so
+  this is an adapt, not a cherry-pick; the quantizer must reproduce
+  `quantize_row_q4_K_ref` byte-exact and builds without fast math.
+- `6858788b` #1207 `--max-pending 0` rejects with 429 instead of being
+  refused at startup - fix, small (serve.cpp validation + scheduler + docs);
+  matches our concurrent-load stall repro as a fail-fast escape hatch for
+  routers. Not ported yet.
+- `77621b27` #1181 resume captured prefills before repeating peer work -
+  fix, 14 lines, `text_generation_scheduler.cpp` pattern exists here
+  (`last_prefill_request_id`). Multi-session fairness; port only if the
+  concurrent-serve stall work needs it.
+
+Rejected / N/A:
+
+- `bc35aa81` #1184 prefill-split guard - no-op here: every fork runner sets
+  `.prefix_reuse = true` (`inference_backend.cpp` 894/1652/2394).
+- `48aeeee9` #1183, `70bd0fda` #1205 - disk-checkpoint paths; the fork has
+  no `src/cache/` at all.
+- `4f2ecf12` #1191 exclusive listener bind - already carried
+  (`http_server.cpp:1220` `SO_EXCLUSIVEADDRUSE`).
+- `e74e16b5` #1190 ssm_post_norm shared-kernel move - kernel absent here.
+- `fc26f52c` #945 Clang 23 WMMA signatures - our tree builds unchanged on
+  the pinned toolchain; nothing broke.
+- `192f9ac5` #1215 GCC math/vectorizer flags through clang-cl - our fork's
+  clang-cl flag set is its own; recheck only if a build-flag sweep happens.
+- `eabda7ac` #1186, `b3a0240f` #1189, `e671f85e` #1191 curl pin / XRT SDK
+  / XDNA NPU - upstream NPU+packaging track; fork keeps its own NPU staging.
+- `58ec0797` #1214 A1111 sdapi, `cae8759a` #1212 qwen-image CFG/i2i,
+  `ec2420d8` #861 LoRA, `dec06b83` #1203 + `7b277d6a` #1163 extensions,
+  `5f622e8e` #1161 diagnose, `580d053b` #1182 rust, `0d238d4f` #1175
+  sched profile, `2845939b` 0.34.0 - features, docs or refactors, not perf
+  fixes. `5ace393c` #1176 multipart RFC parsing is a server-correctness fix;
+  port if the fork's `serve` grows multipart users (vision upload paths).
+
+Community (2026-11-13):
+
+- strata `87dfca0e..13eedf55` (97 commits): app, packaging, test hermeticity,
+  DGX Spark reader, and three MMQ row-id-margin commits (`d7f7d967` et al.)
+  that fix *their* CUDA ggml kernels reading past the row-id table; our HIP
+  path has no such overread. Nothing Strix-HIP portable; verdict unchanged.
+- bubo: nothing since v0.1.2. basalt: CUDA sm_120 NVFP4, DeepSeek 4.1, plus
+  Windows host-VMM/overlapped-IO platform work for its CUDA expert-RAM tier -
+  no RAM tier on a unified-memory part, N/A. qwenllama.cpp, rockchip:
+  unchanged. infernix: all CUDA; the neutral idea remains the empty-reasoning
+  chat-template merge bug (flash-next discussion #86) - our template comes
+  from the GGUF, untriaged.
+
+Next sweep from `192f9ac5`.
+
+Port attempt 2026-11-13: a33323f2 #1209 (Q4_K draft head) was fully ported,
+tested (mtp_ops host-reference byte-compare passed) and A/B benched greedy MTP:
+outputs byte-identical, but tg128 d0 within noise (49.9 vs 49.6) and tg128
+d16384 -3% (59.5+-0.8 vs 61.4+-0.9, acceptance trajectory 90/38 vs 92/36
+cycles). Upstream's +2.6-5.7% did not reproduce on the fork bench prompt;
+reverted without committing. Revisit only with a multi-prompt acceptance eval.
+
+## Port 2026-11-14: compacted MTP inject rows out of the norm buffer (`800ce328` #1230)
+
+Swept `192f9ac5..upstream/main` (13 commits): only `800ce328` #1230 applies.
+The fork carried the same `tail.inject = base.mtp_h` alias in `batch.cpp`
+(`mtp_h` aliases `s_.xn`, which the FFN combine writes while its blocks
+still read the inject partials) and no in-place skip in the compact-tail copy;
+both parts ported. N/A: #1194/#1195/#1196 (no `src/cache/`), #1222 (no
+`RunQwenBenchmarkImpl`), #1210 (no `src/ext/`), #1216/#1225/#1226/#1227/#1229
+(NPU/XRT track), #1217/#1218 (upstream CI/test). Open-PR watch list: #1224
+(qwen27b checkpoint capture), #893 (8-bit K/V rows), #1116 (DSpine drafter).
+Also repaired bit-rot in `gpu_probe`/`mtp_audit` so the audit builds:
+`Forward` gained `verify_candidates` and `PreparedImage::pixels` became a
+`shared_ptr`. Compile and `clang-format` pass; runtime check
+(`qwen38_flash_next_gpu_probe --model MODEL --mtp-model MTP --batch 2048 --mtp-audit`)
+awaits a window with the GPU free of the serve engine.
