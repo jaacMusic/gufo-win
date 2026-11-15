@@ -2847,3 +2847,35 @@ Also repaired bit-rot in `gpu_probe`/`mtp_audit` so the audit builds:
 `shared_ptr`. Compile and `clang-format` pass; runtime check
 (`qwen38_flash_next_gpu_probe --model MODEL --mtp-model MTP --batch 2048 --mtp-audit`)
 awaits a window with the GPU free of the serve engine.
+
+## Known limitation: batch and single-row decode are not bit-identical
+
+Both retained GPU suites assert exact equality between the batched
+(`ForwardBatch`) and single-row (`Forward`) pipelines and fail on this host
+with deterministic numbers. Neither failure comes from a port: a clean HEAD
+worktree reproduces them, and reverting `batch.cpp` to its pre-#1230 state
+changes nothing.
+
+- `qwen38_flash_next_session_test --batch-only`: `invalid peer changed target
+  logits (max |diff|=1.379499 at 22365: 1.317944 vs -0.061555)`. Same state in
+  one 2-row batch equals itself exactly (`row0-vs-row1 maxdiff=0`), snapshot
+  restore is exact, and each row matches its own session, so this is not a
+  row-key or contamination bug. Per-layer traces of the same session state
+  show both paths agreeing to ~1e-8 through layers 0-1, then a relative
+  divergence of 1e-4 by layer 3, 1e-3 by layer 8 and 5e-3..1e-2 from layer 24
+  on, i.e. the final logits sit 0.1% of norm apart with `corr=1.00`. Layer 2-3
+  is where the first quantized value crosses a rounding boundary; the two
+  pipelines then amplify it like any 48-layer quantized network. Disabling the
+  batched GatedDeltaNet kernel, the merged `HcCombineQ8_1` combine and the
+  `pending_combine_`/`HcMixQ8Fused` deferral all leave the numbers
+  byte-identical, so no single kernel swap restores parity. Bit-exactness is
+  only reachable by making the batch path call the serial kernels per row,
+  which removes the reason the batch path exists.
+- `qwen38_flash_next_gpu_probe --mtp-audit`: `recursive-carry rel_rms=0.0019
+  max_abs=0.037` against a `5e-5` limit, while `full-hidden-norm` is exactly
+  `0.0000000`. Same class: an over-tight bound on a carried hidden state, not
+  a defect in the carry.
+
+Treat exact cross-pipeline logit equality as unreachable until the batch path
+shares the serial kernels; same-pipeline comparisons (`mixed_batch_exact`)
+remain meaningful.
