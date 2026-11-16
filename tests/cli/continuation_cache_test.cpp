@@ -108,9 +108,11 @@ void TestUncommittedLeaseIsInvalidated() {
   {
     auto lease = cache.Acquire(std::vector<gufo::server::ContinuationToken>{7});
     Expect(static_cast<bool>(lease), "request acquires the slot");
+    Expect(cache.available_states() == 0, "a leased state is not free");
   }
   Expect(invalidations[0] == 1,
          "abandoned request invalidates partially computed state");
+  Expect(cache.available_states() == 1, "a released state is free again");
 
   auto retry =
       cache.Acquire(std::vector<gufo::server::ContinuationToken>{7, 8});
@@ -306,6 +308,63 @@ void TestByteCapacityEvictsBeforeSnapshotAllocation() {
   Expect(cache.retained_snapshot_bytes() == 12 &&
              cache.reserved_snapshot_bytes() == 0,
          "commit converts the reservation into exact retained bytes");
+}
+
+void TestRuntimeCapacityShrinkEvictsRetained() {
+  using gufo::server::SnapshotEventAction;
+  using gufo::server::SnapshotEventReason;
+
+  std::vector<std::size_t> invalidations(1);
+  std::size_t next_id = 0;
+  std::size_t capacity = 12;
+  std::vector<gufo::server::SnapshotEvent> events;
+  gufo::server::ContinuationCache cache(
+      1, [&] { return std::make_unique<FakeState>(next_id++, &invalidations); },
+      {
+          .restore =
+              [](gufo::server::ContinuationState& state,
+                 const gufo::server::ContinuationSnapshot& snapshot) {
+                dynamic_cast<FakeState&>(state).value =
+                    dynamic_cast<const FakeSnapshot&>(snapshot).value;
+              },
+          .capacity_bytes = [&] { return capacity; },
+          .on_event =
+              [&](const gufo::server::SnapshotEvent& event) {
+                events.push_back(event);
+              },
+      });
+
+  {
+    auto root =
+        cache.Acquire(std::vector<gufo::server::ContinuationToken>{1, 2, 3});
+    Expect(root.TryReserveSnapshot(8, 3), "snapshot fits the initial budget");
+    Expect(root.Commit({1, 2, 3}, std::make_unique<FakeSnapshot>(7, 8)) == 8,
+           "snapshot is retained");
+  }
+
+  // `POST /admin/config {"cache-ram-gb": N}` lowers the budget mid-run; the
+  // cache must re-read it instead of keeping its construction-time size.
+  capacity = 4;
+  Expect(cache.snapshot_capacity_bytes() == 4,
+         "capacity reads reflect the lowered budget");
+
+  auto next =
+      cache.Acquire(std::vector<gufo::server::ContinuationToken>{9, 8, 7});
+  Expect(next.TryReserveSnapshot(4, 3),
+         "a snapshot inside the new budget is admitted");
+  Expect(cache.retained_snapshot_bytes() == 0,
+         "the over-budget snapshot was evicted");
+  Expect(std::any_of(events.begin(), events.end(),
+                     [](const auto& event) {
+                       return event.action == SnapshotEventAction::kRemoved &&
+                              event.reason ==
+                                  SnapshotEventReason::kByteCapacity;
+                     }),
+         "the eviction is reported");
+
+  capacity = 32;
+  Expect(cache.snapshot_capacity_bytes() == 32,
+         "a raised budget is picked up the same way");
 }
 
 void TestRefusedCaptureKeepsTheRestoredFrontier() {
@@ -785,6 +844,7 @@ int main() {
   TestSnapshotCanBranchIntoTwoIndependentStateSlots();
   TestSnapshotRecordsOutnumberStateSlots();
   TestByteCapacityEvictsBeforeSnapshotAllocation();
+  TestRuntimeCapacityShrinkEvictsRetained();
   TestRefusedCaptureKeepsTheRestoredFrontier();
   TestPressureStillTakesAnotherConversation();
   TestConcurrentReservationsCannotOvercommitBudget();

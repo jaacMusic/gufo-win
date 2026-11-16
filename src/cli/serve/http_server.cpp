@@ -1339,9 +1339,9 @@ void HttpServer::run(bool handle_signals) {
     bool overloaded = false;
     {
       const std::lock_guard<std::mutex> lock(workers_mutex_);
-      overloaded = stopped_.load(std::memory_order_acquire) ||
-                   workers_.size() >=
-                       max_connections_.load(std::memory_order_relaxed);
+      overloaded =
+          stopped_.load(std::memory_order_acquire) ||
+          workers_.size() >= max_connections_.load(std::memory_order_relaxed);
       if (!overloaded) {
         auto connection = std::make_shared<ConnectionState>();
         connection->fd = client_fd;
@@ -1416,8 +1416,7 @@ void HttpServer::register_runtime_entries() {
   if (runtime_ == nullptr) {
     return;
   }
-  const auto require_positive = [](const json::Value& value,
-                                   std::size_t* out) {
+  const auto require_positive = [](const json::Value& value, std::size_t* out) {
     if (!value.is_number() || value.as_size() == 0) {
       return std::string("must be a positive integer");
     }
@@ -1425,7 +1424,8 @@ void HttpServer::register_runtime_entries() {
     return std::string();
   };
   runtime_->Add(
-      "max-connections", [this] { return json::Value(max_connections_.load()); },
+      "max-connections",
+      [this] { return json::Value(max_connections_.load()); },
       [this, require_positive](const json::Value& value) {
         std::size_t limit = 0;
         if (auto error = require_positive(value, &limit); !error.empty()) {

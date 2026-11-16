@@ -29,7 +29,7 @@ class QwenGenerator {
 public:
   QwenGenerator(QwenModelWeights weights,
                 std::unique_ptr<tokenization::QwenTokenizer> tokenizer,
-                std::uint32_t max_context = 4096);
+                std::uint32_t max_context = 32768);
 
   /// Creates a generator directly from a loaded GGUF file.
   [[nodiscard]] static std::unique_ptr<QwenGenerator> CreateFromGguf(

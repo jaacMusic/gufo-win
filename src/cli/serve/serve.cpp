@@ -344,8 +344,9 @@ const char* ReasoningEffortName(const ReasoningOptions& options) {
 /// Everything else -- model artifacts, context, sessions, speculative decoding,
 /// sockets, prefill shape, and the cache directory itself -- is still fixed at
 /// load time, so /admin/config rejects it and the caller restarts the process.
-void AddRuntimeConfigEntries(server::RuntimeConfig& config,
-                             std::shared_ptr<server::InferenceBackend> backend) {
+void AddRuntimeConfigEntries(
+    server::RuntimeConfig& config,
+    std::shared_ptr<server::InferenceBackend> backend) {
   config.Add(
       "served-model-name",
       [backend] { return json::Value(backend->model_id()); },
@@ -359,7 +360,9 @@ void AddRuntimeConfigEntries(server::RuntimeConfig& config,
 
   config.Add(
       "max-tokens",
-      [backend] { return json::Value(backend->sampling_defaults().max_tokens); },
+      [backend] {
+        return json::Value(backend->sampling_defaults().max_tokens);
+      },
       [backend](const json::Value& value) -> std::string {
         const double numeric = value.as_double(-2.0);
         if (!value.is_number() || numeric < -1.0) {
@@ -417,10 +420,9 @@ void AddRuntimeConfigEntries(server::RuntimeConfig& config,
                &sampling::SamplingConfig::frequency_penalty);
   add_sampling("presence-penalty", &sampling::SamplingConfig::presence_penalty);
 
-  const auto apply_reasoning = [backend](std::string_view mode,
-                                         std::string_view effort,
-                                         std::string_view preserve)
-      -> std::string {
+  const auto apply_reasoning =
+      [backend](std::string_view mode, std::string_view effort,
+                std::string_view preserve) -> std::string {
     std::string error;
     const auto resolved =
         ResolveReasoningDefaults(mode, effort, preserve, &error);
@@ -460,7 +462,8 @@ void AddRuntimeConfigEntries(server::RuntimeConfig& config,
   config.Add(
       "preserve-thinking",
       [backend] {
-        return json::Value(ReasoningPreserveName(backend->reasoning_defaults()));
+        return json::Value(
+            ReasoningPreserveName(backend->reasoning_defaults()));
       },
       [backend, apply_reasoning](const json::Value& value) -> std::string {
         if (!value.is_string()) {
@@ -504,8 +507,9 @@ void AddRuntimeConfigEntries(server::RuntimeConfig& config,
   add_scheduler_limit(
       "max-pending-per-client",
       &server::TextSchedulerPolicy::max_pending_requests_per_client);
-  add_scheduler_limit("max-output-bytes",
-                      &server::TextSchedulerPolicy::max_output_bytes_per_request);
+  add_scheduler_limit(
+      "max-output-bytes",
+      &server::TextSchedulerPolicy::max_output_bytes_per_request);
   add_scheduler_limit(
       "max-buffered-output-bytes",
       &server::TextSchedulerPolicy::max_buffered_output_bytes_per_request);
@@ -551,35 +555,34 @@ void AddRuntimeConfigEntries(server::RuntimeConfig& config,
         return {};
       });
 
-  const auto add_disk_cache =
-      [&config, backend](const char* name, bool staging) {
-        config.Add(
-            name,
-            [backend, staging] {
-              const auto budget = backend->DiskCacheBudget();
-              return json::Value(
-                  budget.has_value()
-                      ? (staging ? budget->staging_capacity_bytes
-                                 : budget->capacity_bytes)
-                      : std::size_t{0});
-            },
-            [backend, staging](const json::Value& value) -> std::string {
-              const std::size_t parsed = value.as_size(0);
-              if (!value.is_number() || parsed == 0) {
-                return "value must be a positive integer";
-              }
-              auto budget = backend->DiskCacheBudget();
-              if (!budget.has_value()) {
-                return "--cache-disk is disabled";
-              }
-              (staging ? budget->staging_capacity_bytes : budget->capacity_bytes) =
-                  parsed;
-              return backend->UpdateDiskCacheBudget(
-                         budget->capacity_bytes, budget->staging_capacity_bytes)
-                         ? std::string{}
-                         : "--cache-disk is disabled";
-            });
-      };
+  const auto add_disk_cache = [&config, backend](const char* name,
+                                                 bool staging) {
+    config.Add(
+        name,
+        [backend, staging] {
+          const auto budget = backend->DiskCacheBudget();
+          return json::Value(budget.has_value()
+                                 ? (staging ? budget->staging_capacity_bytes
+                                            : budget->capacity_bytes)
+                                 : std::size_t{0});
+        },
+        [backend, staging](const json::Value& value) -> std::string {
+          const std::size_t parsed = value.as_size(0);
+          if (!value.is_number() || parsed == 0) {
+            return "value must be a positive integer";
+          }
+          auto budget = backend->DiskCacheBudget();
+          if (!budget.has_value()) {
+            return "--cache-disk is disabled";
+          }
+          (staging ? budget->staging_capacity_bytes : budget->capacity_bytes) =
+              parsed;
+          return backend->UpdateDiskCacheBudget(budget->capacity_bytes,
+                                                budget->staging_capacity_bytes)
+                     ? std::string{}
+                     : "--cache-disk is disabled";
+        });
+  };
   add_disk_cache("cache-disk-bytes", false);
   add_disk_cache("cache-disk-staging-bytes", true);
 }
@@ -846,7 +849,8 @@ void PrintServeHelp(std::string_view program_name,
         "Prompt tokens per Flash-Next prefill pass (default: 8192)", "Model",
         &prefill_batch_tokens);
     parser.AddOption("", "--max-pending", "N",
-                     "Maximum queued generation requests (default: 16)",
+                     "Maximum queued generation requests; 0 rejects when every "
+                     "session is busy (default: 16)",
                      "Scheduling", &max_pending_requests);
     parser.AddOption("", "--max-pending-per-client", "N",
                      "Maximum queued requests per client IP (default: 4)",
@@ -1384,7 +1388,6 @@ int RunServe(std::span<const char* const> args) {
     }
     if (max_tokens < -1 || max_tokens == 0 ||
         max_tokens > std::numeric_limits<std::uint32_t>::max() ||
-        max_pending_requests == 0 || max_pending_requests_per_client == 0 ||
         max_pending_requests_per_client > max_pending_requests ||
         max_output_bytes == 0 || max_buffered_output_bytes == 0 ||
         max_buffered_output_bytes_total == 0 ||

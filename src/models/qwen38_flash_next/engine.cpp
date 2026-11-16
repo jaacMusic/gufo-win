@@ -318,7 +318,8 @@ std::shared_ptr<Model> Model::Load(const std::string& model_path,
   /* initialize expert caching pool for Q8_0 tensor residency.
        (full unit setup and budget integration deferred to follow-up task). */
   m->pool_ = NULL;
-  (void)m->pool_; /* silencing unused warning; pool is part of model state for future use */
+  (void)m->pool_; /* silencing unused warning; pool is part of model state for
+                     future use */
   return m;
 }
 

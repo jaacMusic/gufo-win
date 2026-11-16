@@ -28,10 +28,12 @@ $cache = if ($env:HF_HUB_CACHE) { $env:HF_HUB_CACHE }
 $snapshots = @(Get-ChildItem (Join-Path $cache "models--unsloth--Qwen3.8-Flash-Next-GGUF\snapshots") `
   -Directory -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending)
 $target = "UD-Q4_K_XL\Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf"
+$lastShard = "UD-Q4_K_XL\Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf"
 $mtpFile = "MTP\mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf"
 if (-not $Model) {
-  $snap = $snapshots | Where-Object { (Test-Path (Join-Path $_.FullName $target)) -and (Test-Path (Join-Path $_.FullName $mtpFile)) } |
-    Select-Object -First 1
+  # Newest snapshot with every shard (a partial download keeps only 00001) and the sidecar.
+  $snap = $snapshots | Where-Object { (Test-Path (Join-Path $_.FullName $target)) -and (Test-Path (Join-Path $_.FullName $lastShard)) -and
+    (Test-Path (Join-Path $_.FullName $mtpFile)) } | Select-Object -First 1
   if (-not $snap) { throw "UD-Q4_K_XL + shared MTP not found under $cache" }
   $Model = Join-Path $snap.FullName $target
 }

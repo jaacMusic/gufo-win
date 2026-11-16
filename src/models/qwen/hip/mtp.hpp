@@ -148,7 +148,7 @@ private:
 };
 
 struct QwenMtpGpuDraftConfig {
-  std::uint32_t max_context{4096};
+  std::uint32_t max_context{32768};
   std::uint32_t max_draft_tokens{4};
   models::qwen::vision::DeviceInput* vision_input{nullptr};
 };

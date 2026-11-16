@@ -108,7 +108,7 @@ Path names are shared, so each row is a diff in our tree, not a missing file.
 | Stable boundary capture | prefill stops at the boundary, then a separate pass | captured inside the final prefill pass when it lands within 8 tokens of the batch end; the batch may carry up to 128 tokens past a 4,096 chunk |
 | Tool-turn replay | arguments parsed from JSON and re-rendered by the template | typed argument values rendered the way the reference templates' `tojson` does (and Responses namespaces flattened) so a replayed call reproduces the generated tokens and its checkpoint still matches |
 | Eviction policy | byte budget plus entry count | purpose ranking (retry / history / continuation / branch point); retry copies may not displace the last useful checkpoint of a prefix family; a shared prefix two conversations diverge after is never treated as covered |
-| Operator control | `GUFO_CACHE_RAM_GB` / `--cache-ram-gb` hard-set (75% of available RAM default), fitted intermediate checkpoint | `--cache-ram-bytes`, `GUFO_CACHE_HOST_FLOOR_MB`, `GUFO_CACHE_REMOVAL_LOG`; a release profile with separate `subagents` values (`--sessions 4`, `--context 131072`, `--prefill-chunk 512`, `--mtp-draft-vocab latin`) |
+| Operator control | `GUFO_CACHE_RAM_GB` / `--cache-ram-gb` hard-set (room below 75% of total RAM by default), fitted intermediate checkpoint | `--cache-ram-bytes`, `GUFO_CACHE_HOST_FLOOR_MB`, `GUFO_CACHE_REMOVAL_LOG`; a release profile with separate `subagents` values (`--sessions 4`, `--context 131072`, `--prefill-chunk 512`, `--mtp-draft-vocab latin`) |
 
 Snapshot payload is not the constraint to solve first: per Bubo's own
 measurements a Flash-Next checkpoint is about 0.5 GB at 5k tokens, so 128
@@ -139,7 +139,7 @@ records only make sense behind a byte budget, which their defaults do
    to the re-run: the snapshot reservation charges about 36 KB per prompt token
    (12 full-attention layers, 2 KV heads, 256-wide keys and values in fp16,
    plus the indexer), so 4.8 GB at 131k tokens and 9.7 GB at the native 262k,
-   against a RAM budget of three quarters of `MemAvailable` measured after the
+   against a RAM budget of the room below 75% of total RAM measured after the
    weights load. Read the snapshot events before blaming the hit rate on matching.
 3. **Done: a warm turn checkpoints its own stable boundary.** Only the
    pre-framing boundary was ever reusable, for a tokenizer reason: a checkpoint
@@ -164,9 +164,18 @@ records only make sense behind a byte budget, which their defaults do
    replayed call rather than at its end.
 5. **Intermediate grid checkpoints** are implemented: when the stable boundary
    exceeds the budget, prefill stops once at the largest prefix below 90 % of it
-   and publishes that checkpoint before continuing. The budget defaults to 75%
-   of available RAM (`GUFO_CACHE_RAM_GB` or `--cache-ram-gb` hard-sets it,
-   bounded by available memory). On UD-Q4_K_XL with a 126,024-token prompt, the
+   and publishes that checkpoint before continuing. The budget defaults to the room below 75%
+   of total RAM at load completion **less what the process already holds**
+   (sampled once and cached: re-deriving it as the pool fills would shrink the
+   budget under the pool and evict in a loop, and the model weights alone are
+   several GiB on top). `GUFO_CACHE_RAM_GB` or `--cache-ram-gb` hard-sets the
+   pool size instead, bounded by available memory; `0` keeps the automatic
+   value. The same knob is live at runtime:
+   `POST /admin/config {"cache-ram-gb": N}` — the cache re-reads the budget at
+   each snapshot admission (`RefreshCapacity`), so a lower value evicts the
+   oldest checkpoints as traffic continues, and `0` restores the automatic
+   budget. Verify a running engine with `GET /metrics` →
+   `gufo_prompt_state_budget_bytes`. On UD-Q4_K_XL with a 126,024-token prompt, the
    default retained the 126,017-token boundary (3.58 GB); the next turn re-read
    30 tokens and reached its first token in 0.69 s instead of re-reading 126,047
    tokens in 85.5 s. At a 3 GiB budget the 126K boundary needs 3.58 GB and is

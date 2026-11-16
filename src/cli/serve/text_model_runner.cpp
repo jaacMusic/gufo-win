@@ -1536,6 +1536,10 @@ std::size_t TextRunnerPool::capacity() const noexcept {
   return impl_->cache.capacity();
 }
 
+std::size_t TextRunnerPool::free_sessions() const noexcept {
+  return impl_->cache.available_states();
+}
+
 std::optional<TextRunnerDiskCacheBudget> TextRunnerPool::disk_cache_budget()
     const {
   if (impl_->disk_store == nullptr) {

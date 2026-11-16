@@ -138,7 +138,7 @@ public:
 
   [[nodiscard]] static std::unique_ptr<QwenDFlashGpuExecutor> Create(
       std::shared_ptr<const QwenDFlashGpuModel> model,
-      std::uint32_t max_context = 4096, std::string* error_msg = nullptr);
+      std::uint32_t max_context = 32768, std::string* error_msg = nullptr);
 
   void Reset() noexcept;
 
@@ -212,7 +212,7 @@ private:
                      std::size_t output_size, std::size_t input_size);
 
   std::shared_ptr<const QwenDFlashGpuModel> model_;
-  std::uint32_t max_context_{4096};
+  std::uint32_t max_context_{32768};
   std::uint32_t injected_context_len_{0};
   std::uint32_t history_capacity_{0};
   std::uint32_t injection_capacity_{0};
@@ -252,7 +252,7 @@ private:
 };
 
 struct QwenDFlashGpuDraftConfig {
-  std::uint32_t max_context{4096};
+  std::uint32_t max_context{32768};
   std::uint32_t max_draft_tokens{7};
   speculative::DFlashDraftPolicy policy{
       speculative::DFlashDraftPolicy::kAdaptive};

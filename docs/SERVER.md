@@ -218,16 +218,19 @@ the engine's whole host footprint stays inside 75% of total RAM. Set
 `GUFO_CACHE_RAM_GB=<gigabytes>` before starting the server, or pass
 `--cache-ram-gb <gigabytes>`, to hard-set a different budget; the option wins
 over the environment. An explicit value is still bounded by that available
-memory, and `0` keeps the automatic 65%.
+memory, and `0` keeps the automatic 75%.
 When the stable boundary cannot fit, prefill retains one intermediate checkpoint
 at the largest prefix below 90% of the budget, so a long session moves its reuse
 point forward instead of pinning the oldest checkpoint. A disk store that can
 stage the boundary makes that grid unnecessary: restoring the full boundary from
 disk is cheaper than restoring a partial grid and prefilling the gap, so no grid
-is captured then. At 124K prompt tokens with a 3 GiB tier and 3.5 GiB staging the
-boundary (3.26 GB) reached the disk store and RSS settled at 0.74 GiB; the next
-turn restored it in 2.75 s. A 1 GiB staging limit refused that boundary and
-retained a 2.7 GiB grid at 109,676 tokens: 3.5 GiB RSS and 9.43 s.
+is captured then. It also keeps the boundary reachable in a live process, since a
+snapshot hit short-circuits the disk lookup. At 120,859 prompt tokens with a
+3 GiB tier and 3.5 GiB staging the boundary (3.2 GB) is restored from disk in
+about 3.3 s at 0.70 GiB RSS; a second conversation in the same process restores
+it too, in 3.25 s at 0.77 GiB, where v0.6.0 hit its grid first and took 14.10 s
+at 3.54 GiB. The automatic 768 MiB staging limit refuses that boundary and
+retains a 2.9 GB grid at 101,227 tokens: 3.54 GiB RSS and 13.7 s.
 Snapshot boundaries larger than the budget are skipped without evicting the
 retained prefix. The automatic staging limit still derives from the budget but stays
 capped at 1 GiB; set `--cache-disk-staging-bytes` explicitly to stage a larger

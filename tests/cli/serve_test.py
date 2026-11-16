@@ -59,7 +59,7 @@ def main():
     assert "-1 = until EOS or context full" in help_text
     assert "Path to GGUF model file (required)" in help_text
     assert "8589934592" in help_text
-    assert "0 = auto, at most 1 GiB and 1/8 available RAM" in help_text
+    assert "0 = automatic: 75% of total RAM minus current usage" in help_text
     check(["bench", "--help"], 0, "Path to GGUF model file (required)")
     for args in (["serve"], ["serve", "llm"], ["bench"],
                  ["serve", "llm", "--model", ""], ["bench", "--model", ""]):

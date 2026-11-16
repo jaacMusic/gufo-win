@@ -1,9 +1,10 @@
 #pragma once
 
 #include <hip/hip_fp16.h>
+
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
-#include <algorithm>
 
 namespace gufo::hip::ops {
 
@@ -17,10 +18,10 @@ namespace gufo::hip::ops {
 // Q: [batch*n_heads, seq_len_q, dim], K: [batch*n_heads, seq_len_k, dim]
 // out: [batch*n_heads, seq_len_q, seq_len_k] pre-softmax scores
 // scale_f32 = 1.0f / sqrtf(dim)
-__device__ float* attention_scores(
-    float* out, const float* Q, const float* K, std::size_t batch,
-    std::size_t n_heads, std::size_t dim, std::size_t seq_len_q,
-    std::size_t seq_len_k, float scale_f32) {
+__device__ float* attention_scores(float* out, const float* Q, const float* K,
+                                   std::size_t batch, std::size_t n_heads,
+                                   std::size_t dim, std::size_t seq_len_q,
+                                   std::size_t seq_len_k, float scale_f32) {
   for (std::size_t b = 0; b < batch; ++b) {
     for (std::size_t h = 0; h < n_heads; ++h) {
       const auto q_base = Q + (b * n_heads + h) * seq_len_q * dim;
@@ -55,7 +56,8 @@ __device__ void softmax(float* out, const float* in, std::size_t size,
     for (std::size_t i = 0; i < size; ++i) {
       m = fmaxf(m, in[b * size + i]);
     }
-    if (max_val) max_val[b] = m;
+    if (max_val)
+      max_val[b] = m;
 
     // Exponentiate and normalize
     float sum = 0.0f;
@@ -80,7 +82,8 @@ __device__ void softmax(float* out, const float* in, std::size_t size,
 // Modifies scores in-place; indices output if idx != nullptr.
 __device__ void topk_scores(float* scores, std::size_t k, std::size_t size,
                             int* indices) {
-  if (k >= size) return;  // keep all entries
+  if (k >= size)
+    return;  // keep all entries
 
   // Partial selection: for each row, move top-k to the front
   for (std::size_t b = 0; b < (size / 32 + 1); ++b) {  // simplified: one row
@@ -91,7 +94,8 @@ __device__ void topk_scores(float* scores, std::size_t k, std::size_t size,
         std::size_t jj = b * size + j;
         if (scores[jj] > scores[ii]) {
           std::swap(scores[ii], scores[jj]);
-          if (indices) std::swap(indices[ii], indices[jj]);
+          if (indices)
+            std::swap(indices[ii], indices[jj]);
         }
       }
     }
@@ -111,19 +115,20 @@ __device__ void topk_scores(float* scores, std::size_t k, std::size_t size,
 // out: [batch*n_heads, seq_len_q, head_dim]
 // ———————————————————————————————————————————————————————————————————————
 
-__device__ float* attention_output(
-    float* out, const float* scores, const float* V,
-    std::size_t batch, std::size_t n_heads, std::size_t seq_len_q,
-    std::size_t head_dim) {
+__device__ float* attention_output(float* out, const float* scores,
+                                   const float* V, std::size_t batch,
+                                   std::size_t n_heads, std::size_t seq_len_q,
+                                   std::size_t seq_len_k,
+                                   std::size_t head_dim) {
   for (std::size_t b = 0; b < batch; ++b) {
     for (std::size_t h = 0; h < n_heads; ++h) {
-      const auto s_base = scores + (b * n_heads + h) * seq_len_q * /*seq_len_k*/ 64; // simplified
-      const auto v_base = V + (b * n_heads + h) * 64 * head_dim;  // simplified: seq_len_k=64
+      const auto s_base = scores + (b * n_heads + h) * seq_len_q * seq_len_k;
+      const auto v_base = V + (b * n_heads + h) * seq_len_k * head_dim;
       auto o_base = out + (b * n_heads + h) * head_dim;
       for (std::size_t i = 0; i < head_dim; ++i) {
         float acc = 0.0f;
-        for (std::size_t j = 0; j < 64; ++j) {  // simplified: seq_len_k=64
-          acc += s_base[i * 64 + j] * v_base[j * head_dim + i];
+        for (std::size_t j = 0; j < seq_len_k; ++j) {
+          acc += s_base[i * seq_len_k + j] * v_base[j * head_dim + i];
         }
         o_base[i] = acc;
       }

@@ -64,12 +64,27 @@ struct ContinuationCache::Impl {
   mutable std::mutex mutex;
   std::condition_variable condition;
   std::uint64_t clock{0};
-  std::size_t snapshot_capacity_bytes{0};
+  mutable std::size_t snapshot_capacity_bytes{0};
   std::size_t retained_snapshot_bytes{0};
   std::size_t reserved_snapshot_bytes{0};
 
   [[nodiscard]] bool snapshot_mode() const noexcept {
     return static_cast<bool>(snapshot_support.restore);
+  }
+
+  /// Re-read the capacity its owner reports. `cache-ram-gb` is settable at
+  /// runtime (`POST /admin/config`), and a pool that kept its construction-time
+  /// size would ignore the operator until the process restarted. Eviction
+  /// re-checks the used bytes, so a smaller cap trims on the next admission.
+  void RefreshCapacity() const {
+    if (!snapshot_mode() || !snapshot_support.capacity_bytes) {
+      return;
+    }
+    try {
+      snapshot_capacity_bytes = snapshot_support.capacity_bytes();
+    } catch (...) {
+      // A capacity query must never fail a request.
+    }
   }
 };
 
@@ -263,11 +278,7 @@ ContinuationCache::ContinuationCache(std::size_t capacity,
     impl_->entries.push_back(std::move(entry));
   }
   if (impl_->snapshot_mode() && impl_->snapshot_support.capacity_bytes) {
-    try {
-      impl_->snapshot_capacity_bytes = impl_->snapshot_support.capacity_bytes();
-    } catch (...) {
-      impl_->snapshot_capacity_bytes = 0;
-    }
+    impl_->RefreshCapacity();
   }
 }
 
@@ -480,8 +491,16 @@ std::size_t ContinuationCache::capacity() const noexcept {
   return impl_->state_count;
 }
 
+std::size_t ContinuationCache::available_states() const noexcept {
+  const std::lock_guard<std::mutex> lock(impl_->mutex);
+  return static_cast<std::size_t>(std::count_if(
+      impl_->entries.begin(), impl_->entries.end(),
+      [](const std::unique_ptr<Entry>& entry) { return entry->available; }));
+}
+
 std::size_t ContinuationCache::snapshot_capacity_bytes() const noexcept {
   const std::lock_guard<std::mutex> lock(impl_->mutex);
+  impl_->RefreshCapacity();
   return impl_->snapshot_capacity_bytes;
 }
 
@@ -548,6 +567,7 @@ bool ContinuationCache::ReserveSnapshot(std::size_t source_index,
   bool admitted = false;
   {
     const std::lock_guard<std::mutex> lock(impl_->mutex);
+    impl_->RefreshCapacity();
     const auto make_event = [&](SnapshotEventAction action,
                                 SnapshotEventReason reason, std::size_t bytes,
                                 std::size_t tokens) {
@@ -710,6 +730,7 @@ std::size_t ContinuationCache::Commit(
   std::size_t retained_bytes = 0;
   {
     const std::lock_guard<std::mutex> lock(impl_->mutex);
+    impl_->RefreshCapacity();
     if (reservation_bytes <= impl_->reserved_snapshot_bytes) {
       impl_->reserved_snapshot_bytes -= reservation_bytes;
     } else {

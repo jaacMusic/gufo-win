@@ -245,7 +245,7 @@ template<typename T>
 class QwenGpuArena {
 public:
   explicit QwenGpuArena(
-      const core::ModelConfig& config, std::uint32_t max_context = 4096,
+      const core::ModelConfig& config, std::uint32_t max_context = 32768,
       QwenExecutionPolicy policy = QwenExecutionPolicy::Production());
   ~QwenGpuArena();
 
@@ -396,18 +396,18 @@ class QwenGpuExecutor {
 public:
   explicit QwenGpuExecutor(
       std::shared_ptr<const QwenGpuModel> model,
-      std::uint32_t max_context = 4096,
+      std::uint32_t max_context = 32768,
       QwenExecutionPolicy policy = QwenExecutionPolicy::Production());
   ~QwenGpuExecutor();
 
   [[nodiscard]] static std::unique_ptr<QwenGpuExecutor> Create(
       std::shared_ptr<const QwenGpuModel> model,
-      std::string* error_msg = nullptr, std::uint32_t max_context = 4096,
+      std::string* error_msg = nullptr, std::uint32_t max_context = 32768,
       QwenExecutionPolicy policy = QwenExecutionPolicy::Production());
 
   [[nodiscard]] static std::unique_ptr<QwenGpuExecutor> CreateFromGguf(
       std::shared_ptr<const core::GgufReader> reader,
-      std::string* error_msg = nullptr, std::uint32_t max_context = 4096,
+      std::string* error_msg = nullptr, std::uint32_t max_context = 32768,
       QwenExecutionPolicy policy = QwenExecutionPolicy::Production());
 
   /// Generates tokens auto-regressively on GPU with streaming callback.

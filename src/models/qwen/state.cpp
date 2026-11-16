@@ -10,7 +10,7 @@ QwenKvCache::QwenKvCache(std::uint32_t num_layers, std::uint32_t num_kv_heads,
                          std::uint32_t max_context, std::uint32_t head_dim)
     : num_layers_(num_layers),
       num_kv_heads_(num_kv_heads),
-      max_context_(std::min(max_context, 8192U)),
+      max_context_(max_context),
       head_dim_(head_dim) {
   const std::size_t total_elements = static_cast<std::size_t>(num_layers_) *
                                      num_kv_heads_ * max_context_ * head_dim_;
@@ -68,7 +68,8 @@ QwenScratchArena::QwenScratchArena(const core::ModelConfig& config) {
   const std::size_t kv_size =
       static_cast<std::size_t>(config.num_key_value_heads) * config.head_dim;
   const std::size_t max_context =
-      std::min(config.context_length > 0 ? config.context_length : 4096, 8192U);
+      config.context_length > 0 ? config.context_length
+                                : 32768;  // default to 32K, supports up to 256K
   const std::size_t intermediate_size = config.intermediate_size;
   const std::size_t vocab_size = config.vocab_size;
 

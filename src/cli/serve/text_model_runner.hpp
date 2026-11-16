@@ -512,6 +512,8 @@ public:
 
   [[nodiscard]] const TextModelRunner& runner() const noexcept;
   [[nodiscard]] std::size_t capacity() const noexcept;
+  /// States between the pool and the continuation cache not held by a lease.
+  [[nodiscard]] std::size_t free_sessions() const noexcept;
   /// Null when the pool runs without a persistent continuation store.
   [[nodiscard]] std::optional<TextRunnerDiskCacheBudget> disk_cache_budget()
       const;

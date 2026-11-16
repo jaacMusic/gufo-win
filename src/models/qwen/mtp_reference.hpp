@@ -36,12 +36,12 @@ class QwenMtpReference final {
 public:
   [[nodiscard]] static std::unique_ptr<QwenMtpReference> Create(
       std::shared_ptr<const core::GgufReader> reader,
-      std::uint32_t max_context = 4096, std::string* error_msg = nullptr);
+      std::uint32_t max_context = 32768, std::string* error_msg = nullptr);
 
   [[nodiscard]] static std::unique_ptr<QwenMtpReference> CreateWithTiedWeights(
       std::shared_ptr<const core::GgufReader> reader,
       std::shared_ptr<const core::GgufReader> tied_reader,
-      std::uint32_t max_context = 4096, std::string* error_msg = nullptr);
+      std::uint32_t max_context = 32768, std::string* error_msg = nullptr);
 
   void Reset() noexcept;
 

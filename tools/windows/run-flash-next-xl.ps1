@@ -21,6 +21,9 @@ param(
   # effort while --think is off, so callers gate on -Think.
   [ValidateSet("auto", "minimal", "low", "medium", "high", "xhigh", "max")] [string]$ReasoningEffort = "auto",
   [ValidateSet("mtp", "mtp3", "off")] [string]$Draft = "mtp",
+  # Max speculative drafts per verification step (gufo --draft-tokens).
+  # 0 = engine default (7); mtp3 keeps its 3 unless this is set.
+  [ValidateRange(0, 64)] [int]$DraftTokens = 0,
   [switch]$Greedy,
   # Latin draft vocab: English/code only; non-Latin just loses the MTP speedup.
   [switch]$DraftVocab,
@@ -139,8 +142,12 @@ $sampling = if ($Think -eq "on") {
 if ($Greedy) { $sampling = @("--temperature", "0") }
 $speculative = switch ($Draft) {
   "mtp" { @("--speculative", "mtp", "--mtp-model", $MtpModel) }
-  "mtp3" { @("--speculative", "mtp", "--mtp-model", $MtpModel, "--draft-tokens", "3") }
+  "mtp3" { @("--speculative", "mtp", "--mtp-model", $MtpModel) }
   "off" { @() }
+}
+$draftTokens = if ($DraftTokens -gt 0) { $DraftTokens } elseif ($Draft -eq "mtp3") { 3 } else { 0 }
+if ($Draft -ne "off" -and $draftTokens -gt 0) {
+  $speculative += @("--draft-tokens", "$draftTokens")
 }
 if ($Draft -ne "off" -and $Mode -eq "serve") {
   if ($DraftVocab) { $speculative += @("--mtp-draft-vocab", "latin") }

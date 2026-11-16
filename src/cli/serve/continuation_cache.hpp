@@ -230,6 +230,8 @@ public:
       std::span<const ContinuationInputPrefix> input_prefixes = {});
 
   [[nodiscard]] std::size_t capacity() const noexcept;
+  /// Leasable states: capacity minus leases currently out.
+  [[nodiscard]] std::size_t available_states() const noexcept;
   [[nodiscard]] std::size_t snapshot_capacity_bytes() const noexcept;
   [[nodiscard]] std::size_t retained_snapshot_bytes() const noexcept;
   [[nodiscard]] std::size_t reserved_snapshot_bytes() const noexcept;

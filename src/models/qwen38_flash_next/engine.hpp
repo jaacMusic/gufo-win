@@ -163,7 +163,7 @@ private:
   [[nodiscard]] bool InDraftSubset(std::int32_t token) const;
   /// Expert caching pool for Q8_0 tensor residency management.
   /// (defined in src/core/pool.h; full integration deferred to follow-up).
-  void *pool_;
+  void* pool_;
 
   friend class Session;
 };

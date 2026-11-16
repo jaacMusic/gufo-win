@@ -1683,6 +1683,12 @@ void TestRuntimePolicyUpdate() {
              snapshot.request_timeout == std::chrono::milliseconds{1234},
          "an updated policy is what later snapshots report");
 
+  // Raising the output budget must not rewrite the buffered high-water mark.
+  policy.max_buffered_output_bytes_total = 512 * 1024;
+  scheduler->UpdatePolicy(policy);
+  Expect(scheduler->max_buffered_output_bytes() == 0,
+         "a raised output budget leaves the buffered peak alone");
+
   const auto expect_rejected = [&](TextSchedulerPolicy invalid) {
     bool rejected = false;
     try {

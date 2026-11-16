@@ -146,7 +146,8 @@ public:
   /// Resizes the continuation disk cache; false when the cache is disabled.
   bool UpdateDiskCacheBudget(std::size_t capacity_bytes,
                              std::size_t staging_capacity_bytes);
-  [[nodiscard]] std::optional<TextRunnerDiskCacheBudget> DiskCacheBudget() const;
+  [[nodiscard]] std::optional<TextRunnerDiskCacheBudget> DiskCacheBudget()
+      const;
 
   /// Plain text completion (no chat framing).
   Result complete(std::string_view prompt, std::size_t max_tokens,
