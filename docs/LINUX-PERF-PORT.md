@@ -2879,3 +2879,46 @@ changes nothing.
 Treat exact cross-pipeline logit equality as unreachable until the batch path
 shares the serial kernels; same-pipeline comparisons (`mixed_batch_exact`)
 remain meaningful.
+
+## Port 2026-11-17
+
+Swept `800ce328..842295e4` (upstream v0.35.0, 9 commits). One port, rest N/A.
+
+### [x] #1236 - fuse the vision encoder attention into one WMMA kernel
+
+Upstream: `6bd1051f` (touches only `src/families/qwen/vision/encoder.hip`).
+Replaces the Softmax kernel + two hipblasGemmStridedBatchedEx passes +
+AttentionRows with one `FusedAttention` kernel: BF16 WMMA QK
+(`__builtin_amdgcn_wmma_f32_16x16x16_bf16_w32`), online softmax over 32-key
+tiles, FP32 PV accumulation, one block per 128 queries x head, head dim 72
+zero-padded to 80. Drops the scores/probabilities scratch allocations.
+
+Port notes: applied verbatim into `src/models/qwen/vision/encoder.hip`; the
+regions it rewrites were byte-identical to upstream's parent (fork divergence
+is confined to the weight-upload path). Verified against the pre-port build
+with `qwen_vision_serving_test` (flash model, MTP, generated gradient images
+in `%TEMP%`): AR generations identical on all requests, append/snapshot
+oracles exact, image_cache behavior unchanged. The MTP concurrency tail of
+that suite is flaky on this host for both builds (greedy controller picks a
+different depth under batch-cost timing; the test comments acknowledge it),
+so it is not the gate - the AR/oracle comparisons are.
+
+Windows fit: pure HIP, no new dependencies.
+
+### N/A this window
+
+- `842295e4` #1251 demand-mapped session state + RAM-cache lending: needs
+  `src/cache/`, `state_page_pool`, `component_text_cache` - absent in fork.
+- `6ecfa504` #1249 host buffers vs compaction: `host_allocations.{cpp,hpp}`
+  absent; Windows always falls back to hipHostMalloc anyway.
+- `9a198f46` #1237 NPU Q8Gemm one-job + tiled host attention: upstream NPU
+  track absent; fork keeps its own XFlash-Next staging.
+- `a59df291` #1224 prompt checkpoints in prefill (watch item from 11-14):
+  checkpoint stack absent -> closed as N/A.
+- `3844dafd` #1253 cache tests, `0260e116` #1252 release 0.35.0,
+  `38039464` #1239 CI drafts, `2cf36518` #1238 CI XRT lib order: no fork
+  surface.
+
+Community (pushed_at + commit scan since 11-13): strata/basalt/infernix active
+but no gfx1151/HIP content (basalt grepped: nothing); bubo, qwenllama.cpp
+unchanged. Watch list unchanged: #893 (8-bit K/V rows), #1116 (DSpine).
