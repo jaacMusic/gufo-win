@@ -2922,3 +2922,41 @@ Windows fit: pure HIP, no new dependencies.
 Community (pushed_at + commit scan since 11-13): strata/basalt/infernix active
 but no gfx1151/HIP content (basalt grepped: nothing); bubo, qwenllama.cpp
 unchanged. Watch list unchanged: #893 (8-bit K/V rows), #1116 (DSpine).
+
+## Sweep 2026-11-17 (upstream `842295e4..f6346864`, 3 commits)
+
+One port, rest out of scope.
+
+### [x] #1256 - return 400 `invalid_audio_input` for undecodable audio
+
+Upstream: `d409c268`. `Transcribe` used to report a `DecodeWav` failure as
+the same opaque error as a model failure, so a client uploading a non-WAV got
+500. The request now carries a flag from the decode throw to the caller.
+
+Fork mapping: upstream's `src/ext/asr.hpp` struct is this fork's
+`src/models/qwen3_asr/transcription.hpp::TranscriptionResult`, so the port is
+`bool invalid_audio{false}` there, set before the `throw` in
+`hip/transcription_runtime.cpp` and copied back after `*result = {}` in the
+catch. `audio_asr_api.cpp` uses it in the streaming `log->error_code` ternary
+and for a 400 `invalid_audio_input` before the 500 `transcription_failed`.
+`asr_websocket.cpp` and the `transcribe` CLI need no change (the flag is inert
+where HTTP status does not exist).
+
+Verified with `qwen3_asr_audio_api_test` in `build/cpu-test`, extended with
+`TestFailures` (400 body code for non-stream, `invalid_audio_input` on the
+stream log and SSE event, and 500 `transcription_failed` unchanged when the
+flag is clear): PASS.
+
+### N/A this window
+
+- `f6346864` #1258 share session state across more sessions: touches
+  `component_text_cache`, `src/mem/account.*`, `state_region`, `state_page_pool`
+  (the cache subsystem this fork does not have; same disposition as #1104,
+  #1224, #1251).
+- `10c578aa` #1259 ASR FLAC/MP3/Ogg uploads: new feature (decoders in
+  `audio.hpp`, new `qwen3_asr_decode_test`), outside a fixes/perf sweep. Worth
+  a look only if the fork wants those formats.
+
+Community: no new scan this window (the 11-17 scan in the entry above found
+nothing gfx1151-portable). Watch list unchanged: #893 (8-bit K/V rows), #1116
+(DSpine). Next sweep from `f6346864`.
