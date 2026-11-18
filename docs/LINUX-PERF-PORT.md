@@ -10,11 +10,26 @@ below, and triage only fixes and performance work applicable to this fork.
 No plan-mode restrictions apply now. Measure every kernel change with the same
 TheRock ROCm 10.0.0 / clang 23 toolchain used for the Windows build.
 
+## Port strategy
+
+This engine is a fork that cherry-picks changes instead of tracking upstream
+(or any other repo) commit-for-commit. Only changes that give this engine a
+concrete benefit are ported: a measured performance win, or a fix for a bug
+we actually hit. Features with no local use, hardware support for other
+GPUs, and speculative cleanup are skipped. Anything ported must pass the
+usual gates (targeted test, bit-identity vs the pre-change binary where
+feasible, A/B bench for perf claims) and is recorded in a dated section
+below. The fork deliberately lags upstream main; a port whose diff depends
+on upstream infrastructure we do not have is rejected as too costly until
+that trade-off is revisited explicitly.
+
 ## Sources
 
 - Upstream: <https://github.com/gufo-org/gufo>
 - Review clone: `%TEMP%\opencode\gufo-upstream` (bare clone works; fetch +
-  `git show <sha>`). Last swept upstream `8c332a02` (2026-11-08) on 2026-11-08,
+  `git show <sha>`). Last swept upstream `f6346864` (2026-11-18) on 2026-11-18:
+  no new upstream commits since `8c332a02`; open-PR triage in the 2026-11-18
+  section below (893 rejected: 960-commit infrastructure gap),
   see "Upstream sweep 2026-10-30"
 - Local base: upstream `fee9d2a` (PR #314 fix)
 - Local Windows HEAD at review: `c85aada`
