@@ -2960,3 +2960,87 @@ flag is clear): PASS.
 Community: no new scan this window (the 11-17 scan in the entry above found
 nothing gfx1151-portable). Watch list unchanged: #893 (8-bit K/V rows), #1116
 (DSpine). Next sweep from `f6346864`.
+
+## Prefill re-baseline vs stock v0.35.0 (2026-11-17, Windows)
+
+The 2026-10-31 gap table (7% d0 / 13% d32K prefill deficit vs stock v0.24.0)
+was stale: ~8 prefill ports landed since, but so did upstream releases.
+Downloaded the stock v0.35.0 Windows binary (`0260e116`) and ran one
+interleaved A/B sitting (3 pairs, `bench -p 512,2048,4096 -n 64 -d 0,16384
+-r 2 --temperature 0`, fork = `build/release/gufo.exe` at `99f1d8b8`,
+engine otherwise idle):
+
+| cell | fork | stock v0.35.0 | delta |
+| --- | --- | --- | --- |
+| pp512 | 1188 | 1225 | −3.0% |
+| pp2048 | 1685 | 1767 | −4.6% |
+| pp4096 | 1661 | 1729 | −3.9% |
+| pp512 @d16384 | 1031 | 1056 | −2.4% |
+| pp2048 @d16384 | 1474 | 1538 | −4.2% |
+| pp4096 @d16384 | 1584 | 1645 | −3.7% |
+
+(Per-rep numbers consistent; deltas exceed run spread everywhere except
+pp512 @d16384.) Decode stays ahead of stock as before. The old gap is mostly
+closed but a stable ~3-5% prefill deficit vs current stock remains.
+
+Triage: the 2026-11-08 reverted triple (#969/#958/#912) does not explain it —
+the deleted notes put the HC fusion at ≤+0.3% on batched *decode*, #958 at
+noise, #912 is a correctness fix. `GUFO_TRACE=1` cannot split prefill (one
+`verify` phase) and this host has no `rocprofv3`. The BLAS-runtime hypothesis
+was checked and killed on 2026-11-17: the fork's `rocblas.dll`/
+`libhipblaslt.dll`/`amdhip64_7.dll` (build/release, TheRock) are SHA-256
+**identical** to the ones stock v0.35.0 ships, so both binaries run the same
+GEMM runtime. Bench CLI defaults also match on the prefill path (help diff).
+The flag angle was killed too — this fork compiles with GNU-style `clang++`
+(WINDOWS-DEV "HIP build"), not clang-cl, so its `-ffast-math`/
+`-ffp-contract` options were always live and upstream #1215 (the `/clang:`
+prefix fix) is N/A. Two more environment hypotheses were measured and killed
+the same day: `GUFO_PLATFORM_TUNING=none` (all nine Windows-default switches
+off) matches `all` on pp2048/pp4096 within spread, and `GUFO_DECODE_COPY=off`
+(1.58 GiB of Q4_1 decode copies skipped) matches `balanced` likewise.
+
+The leading suspect was upstream, not local: #779 "masked 16-row prefill
+GEMM" merged 2026-10-28 (`1fc829ea`) but every fork sweep after that kept
+listing it "still open" and it was never ported. It was ported and measured
+(see the next section): bit-exact, no bench-cell movement — the deficit cause
+remains open.
+
+## Port of upstream #779 masked 16-row prefill GEMM (2026-11-18, Windows)
+
+Ported `1fc829ea` ("masked 16-row prefill GEMM", PR #779) from upstream. The
+patch applies clean with `git apply --exclude='docs/*'` (copy kept at
+`%TEMP%\opencode\779.patch`). It touches
+`src/models/qwen/hip/kernels/prefill_quant_gemm.hip`, the
+`small_batch_*.{hpp,hip}` family, `ops/gemm.hpp`, and
+`tests/models/qwen/hip/quant/q4kxl_quant_ops_test.cpp` (fork test needed a
+local `const FormatCase q4{Type::kQ4_K, "Q4_K"}` addition; one duplicated
+`(q5,11)` case dropped, one dropped `(q4,9)` case restored).
+
+What it does: K-quant small-batch prefill GEMM previously split 9-15-row
+calls (e.g. 8+1) into two launches reading the weights twice; the port adds
+a `valid_rows` mask so one 16-row pass serves the tail, weights read once.
+
+Gates:
+- Unit: `qwen_q4kxl_quant_ops_test` (gpu-test) PASSED, masked-16 exactness
+  mismatches = 0.
+- Bit-identity: baseline (pre-patch) vs patched exes, `bench --logit-eval`
+  decode/verify width-1 dumps SHA-256 identical (2 schedules, 0 files
+  differ). Prefill dumps >1 row are impossible in this bench (executor caps
+  `n_logits` at 8 without speculative MTP; pre-existing limitation, same on
+  baseline), so the 9-15-row path rests on the unit test's op-level
+  exactness.
+- A/B vs stock v0.35.0 (3 interleaved sittings, `-n 8 -r 2`): pp512/2048/
+  4096 @d0 and @d16384 all within noise of the pre-port numbers — fork still
+  ~3-5% behind stock. Expected: the bench prefill cells are multiples of 16
+  rows, so the dispatcher never takes the masked 9-15-row tail; those widths
+  arise in multi-request verify batches / adaptive widths, which `bench`
+  cannot isolate.
+
+Conclusion: keep the port (strict win for 9-15-row tails, bit-exact, no
+regression on any cell), but it was **not** the cause of the residual
+prefill deficit. The re-baseline triage above stands with #779 eliminated;
+remaining candidates are inside the 16-row-group path itself or scheduling,
+and need a real GPU profile (Linux host) to split further. Watch list for
+future ports unchanged: #893 (8-bit K/V rows), #1116 (DSpine).
+
+
