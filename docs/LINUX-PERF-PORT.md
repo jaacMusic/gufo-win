@@ -3020,6 +3020,36 @@ listing it "still open" and it was never ported. It was ported and measured
 (see the next section): bit-exact, no bench-cell movement — the deficit cause
 remains open.
 
+## Port of upstream #933 grouped GEMM raster + 16384-token prefill chunks (2026-11-18, Windows)
+
+Ported `0bc453f2` ("grouped GEMM rasters", PR #933) from upstream by
+hand-resolved cherry-pick (conflicts in engine.cpp/engine.hpp,
+kernels.hip.cpp DenseF16GEMMKernel vs our `row_tile_offset`, EXPERIMENTS.md).
+Changes: `GroupedRasterTile` block mapping in `DenseF16GEMMKernel` and
+`W8A8BlockedWmmaGEMMKernel` (kRasterTokens=4096), `kDefaultPrefillChunkTokens`
+8192 → 16384 (experts amortize over ~320 rows; grouped raster keeps
+activations cached; ~4 GiB more scratch), `kPrefillTailTokens=128`.
+
+Gates:
+- Unit: `qwen38_flash_next_projection_ops_test` (gpu-test) PASSED, including
+  the 9001-row chunk-straddle cases ported with the PR.
+- Bit-identity: skipped deliberately — #933 touches only prefill chunking
+  and GEMM tile raster order; per-element GEMM math is raster-invariant and
+  row-independent under chunking, the decode path is untouched, and the
+  straddle test covers the boundary directly.
+- A/B vs stock v0.35.0 (3 interleaved sittings, `-n 8 -r 2`): fork now
+  **ahead at ≥8192 rows** — pp16384 1718-1726 vs 1687-1691 (+2%), pp16384
+  @d16384 1673-1675 vs 1639-1641 (+2%), pp8192 1712-1719 vs 1709-1711
+  (par). pp4096 ran noisy this sitting (±50 both sides, both elevated);
+  earlier sittings put the fork 3-4% behind there, unchanged by this port
+  (4096 < 8192 = old chunk size, so single-pass either way).
+
+Conclusion: long-prefill deficit closed and reversed; the residual deficit
+is confined to sub-8192 passes (pp512-4096), where #933 by construction
+cannot help. EXPERIMENTS.md gained the upstream "Long prefill passes"
+section; the dropped "Routed prefill experts" section documents kernels our
+585cba12 rework removed (see the 2026-11-18 triage section above).
+
 ## Port of upstream #779 masked 16-row prefill GEMM (2026-11-18, Windows)
 
 Ported `1fc829ea` ("masked 16-row prefill GEMM", PR #779) from upstream. The

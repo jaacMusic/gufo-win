@@ -56,7 +56,10 @@ struct ModelOptions {
   /// pp4096, decode unchanged. Each chunk's n-gram gather doubles; next-chunk
   /// prefetch overlaps that read. Prefill logits do not depend on the chunk
   /// size (pre-budget queries always take the dense attention tiles).
-  static constexpr std::uint32_t kDefaultPrefillChunkTokens = 8192;
+  // 16,384-row default per upstream #933: experts amortize weight reads
+  // over ~320 rows; dense GEMMs keep activations cached via the 4,096-row
+  // grouped raster. Costs about 4 GiB more scratch.
+  static constexpr std::uint32_t kDefaultPrefillChunkTokens = 16384;
   std::uint32_t prefill_chunk_tokens = kDefaultPrefillChunkTokens;
   /// Optional MTP draft sidecar (`mtp-...-shared-*.gguf`). Empty leaves
   /// speculative decoding off.

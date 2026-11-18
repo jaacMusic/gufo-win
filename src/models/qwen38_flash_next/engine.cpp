@@ -78,6 +78,15 @@ std::size_t MtpTopBin(const MtpProposal& proposal) {
   return bin;
 }
 
+// gfx1151, served repository prompts: 16,384-row chunks give each of the
+// 512 routed experts about 320 rows instead of 80 at 4,096, so the gate/up
+// and down tiles decode each expert's weights for far more tokens:
+// 26.5K-token HTTP prompts +3%, about 4 GiB more scratch (upstream #933).
+// The dense GEMMs launch their tiles in 4,096-row groups (GroupedRasterTile)
+// so their activations stay cached. Prefill logits do not depend on the
+// chunk size (pre-budget queries always take the dense attention tiles).
+constexpr std::uint32_t kPrefillTailTokens = 128;
+
 void AssignError(std::string* error_msg, std::string_view message) {
   if (error_msg != nullptr) {
     *error_msg = message;
