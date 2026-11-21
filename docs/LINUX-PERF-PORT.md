@@ -3000,8 +3000,14 @@ closed but a stable ~3-5% prefill deficit vs current stock remains.
 
 Triage: the 2026-11-08 reverted triple (#969/#958/#912) does not explain it —
 the deleted notes put the HC fusion at ≤+0.3% on batched *decode*, #958 at
-noise, #912 is a correctness fix. `GUFO_TRACE=1` cannot split prefill (one
-`verify` phase) and this host has no `rocprofv3`. The BLAS-runtime hypothesis
+noise, #912 is a correctness fix. `GUFO_TRACE=1 GUFO_TRACE_LAYERS=1` does
+split a prefill pass (the earlier "one `verify` phase" note was wrong): a
+repeated pp2048 pass is 1,529 ms of `verify-body`, of which MoE 610 ms (40 %,
+router + shared + routed experts), DeltaNet 434 ms (28 %; `ph-gdnproj` 233,
+`ph-gdnscan` 112, `ph-gdnout` 89), combines and mixers 277 ms (18 %) and
+attention about 110 ms. This host has no `rocprofv3`, and stock v0.35.0
+prints no trace at all, so the split is fork-side only. The BLAS-runtime
+hypothesis
 was checked and killed on 2026-11-17: the fork's `rocblas.dll`/
 `libhipblaslt.dll`/`amdhip64_7.dll` (build/release, TheRock) are SHA-256
 **identical** to the ones stock v0.35.0 ships, so both binaries run the same
@@ -3087,5 +3093,265 @@ prefill deficit. The re-baseline triage above stands with #779 eliminated;
 remaining candidates are inside the 16-row-group path itself or scheduling,
 and need a real GPU profile (Linux host) to split further. Watch list for
 future ports unchanged: #893 (8-bit K/V rows), #1116 (DSpine).
+
+## Prefill down-projection tile map on the v3.1 weights (2026-11-18, Windows)
+
+The sub-8192 deficit reproduces on the shipped Dynamic v3.1 weights, at the
+same magnitudes as the older snapshot, so it is not a weight-file effect
+(`bench -n 16 -d 0 -r 3`, one engine at a time):
+
+| cell | stock v0.35.0 | fork | delta |
+| --- | ---: | ---: | ---: |
+| pp512 | 1,190.5 ± 8.0 | 1,155.6 ± 12.6 | −2.9 % |
+| pp1024 | 1,242.5 ± 46.6 | 1,165.2 ± 38.9 | −6.2 % |
+| pp2048 | 1,332.0 ± 1.8 | 1,263.6 ± 2.1 | −5.1 % |
+| pp4096 | 1,388.8 ± 1.0 | 1,332.8 ± 0.7 | −4.0 % |
+
+Stock v0.35.0 runs the same prefill route as this fork — WMMA paired gate/up,
+shared expert on a side stream, MMQ `_moe_pair_unique` only off the prefill
+path — with one structural difference: it serves the down projection from
+the same 128-token tile map as gate/up, where the fork builds a separate
+64-token map for down. Porting `case 128` into `RoutedF16Gemm` and pointing
+down at the pair map reproduced the recorded `--validate-prefill 512`
+signature exactly (rmse 0.784478, cosine 0.977355, max 4.63813) and moved
+nothing: pp512/1024/2048/4096 1,155.6/1,165.2/1,263.6/1,332.8 →
+1,143.1/1,155.8/1,264.4/1,342.7 tok/s, within spread apart from a
+possibly-real +0.7 % at 4,096 and −1 % at 512. Reverted; the 64-token down
+map stays.
+
+What is left is attribution: the fork-only phase split puts MoE at 40 % and
+DeltaNet at 28 % of a pass, but with no stock-side trace and no `rocprofv3`
+on Windows nothing inside those phases can be compared across the two
+binaries. The next real step is `rocprofv3` on the Linux host. The same-day
+llama.cpp forward rescan found nothing gfx1151-portable
+(`docs/LLAMA-CPP-PORT-202610.md`).
+
+## Basalt decode-speed review 2026-11-19
+
+`jesdga95/basalt` at `4596d63`, full source review rather than a commit sweep.
+Basalt is the closest sibling engine (same model family, CUDA sm_120, experts
+in system RAM) and its decode design is written up in
+`docs/precision/qwen38-flash-next.md` there. This fork already has most of its
+headline mechanisms in some form: native nextn MTP with adaptive width and
+confidence cuts, prompt lookup, Q8_1 activations into MMQ, W8A8 wave64 GEMMs,
+hipGraph decode capture, fused Q8 producers and the HC mixer, fast-sampling
+top-64, PLE disk streaming. Listed below is what it has and we do not, ranked
+by gain ÷ effort on one gfx1151 APU. Everything is exact unless marked LOSSY.
+
+Basalt's exactness gate is worth copying with any of these: 275 greedy prompts
+and a per-row logit hash, identical between `--spec 0` and the speculative
+path; lossy knobs are off by default, warn once at startup, and are printed as
+LOSSY by the bench.
+
+### [ ] int8 KV rows for the 12 full-attention layers
+
+Basalt stores K/V as int8 with one fp16 scale per 64 values and dequantizes at
+gather, so the attention kernels are untouched
+(`include/basalt/models/qwen4exp/kernels/kv_q8.hpp`). The fork's Flash-Next KV
+is F16 only (24,576 B/token), and upstream #893 was rejected in triage for its
+960-commit infrastructure gap, so the format has to be written here either
+way. Halving the per-token KV read is the largest decode lever left on a
+bandwidth-starved APU, and it grows with depth (tg128 is 51.6 at d8K and 27.4
+at d256K). Acceptance: identical greedy tokens on the haiku and 1,951-token
+prompts plus the logit hash, and a tg128 sweep at d0/8K/32K/131K.
+
+### [ ] Shape-fixed sum order, then batched decode windows
+
+The fork records that batched and single-row decode cannot be bit-identical
+(2026-11-16 entry). Basalt's rule is that each output column's summation order
+is fixed by `(n_in, n_out)` alone, so a T-row window reproduces plain decode
+bit for bit (`window_gemm.hpp`, `dense_tc.hpp`, `gdn_window.hpp`). With that
+rule, several sessions' rows become segments of one verify window
+(`BatchTable` in `dense/internal.hpp`, segmented GDN commit), and the weights
+are read once for all of them. That is the batched-decode win this fork gave
+up on, and it compounds with spec windows. Cost: an audit of every decode
+kernel's reduction order, plus per-segment GDN destinations. Acceptance:
+batched logits equal single-row logits on the same prompts, then the 4- and
+8-session tg aggregate.
+
+### [ ] Two-stage output head with an interval bound
+
+Basalt scores the head's high int8 plane first, keeps every row whose upper
+bound (±1.5·Σ|y| from the unknown low bits) can still beat the 64th best, and
+rescored only those exactly (`q80_vhead.hpp/.cu`). That is provably the same
+top-K at a fraction of the 248k-row head traffic. This replaces the heuristic
+skip-vocab-block sampler as an exact option and supersedes the Q4_K draft head
+(#1209, no win, no caller). Acceptance: bit-identical greedy output with the
+two-stage path forced, then tg128 at d0.
+
+### [ ] Relaxed drafting (LOSSY, opt-in)
+
+Under sampling, keep a mismatched draft when the target gives it probability
+≥ P; greedy, logit_bias, JSON and tool calls stay exact
+(`qfn_decode.cpp` `accept_drafts`, `sample_tokens_probe`). Measured there at
++10.3 % (+5 % at temperature 0.6) for P = 0.5 and +20 % for P = 0.2. Thirty
+lines of host logic on a probability probe, behind a flag that warns like
+`tail_skip` does.
+
+### [ ] Exact speculative sampling for sampled requests
+
+Basalt draws the draft from the drafter's own distribution and accepts with
+`min(1, p/q)`, then draws the residual, so the output distribution is exactly
+the model's (`src/dense/session.cpp`). Quality-neutral, and a drafter that
+spreads guesses like the model accepts more of them. Needs only the sampler
+chain's p and q.
+
+### [ ] Calibrated cumulative draft-length rule
+
+The fork cuts the chain at a fixed 0.85 (greedy) / 0.95 (sampled). Basalt
+calibrates the MTP's stated confidence into measured acceptance per
+probability bin and stops when the running product falls below a threshold
+(`include/basalt/core/draft_cum.hpp`, `src/spec/draft_policy.cpp`), with the
+same rule evaluated on host and device so both agree. Host-only change feeding
+`mtp_policy.hpp`.
+
+### [ ] Suffix drafter upgrade
+
+Basalt's prompt lookup hashes trigrams and 8-grams to the 4 most recent
+positions and counts acceptance per match-length bucket, which then feeds the
+window policy (`src/spec/suffix_drafter.cpp`). Drop-in for
+`prompt_lookup.hpp` (currently a 12-token match) and pairs with the item
+above.
+
+### [ ] Verify-window exactness odds and ends
+
+Per-row penalty histories (`sampler.hpp`), so repeat penalties cannot depend on
+drafting; Philox keyed on `(seed, position)` (`philox.cuh`), so a seeded
+sampled reply is reproducible across window widths. Both are small host/device
+math with no perf claim.
+
+### [-] Not porting
+
+- int8 tensor-core GEMMs (`dense_tc.cu`, `dp4a.hpp`): RDNA3.5 has no int8
+  matrix cores; the DP4A + WMMA MMQ path already covers the bandwidth trick.
+- Persistent global-counter kernels, whole-request captured graphs, PDL
+  (`mid_chain.hpp`, `graph.hpp`): launch overhead is a dGPU problem; hipGraphs
+  and 16 CUs make this a wash.
+- Expert tiers, residency maps, doorbell rings, route-prior
+  (`expert_tier.hpp`, `dec_moe.cuh`): a PCIe problem; unified memory already
+  keeps every expert resident, as the 2026-10-25 survey concluded.
+- FP8/NVFP4 kernels, DFly2/DSpark drafters, cluster-greedy sampler, `run_pair`
+  window pipelining: Blackwell formats, trained drafter weights we do not
+  ship, or overlap that one die does not expose.
+- Hadamard-rotated q4_0 KV (`kv_q4.hpp`): revisit only after the int8 rows
+  land and the KLD gate has a baseline.
+
+## Basalt/strata follow-up 2026-11-20
+
+`jesdga95/basalt` at `8ba264c` (74 commits after the pass above) and
+`niko1221/strata` at `3142b66b9` (448 after `v0.2.8`). Basalt is CUDA sm_120
+only and strata has no HIP backend (`engine/` is SYCL, Metal, spark), so both
+stay idea sources. Most of strata's work since October is multi-GPU, PCIe link
+tuning, expert file tiers and Windows packaging: none of it applies to one die
+on unified memory. Basalt's work since 11-19 is mostly console statistics and
+its own MTP stack; three items are new to us.
+
+### [ ] 2-bit proxy screen on the draft head (`a718471`, `51a299b`, `1e08dcd`)
+
+A draft step scores `kMtpDraftVocab` = 98,304 head rows plus
+`kMtpDraftExtraRows` = 1,024 gathered rows (`MtpHead`/`DraftLogits`,
+`kernels/rocm/executor.cpp:1043`, `:3153`). At Q8_0 that is roughly one
+byte-and-scale per weight over ~99k rows — outside the routed experts, the
+largest read in the decode loop, once per chain position.
+
+Basalt keeps a second copy of the head at 2.5 bits per weight (one byte per
+32-row × 64-column tile plus an fp16 scale, `kernels/head_proxy.cuh`): a DP4A
+pass scores four rows per byte quad, every row within `kRescoreDelta` = 5.0 of
+the best is kept up to `kRescoreCap` = 64, and those are rescored exactly
+against the real head rows with the fused Q8_1 activation the norm already
+produces. Only the top-1 draft token can move, the verify path is untouched,
+so replies stay target-model quality. Their numbers are 264 µs cold → 87–118 µs
+for the head pass, and a 1.37 → 1.18 ms draft window on prose (sm_120, not
+reproduced here).
+
+Why this is not `#1209` again: `#1209` quantized the rows the draft reads, so
+the logits themselves moved (A/B'd 11-13: tg128 noise, −3 % at d16384). Here
+the scored rows stay Q8_0 and the screen only picks which ones to read; the
+error mode is a missed top-1 that costs acceptance, never a wrong reply. It
+also composes with `draft_vocab.hpp` rather than competing with it.
+
+Gate before writing it: `tools/prof/prof.py` has no head stage, so the pass
+shows up inside `gemm: gemv` / `gemm: tiled q8`. Add a label (or read `--top`
+on the timed decode pass) and confirm the head read is on the critical path. If
+it is already hidden behind other work the win is zero, as `#1209` found. Their
+layout is CUDA-specific (planar quads for DP4A); the portable path in the same
+file is the `kAll`/any loop, which is the form gfx1151 would take. The proxy is
+a second resident buffer (~80 MB at our row count): fine in unified memory, but
+it has to be rebuilt for `Options::draft_vocab` subsets or the subset head stays
+unscreened. The device quantizer left over from `#1209`
+(`kernels/rocm/draft_head.hip.cpp`, built, no caller) is the same idea in its
+worse form and should go when this lands.
+
+Paper check (2026-11-20, no run): the draft head is 2560 wide
+(`config.hpp:24`), 98,304 prefix + 1,024 gathered rows, Q8_0 ≈ 1.0625 B/weight
+→ ~270 MB per draft position, ~1.0 ms at the 273 GB/s ceiling, bandwidth-bound.
+At the recorded 1-2 drafts per ~23 ms cycle that is 4-9% of the cycle, and a
+2-bit copy cuts the floor to ~0.25 ms (~3-6% decode). The `latin` draft-vocab
+A/B (`--mtp-draft-vocab latin`, +4.9% decode for roughly halving the head
+read) already shows the head on the critical path, so the profiling gate above
+is confirmation, not a prerequisite.
+
+### [ ] Routing shortcuts: the only MoE traffic cut left (`55a7ef3`, `1bf8fd1`, `d2a93cf`)
+
+Basalt made `--route-tail-skip` (keep the top-k router sum, drop the last m
+experts) and `--route-prior` (score from an int8 EWMA of past scores, take the
+top m; per layer, one read per row) shared opt-in warn-once flags. The 11-19
+note filed route-prior under "not porting" as a PCIe trick; on unified memory it
+is a traffic cut rather than a residency trick, and routed experts are ~40 % of
+a pass at ~95 % of their own bandwidth ceiling, so reading fewer experts is the
+only way left to read fewer bytes. It is LOSSY and the tree has no KL gate
+(`--validate-prefill` rmse/cosine is all there is), so this is an experiment
+behind a quality gate first, not a port.
+
+### [ ] Counters before the rocprofv3 trace
+
+Basalt's new console statistics publish per-position draft acceptance, tokens
+per window per slot, and a sampled expert-lookup histogram over 640 experts.
+The ~676 ms non-routed tier is still waiting on a Linux `rocprofv3` run; a few
+host counters where those numbers come from (acceptance per chain position in
+`engine.cpp`, experts touched per layer) price most of it from an ordinary run
+on this box.
+
+### [ ] Bounded window on the draft attention
+
+strata's `docs/STRIX_HALO.md` lists `--mtp-window`: cap the drafter's own
+attention to recent KV rows, target attention untouched, so output stays exact.
+There is no draft-KV window anywhere in `qwen38_flash_next`. Their own estimate
+is small (~3.5 % at 64 K, since it is one read of ~13) and cheap; it grows with
+depth.
+
+### [-] Already ours, or not porting
+
+- Basalt's per-step confidence cut (`023fc98`): we end the chain at the first
+  proposal below `kMtpGateProbability` (`engine.cpp:1294-1299`).
+- Q8_0 output head (`caa7c7a`); quantizing a normed row once for several
+  projections (`a365240`) — we have the fused `FusedRMSNormQuantize` producers.
+- strata's `HC_Q8`: our HC down projection is already Q8_0
+  (`kernels/rocm/executor.cpp:1834`).
+- The speculative-stack items from 11-19 (calibrated cumulative length rule,
+  suffix-drafter upgrade, exact speculative sampling, relaxed drafting).
+  `MtpAcceptTable`/`MtpDraftLength`/`MtpBatchController` is ahead of basalt's
+  fixed cumulative-product rule, and `prompt_lookup.hpp` already does 3-gram
+  hashing, 12-token matches, 16 recency candidates and resume gating. Their
+  versions are a downgrade, and the lossy ones want a gate we do not have.
+- strata's multi-GPU, PCIe, expert-tier and packaging work, and basalt's expert
+  victim eviction (`aa73394`): unified memory, one die.
+
+### Process note from strata
+
+Their Strix Halo document pins a per-shape hipBLASLt solution table per
+architecture *and* library version, and records that `SH_STREAM` tuning flips
+sign between hosts: +1.8/+6.7 % on Linux iGPU, −6.9 % on Windows. We are porting
+Linux wins on a Windows host, so every stream/BLAS setting needs its own A/B
+here instead of being copied.
+
+### Open list, re-ranked
+
+1. int8 KV rows for the 12 full-attention layers. Basalt now refuses batch
+   slots with any other `--kv` (`d32e310`), which suggests the format is stable
+   enough to write once here.
+2. The 2-bit proxy screen above, gated on the head-pass measurement.
+3. Shape-fixed sum order, then batched decode windows.
+4. The draft-KV window.
 
 
