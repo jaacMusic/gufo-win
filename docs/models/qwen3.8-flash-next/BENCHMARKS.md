@@ -413,3 +413,18 @@ cache), so V read traffic is too small a slice of decode for halving it to
 show. Prefill regresses (unfused projection plus quantize work). Greedy output
 stays coherent. Reverted; memory-constrained builds can revisit the same
 design for footprint, not speed.
+
+## Default lm_head decode copy
+
+`GUFO_DECODE_COPY_CLASSES` default now includes `lm_head` (Q4_1 copy; env
+still overrides). Previously launcher-only. Measured 2026-11-22, bench
+2048/128, temperature 0, one repetition, defaults elsewhere:
+
+| config | MTP tg128 d0 | AR tg128 d0 |
+|---|---|---|
+| lm_head off (old default) | 48.8 | 36.1 |
+| lm_head on (new default) | 53.6 | 37.5 |
+
+Greedy probes coherent on story and engine prompts; MTP acceptance unharmed
+(lm_head is a one-shot read, not recurrent). Logits numerics do change; opt
+out with `GUFO_DECODE_COPY_CLASSES=ssm_in,ssm_out,attn_qkv,shexp`.

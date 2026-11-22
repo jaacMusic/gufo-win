@@ -721,7 +721,7 @@ std::unique_ptr<DeviceModel> DeviceModel::Upload(
     } else {
       std::string classes = getenv("GUFO_DECODE_COPY_CLASSES") != nullptr
                                 ? getenv("GUFO_DECODE_COPY_CLASSES")
-                                : "ssm_in,ssm_out,attn_qkv,shexp";
+                                : "ssm_in,ssm_out,attn_qkv,shexp,lm_head";
       // shortcut: q2 covers only plain dense projections; gated/HC decode
       // paths have no Q2_K route, so they stay on their original weights
       const bool q2_on = mode == "q2";
@@ -808,7 +808,9 @@ std::unique_ptr<DeviceModel> DeviceModel::Upload(
       }
       // The LM head is the largest single read of a decode token (644 MiB
       // Q8_0, 16% of an AR token at d0); a Q4_1 copy halves it. Numerics
-      // change, so it is its own class and off in the default set.
+      // change, so it stays its own class. Default on since Nov 2026: the
+      // greedy probe stays coherent, AR +18% (BENCHMARKS.md) and MTP +4.8%
+      // (bench 2048/128 d0, 48.8 -> 51.2 tok/s) with acceptance unharmed.
       // In q2 mode the LM head keeps its Q4_1 copy: logits are the most
       // quality-sensitive read — a Q2_K LM head (GUFO_LM_HEAD_Q2 probe,
       // Nov 2026) collapses greedy decode into loops immediately.
