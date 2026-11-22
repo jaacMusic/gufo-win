@@ -768,10 +768,12 @@ std::unique_ptr<DeviceModel> DeviceModel::Upload(
       };
       // Q2_K is lossy enough to loop greedy output on some projections, so
       // the q2 class set is bisectable via GUFO_Q2_CLASSES. Default excludes
-      // attn_out: 2-bit on all four classes loops greedy decode.
+      // attn_out and ssm_out: 2-bit noise compounds across classes and loops
+      // greedy decode (bisected with temp-0 generations; ssm_in+attn_qkv
+      // stayed clean while every set containing ssm_out looped).
       std::string q2_classes = getenv("GUFO_Q2_CLASSES") != nullptr
                                    ? getenv("GUFO_Q2_CLASSES")
-                                   : "ssm_in,ssm_out,attn_qkv";
+                                   : "ssm_in,attn_qkv";
       const auto wants_q2 = [&q2_classes](const char* cls) {
         return q2_classes.find(cls) != std::string::npos;
       };

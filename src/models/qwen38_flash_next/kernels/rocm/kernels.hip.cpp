@@ -6297,13 +6297,38 @@ __global__ void RequantQ8ToQ2_KKernel(const Q8_0Block* __restrict__ src,
   const float dmin = -b_min / 15.0F;
   Q2_KBlock out = {};
   for (int g = 0; g < 16; ++g) {
-    const int l =
-        d > 0.0F ? std::min(15, std::max(0, int(amax[g] / d + 0.5F))) : 0;
     const int m = dmin > 0.0F
                       ? std::min(15, std::max(0, int(-amin[g] / dmin + 0.5F)))
                       : 0;
-    const float step = d * l;
     const float base = -dmin * m;
+    int l = d > 0.0F ? std::min(15, std::max(0, int(amax[g] / d + 0.5F))) : 0;
+    // Least-squares refit of the group scale (as llama.cpp make_q2_k_quants):
+    // rounding the max is biased high, which pushes every value off its
+    // nearest code and is what makes greedy decode loop. Two refits recover
+    // most of the lost precision at load time only.
+    float step = d * l;
+    for (int it = 0; it < 2; ++it) {
+      if (step <= 0.0F) {
+        break;
+      }
+      float sxy = 0.0F;
+      float sxx = 0.0F;
+      for (int j = 0; j < 16; ++j) {
+        const float v = x[16 * g + j] - base;
+        const int q = std::min(3, std::max(0, int(v / step + 0.5F)));
+        sxy += q * v;
+        sxx += static_cast<float>(q) * q;
+      }
+      const int l_new =
+          sxx > 0.0F
+              ? std::min(15, std::max(1, int(sxy / (sxx * d) + 0.5F)))
+              : l;
+      if (l_new == l) {
+        break;
+      }
+      l = l_new;
+      step = d * l;
+    }
     for (int j = 0; j < 16; ++j) {
       const int e = 16 * g + j;
       int q = step > 0.0F ? int((x[e] - base) / step + 0.5F) : 0;
