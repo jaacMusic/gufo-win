@@ -321,3 +321,18 @@ pp2048, --temperature 0, single repetitions.
 
 Four rows is kept: +0.4% at depth 0 (noise), +10.3% at depth 16384, and the
 8-row tile gives the gain back.
+
+## Q2_K decode copies (November 22, 2026)
+
+`GUFO_DECODE_COPY=q2` requantizes the plain dense decode projections
+(ssm_in, ssm_out, attn_qkv, attn_out) to Q2_K instead of the default Q4_1
+balanced copies: 0.82 GiB vs ~1.6 GiB of copies, read once per token.
+Same command as above, Qwen3.8-Flash-Next-UD-Q4_K_XL, temperature 0.
+
+| mode | tg128 @ d0 | tg128 @ d16384 |
+|------|-----------|----------------|
+| balanced (Q4_1) | 36.17 | 33.50 |
+| q2 (Q2_K) | 40.56 | 36.44 |
+
++12.1% / +8.8% tokens/s. Greedy generations remain coherent; the Q2_K
+row-batched GEMV keeps llama.cpp dot-product grouping.

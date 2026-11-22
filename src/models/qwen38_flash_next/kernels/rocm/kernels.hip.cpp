@@ -6251,6 +6251,82 @@ void RequantQ8_0ToQ4_1(const void* src, void* dst, std::size_t blocks,
       static_cast<const Q8_0Block*>(src), static_cast<Q4_1Block*>(dst), blocks);
 }
 
+// Q2_K decode-copy target (ggml-common.h block_q2_K layout: 84 bytes).
+struct Q2_KBlock {
+  std::uint8_t scales[16];  // per 16-elt group: ls | (m << 4)
+  std::uint8_t qs[64];
+  __half2 dm;  // x = dm.x * (ls*q) - dm.y * m, q in 0..3
+};
+static_assert(sizeof(Q2_KBlock) == 84, "block_q2_K must be 84 bytes");
+
+// Refits 8 consecutive Q8_0 blocks as one Q2_K super-block: per 16-elt
+// group a 4-bit scale/min pair under shared d/dmin halves. The qs packing
+// matches the GPU vec-dot lane mapping (byte 32*(e/128)+(e%32), bits
+// 2*((e/32)%4)), not element order.
+__global__ void RequantQ8ToQ2_KKernel(const Q8_0Block* __restrict__ src,
+                                      Q2_KBlock* __restrict__ dst,
+                                      std::size_t blocks) {
+  const std::size_t b = std::size_t{blockIdx.x} * blockDim.x + threadIdx.x;
+  if (b >= blocks) {
+    return;
+  }
+  const Q8_0Block* in = src + 8 * b;
+  float x[256];
+  for (int j = 0; j < 256; ++j) {
+    x[j] =
+        __half2float(in[j / 32].d) * static_cast<float>(in[j / 32].qs[j % 32]);
+  }
+  float amax[16];
+  float amin[16];
+  float a_max = 0.0F;
+  float b_min = 0.0F;
+  for (int g = 0; g < 16; ++g) {
+    float lo = INFINITY;
+    float hi = -INFINITY;
+    for (int j = 0; j < 16; ++j) {
+      lo = fminf(lo, x[16 * g + j]);
+      hi = fmaxf(hi, x[16 * g + j]);
+    }
+    const float a = (hi - lo) / 3.0F;  // value = a*q + lo, q in 0..3
+    amax[g] = a;
+    amin[g] = lo;
+    a_max = fmaxf(a_max, a);
+    b_min = fminf(b_min, lo);
+  }
+  const float d = a_max / 15.0F;
+  const float dmin = -b_min / 15.0F;
+  Q2_KBlock out = {};
+  for (int g = 0; g < 16; ++g) {
+    const int l =
+        d > 0.0F ? std::min(15, std::max(0, int(amax[g] / d + 0.5F))) : 0;
+    const int m = dmin > 0.0F
+                      ? std::min(15, std::max(0, int(-amin[g] / dmin + 0.5F)))
+                      : 0;
+    const float step = d * l;
+    const float base = -dmin * m;
+    for (int j = 0; j < 16; ++j) {
+      const int e = 16 * g + j;
+      int q = step > 0.0F ? int((x[e] - base) / step + 0.5F) : 0;
+      q = std::min(3, std::max(0, q));
+      out.qs[32 * (e / 128) + (e % 32)] |=
+          static_cast<std::uint8_t>(q << (2 * ((e / 32) % 4)));
+    }
+    out.scales[g] = static_cast<std::uint8_t>(l | (m << 4));
+  }
+  out.dm = __floats2half2_rn(d, dmin);
+  dst[b] = out;
+}
+
+void RequantQ8_0ToQ2_K(const void* src, void* dst, std::size_t blocks,
+                       hipStream_t stream) {
+  if (blocks == 0) {
+    return;
+  }
+  hipLaunchKernelGGL(
+      RequantQ8ToQ2_KKernel, dim3(Blocks(blocks)), dim3(kThreads), 0, stream,
+      static_cast<const Q8_0Block*>(src), static_cast<Q2_KBlock*>(dst), blocks);
+}
+
 void EmbedTokens(const void* table, WeightType type, const std::int32_t* tokens,
                  float* res, std::uint32_t n_tokens, std::uint32_t hidden,
                  std::uint32_t streams, hipStream_t stream) {

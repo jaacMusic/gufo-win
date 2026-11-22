@@ -817,6 +817,26 @@ void mul_mat_vec_q4_1_dispatch(const void* weights, const void* gate,
   }
 }
 
+// Dense tokens=1 route for Q2_K decode copies: expert id 0 and the shared
+// 4-rows-per-wave tile reuse the MoE kernel without new numerics.
+void mul_mat_vec_q2_k_dense(const void* weights, const block_q8_1* input,
+                            float* output, int k, int rows, int input_stride,
+                            hipStream_t stream) {
+  // shortcut: lazily allocated single zero id; dense ids never change
+  static int32_t* ids = [] {
+    int32_t* p = nullptr;
+    const int32_t zero = 0;
+    (void)hipMalloc(&p, sizeof(zero));
+    (void)hipMemcpy(p, &zero, sizeof(zero), hipMemcpyHostToDevice);
+    return p;
+  }();
+  const int row_stride = k / ggml_blck_size(GGML_TYPE_Q2_K);
+  mul_mat_vec_q_moe<GGML_TYPE_Q2_K, 4>
+      <<<dim3((rows + 3) / 4, 1, 1), dim3(32, 1), 0, stream>>>(
+          weights, input, ids, output, k, rows, row_stride, input_stride, rows,
+          rows * row_stride, rows, 1, 1, nullptr, nullptr);
+}
+
 template<ggml_type type, int rows_per_wave = 2>
 static void launch_moe(const void* weights, const block_q8_1* input,
                        const int32_t* ids, float* output, int k, int rows,

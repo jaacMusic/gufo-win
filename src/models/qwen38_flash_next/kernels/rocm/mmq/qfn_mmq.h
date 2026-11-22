@@ -84,6 +84,12 @@ int qfn_mmq_q4_1_dense_vec_preq(const void* W_q4_1, const void* W_gate,
                                 const void* X_q8, float* out_f32, int M, int N,
                                 int K, hipStream_t stream);
 
+// Q2_K decode-copy route for single-token dense projections (GUFO_DECODE_COPY
+// =q2); two-bit weights trade accuracy for ~47% fewer copy bytes than Q4_1.
+int qfn_mmq_q2_k_dense_vec_preq(const void* W_q2_k, const void* X_q8,
+                                float* out_f32, int M, int N, int K,
+                                hipStream_t stream);
+
 int qfn_mmq_build_ids_maps(
         const int32_t * ids, int32_t * ids_src1, int32_t * ids_dst, int32_t * expert_bounds,
         int n_experts, int n_tokens, int n_expert_used, int nchannels_y, int si1, int sis1, hipStream_t stream);

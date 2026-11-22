@@ -1462,6 +1462,20 @@ bool Executor::Dense(const DeviceTensor& w, const Q8Input& q, float* out,
     }
     return true;
   }
+  if (w.decode_data != nullptr && w.decode_type == GgmlType::kQ2_K &&
+      q.data != nullptr) {
+    if (w.cols != q.k) {
+      AssignError(error_msg, "quantized input width mismatch");
+      return false;
+    }
+    if (qfn_mmq_q2_k_dense_vec_preq(
+            w.decode_data, q.data, out, static_cast<int>(w.rows),
+            static_cast<int>(q.n), static_cast<int>(w.cols), stream_) != 0) {
+      AssignError(error_msg, "Q2_K decode GEMV failed");
+      return false;
+    }
+    return true;
+  }
   if (w.type == GgmlType::kQ8_0 && q.data != nullptr) {
     if (w.cols != q.k) {
       AssignError(error_msg, "quantized input width mismatch");
@@ -1578,10 +1592,9 @@ bool Executor::Dense(const DeviceTensor& w, const float* x, float* out,
     // every row's logits are the same at any batch width. The Q2_K copy is
     // the screening proxy (Executor::ScreenHead).
     if (n_tokens > kDraftHeadRows || s_.draft_head_ids == nullptr ||
-        qfn_mmq_moe_vec(static_cast<int>(w.type), w.data, x,
-                        s_.draft_head_ids, out, static_cast<int>(w.rows),
-                        static_cast<int>(w.cols), static_cast<int>(n_tokens), 1,
-                        1, stream_) != 0) {
+        qfn_mmq_moe_vec(static_cast<int>(w.type), w.data, x, s_.draft_head_ids,
+                        out, static_cast<int>(w.rows), static_cast<int>(w.cols),
+                        static_cast<int>(n_tokens), 1, 1, stream_) != 0) {
       AssignError(error_msg, "draft head projection failed");
       return false;
     }

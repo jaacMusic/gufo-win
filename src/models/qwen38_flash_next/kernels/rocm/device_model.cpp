@@ -722,12 +722,16 @@ std::unique_ptr<DeviceModel> DeviceModel::Upload(
                                 ? getenv("GUFO_DECODE_COPY_CLASSES")
                                 : "ssm_in,ssm_out,attn_qkv,shexp";
       const bool q4_on = mode.empty() || mode == "balanced" || mode == "q4";
+      // shortcut: q2 covers only plain dense projections; gated/HC decode
+      // paths have no Q2_K route, so they stay on their original weights
+      const bool q2_on = mode == "q2";
       const auto wants = [&classes](const char* cls) {
         return classes.find(cls) != std::string::npos;
       };
       constexpr std::size_t kMinElements = 2560 * 6144;
       constexpr std::size_t kHcElements = 320 * 10240;
-      constexpr std::size_t kBlkBytes = 20;  // Q4_1
+      constexpr std::size_t kBlkBytes = 20;    // Q4_1
+      constexpr std::size_t kBlkBytesQ2 = 84;  // Q2_K
       std::size_t copied = 0;
       const auto add = [&](DeviceTensor& t, std::size_t min_elements) {
         if (t.type != core::GgmlType::kQ8_0 || t.data == nullptr ||
@@ -735,27 +739,40 @@ std::unique_ptr<DeviceModel> DeviceModel::Upload(
           return;
         }
         const std::size_t rows = std::size_t{t.rows} * t.experts;
-        const std::size_t blocks = rows * t.cols / 32;
+        const std::size_t block_elts = q2_on ? 256 : 32;
+        const std::size_t blocks = rows * t.cols / block_elts;
         if (rows * t.cols < min_elements || blocks == 0 ||
-            rows * t.cols % 32 != 0) {
+            rows * t.cols % block_elts != 0) {
           return;
         }
+        const std::size_t blk_bytes = q2_on ? kBlkBytesQ2 : kBlkBytes;
         void* copy = nullptr;
-        if (hipMalloc(&copy, blocks * kBlkBytes + kTailMargin) != hipSuccess) {
+        if (hipMalloc(&copy, blocks * blk_bytes + kTailMargin) != hipSuccess) {
           return;
         }
         m->allocations_.push_back(copy);
-        m->bytes_ += blocks * kBlkBytes + kTailMargin;
-        rocm::RequantQ8_0ToQ4_1(t.data, copy, blocks, nullptr);
+        m->bytes_ += blocks * blk_bytes + kTailMargin;
+        if (q2_on) {
+          rocm::RequantQ8_0ToQ2_K(t.data, copy, blocks, nullptr);
+        } else {
+          rocm::RequantQ8_0ToQ4_1(t.data, copy, blocks, nullptr);
+        }
         if (hipGetLastError() != hipSuccess) {
           (void)hipFree(copy);
           return;
         }
         t.decode_data = copy;
-        t.decode_type = core::GgmlType::kQ4_1;
-        copied += blocks * kBlkBytes;
+        t.decode_type = q2_on ? core::GgmlType::kQ2_K : core::GgmlType::kQ4_1;
+        copied += blocks * blk_bytes;
       };
       const auto wants_layer = [&](DeviceLayer& l) {
+        if (q2_on) {
+          add(l.ssm_in, kMinElements);
+          add(l.ssm_out, kMinElements);
+          add(l.attn_qkv, kMinElements);
+          add(l.attn_out, kMinElements);
+          return;
+        }
         if (wants("ssm_in")) {
           add(l.ssm_in, kMinElements);
         }
@@ -786,7 +803,7 @@ std::unique_ptr<DeviceModel> DeviceModel::Upload(
       // The LM head is the largest single read of a decode token (644 MiB
       // Q8_0, 16% of an AR token at d0); a Q4_1 copy halves it. Numerics
       // change, so it is its own class and off in the default set.
-      if (wants("lm_head")) {
+      if (wants("lm_head") && !q2_on) {
         add(m->output_, kMinElements);
       }
       const auto status = hipDeviceSynchronize();
@@ -797,7 +814,7 @@ std::unique_ptr<DeviceModel> DeviceModel::Upload(
         }
         return nullptr;
       }
-      fprintf(stderr, "decode Q4_1 copies: %.2f GiB\n",
+      fprintf(stderr, "decode %s copies: %.2f GiB\n", q2_on ? "Q2_K" : "Q4_1",
               double(copied) / (1024.0 * 1024.0 * 1024.0));
     }
   }

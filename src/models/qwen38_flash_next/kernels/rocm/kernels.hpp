@@ -95,6 +95,8 @@ void EmbedTokens(const void* table, WeightType type, const std::int32_t* tokens,
 /// Least-squares-refit Q8_0 -> Q4_1 conversion for decode weight copies.
 void RequantQ8_0ToQ4_1(const void* src, void* dst, std::size_t blocks,
                        hipStream_t stream);
+void RequantQ8_0ToQ2_K(const void* src, void* dst, std::size_t blocks,
+                       hipStream_t stream);
 
 /// out[t][d] = rmsnorm(x[t][d]) * gamma[d]; `groups` independent norms of
 /// `dim/groups` elements each share the gamma row. gamma may be null.
@@ -667,8 +669,8 @@ void QuantizeHeadQ2K(const void* q8, void* q2k, std::uint32_t rows,
 
 /// logits[ids[i]] = scores[i] for i < n: the exact rescores of the screened
 /// picks land in the row the selection and confidence kernels read.
-void ScatterLogits(float* logits, const std::uint32_t* ids,
-                   const float* scores, std::uint32_t n, hipStream_t stream);
+void ScatterLogits(float* logits, const std::uint32_t* ids, const float* scores,
+                   std::uint32_t n, hipStream_t stream);
 
 /// Draft logits of empty table slots (table[i] < 0) become -infinity.
 void MaskDraftLogits(float* logits, const std::int32_t* table, std::uint32_t n,
