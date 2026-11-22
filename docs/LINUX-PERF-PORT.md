@@ -3354,4 +3354,40 @@ here instead of being copied.
 3. Shape-fixed sum order, then batched decode windows.
 4. The draft-KV window.
 
+## Sweep of upstream, strata and basalt (2026-11-21, Windows)
+
+Upstream `f6346864..origin/main` (36 commits), strata `3142b66b9..6e38f588`
+(224), basalt through the 11-21 push.
+
+- `2e50748f` (#1265, wide passes on a transient second scratch set) and its
+  serve companion `425e3513` (#1274): N/A on speed. The fork already runs
+  resident 16,384-row prefill passes (`#933` port above; `PrefillCapacity()` is
+  `--prefill-chunk`, default 16,384), so the wide-pass win is ours and these
+  commits only hand the ~4.1 GiB back to decode. Their transient form needs
+  demand-backed pages (`PagePool::prop/access`, `hipMemAddressReserve`), and
+  there is no demand mapping anywhere in `src/`. Revisit only if resident
+  scratch starts costing sessions; the cheap probe first is a
+  `--prefill-chunk 8192` A/B on decode gaps.
+- `d6fc5495` (-O3 through clang-cl): N/A — the fork builds with the GCC-driver
+  `clang++.exe`, and the release presets already carry `-O3`.
+- `8327275c` (IQ2/IQ3 sign apply via `__vcmpne4`/`__vsub4`): already ours in
+  `deepseek_v4_flash/kernels/rocm/mmq/ds4_mmq.hip.cpp`.
+- The GGUF-header Rust/descriptor commits and all cache/serve commits: N/A
+  (own loader, no `src/cache`, no `src/ext`). `afaca7d2` (#1267) is Linux
+  diagnose-only. A "free load arena between phases" item carried in notes
+  (#1296) does not exist upstream; dropped as a bad number.
+- Watch: #893 (8-bit K/V rows) and #1116 (DSpine drafter) are both still open;
+  the wait verdict holds.
+- strata's 11-21 batch is Hy4-Flash (Tencent) enablement — runners, codecs,
+  vision, DFly2 drafter for that family. Nothing portable to flash-next.
+- basalt's new work is Inkling 2 Mini and CUDA micro-opts, plus a cluster that
+  implements open item 2 from several sides: `4404f68` (screen head candidates
+  from a resident 2-bit copy of the head in decode), `0743c47` (exact row
+  scores in a 2-bit proxy search), `8b0b104` (screen draft logits with a 2-bit
+  copy), `eaf5ca1` (2-bit fold + screened top-k), `16864b4` (two-stage output
+  head: candidate screen + narrow rescore). Reference implementations for the
+  head screen; the port to our head stays ours to write.
+
+Open list unchanged.
+
 
