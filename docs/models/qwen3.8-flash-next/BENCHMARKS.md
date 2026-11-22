@@ -377,3 +377,20 @@ Also measured: Q2_K decode copies hurt MTP (~45.4 vs 46.8 tok/s) - q2 noise
 lowers draft acceptance and MTP verify is multi-token (Q8_0 path), so q2 only
 helps width-1 slices. Keep `GUFO_DECODE_COPY=q2` for AR-only engines, default
 (balanced) for MTP-serving engines.
+
+## MTP cost table scale sweep (November 22, 2026)
+
+Swept kMtpCycleMilliseconds scales on the greedy chat probe (256 tokens,
+default decode-copy settings):
+
+| Table | tok/s | cycles | drafted | accepted |
+|-------|-------|--------|---------|----------|
+| stale 2026-09-20 (x1.0) | 46.8 | - | - | 66% |
+| x0.90 | 53.2 | 111 | 211 | 144 |
+| x0.80 | 53.9 / 53.8 (2 reps) | 111 | 211 | 144 |
+| raw fresh 2026-11-22 (~x0.74) | 44.6 / 45.3 | 80 | 155 | 98 |
+
+The raw re-measurement over-drafts (marginal acceptance falls to 63%); the
+stale table under-drafts and forfeits the faster kernels. Shipped the x0.80
+scale (+15% MTP tok/s over stale); comment in mtp_costs.hpp records the
+rationale and probe command.
