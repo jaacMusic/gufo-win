@@ -336,3 +336,15 @@ Same command as above, Qwen3.8-Flash-Next-UD-Q4_K_XL, temperature 0.
 
 +12.1% / +8.8% tokens/s. Greedy generations remain coherent; the Q2_K
 row-batched GEMV keeps llama.cpp dot-product grouping.
+
+Follow-up: `GUFO_DECODE_COPY=q2` +
+`GUFO_DECODE_COPY_CLASSES=lm_head` keeps the LM head on a Q4_1 copy
+(1.19 GiB total copies) — logits stay 4-bit — and stacks with the Q2_K
+dense stack:
+
+| mode | tg128 @ d0 | tg128 @ d16384 |
+|------|-----------|----------------|
+| q2 + lm_head Q4_1 | 42.45 | 37.83 |
+
++17.9% / +13.3% over balanced. This combined setting is what the
+engine_console launchers now set.

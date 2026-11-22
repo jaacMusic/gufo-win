@@ -708,7 +708,8 @@ std::unique_ptr<DeviceModel> DeviceModel::Upload(
   // Q4_1 decode copies: requantize hot decode matrices so the decode GEMV
   // reads 20 instead of 34 bytes per 32 elements. Opt-in "off"; default
   // "balanced" copies the small dense stack + shared expert;
-  // GUFO_DECODE_COPY=q4 also covers hyper-connections and attention output. The
+  // GUFO_DECODE_COPY=q4 also covers hyper-connections and attention output;
+  // =q2 uses 2-bit copies for the dense stack (lm_head stays Q4_1). The
   // Q8_0 weights stay resident and serve prefill and wide batches, so copies
   // only add memory.
   {
@@ -721,7 +722,6 @@ std::unique_ptr<DeviceModel> DeviceModel::Upload(
       std::string classes = getenv("GUFO_DECODE_COPY_CLASSES") != nullptr
                                 ? getenv("GUFO_DECODE_COPY_CLASSES")
                                 : "ssm_in,ssm_out,attn_qkv,shexp";
-      const bool q4_on = mode.empty() || mode == "balanced" || mode == "q4";
       // shortcut: q2 covers only plain dense projections; gated/HC decode
       // paths have no Q2_K route, so they stay on their original weights
       const bool q2_on = mode == "q2";
@@ -733,26 +733,27 @@ std::unique_ptr<DeviceModel> DeviceModel::Upload(
       constexpr std::size_t kBlkBytes = 20;    // Q4_1
       constexpr std::size_t kBlkBytesQ2 = 84;  // Q2_K
       std::size_t copied = 0;
-      const auto add = [&](DeviceTensor& t, std::size_t min_elements) {
+      const auto add = [&](DeviceTensor& t, std::size_t min_elements,
+                           bool use_q2 = false) {
         if (t.type != core::GgmlType::kQ8_0 || t.data == nullptr ||
             t.cols % 32 != 0) {
           return;
         }
         const std::size_t rows = std::size_t{t.rows} * t.experts;
-        const std::size_t block_elts = q2_on ? 256 : 32;
+        const std::size_t block_elts = use_q2 ? 256 : 32;
         const std::size_t blocks = rows * t.cols / block_elts;
         if (rows * t.cols < min_elements || blocks == 0 ||
             rows * t.cols % block_elts != 0) {
           return;
         }
-        const std::size_t blk_bytes = q2_on ? kBlkBytesQ2 : kBlkBytes;
+        const std::size_t blk_bytes = use_q2 ? kBlkBytesQ2 : kBlkBytes;
         void* copy = nullptr;
         if (hipMalloc(&copy, blocks * blk_bytes + kTailMargin) != hipSuccess) {
           return;
         }
         m->allocations_.push_back(copy);
         m->bytes_ += blocks * blk_bytes + kTailMargin;
-        if (q2_on) {
+        if (use_q2) {
           rocm::RequantQ8_0ToQ2_K(t.data, copy, blocks, nullptr);
         } else {
           rocm::RequantQ8_0ToQ4_1(t.data, copy, blocks, nullptr);
@@ -762,15 +763,15 @@ std::unique_ptr<DeviceModel> DeviceModel::Upload(
           return;
         }
         t.decode_data = copy;
-        t.decode_type = q2_on ? core::GgmlType::kQ2_K : core::GgmlType::kQ4_1;
+        t.decode_type = use_q2 ? core::GgmlType::kQ2_K : core::GgmlType::kQ4_1;
         copied += blocks * blk_bytes;
       };
       const auto wants_layer = [&](DeviceLayer& l) {
         if (q2_on) {
-          add(l.ssm_in, kMinElements);
-          add(l.ssm_out, kMinElements);
-          add(l.attn_qkv, kMinElements);
-          add(l.attn_out, kMinElements);
+          add(l.ssm_in, kMinElements, true);
+          add(l.ssm_out, kMinElements, true);
+          add(l.attn_qkv, kMinElements, true);
+          add(l.attn_out, kMinElements, true);
           return;
         }
         if (wants("ssm_in")) {
@@ -803,7 +804,9 @@ std::unique_ptr<DeviceModel> DeviceModel::Upload(
       // The LM head is the largest single read of a decode token (644 MiB
       // Q8_0, 16% of an AR token at d0); a Q4_1 copy halves it. Numerics
       // change, so it is its own class and off in the default set.
-      if (wants("lm_head") && !q2_on) {
+      // In q2 mode the LM head keeps its Q4_1 copy: logits are the most
+      // quality-sensitive read and 2-bit logits measurably degrade them.
+      if (wants("lm_head")) {
         add(m->output_, kMinElements);
       }
       const auto status = hipDeviceSynchronize();
