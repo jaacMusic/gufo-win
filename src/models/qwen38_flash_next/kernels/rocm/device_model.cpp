@@ -766,26 +766,29 @@ std::unique_ptr<DeviceModel> DeviceModel::Upload(
         t.decode_type = use_q2 ? core::GgmlType::kQ2_K : core::GgmlType::kQ4_1;
         copied += blocks * blk_bytes;
       };
+      // Q2_K is lossy enough to loop greedy output on some projections, so
+      // the q2 class set is bisectable via GUFO_Q2_CLASSES. Default excludes
+      // attn_out: 2-bit on all four classes loops greedy decode.
+      std::string q2_classes = getenv("GUFO_Q2_CLASSES") != nullptr
+                                   ? getenv("GUFO_Q2_CLASSES")
+                                   : "ssm_in,ssm_out,attn_qkv";
+      const auto wants_q2 = [&q2_classes](const char* cls) {
+        return q2_classes.find(cls) != std::string::npos;
+      };
       const auto wants_layer = [&](DeviceLayer& l) {
-        if (q2_on) {
-          add(l.ssm_in, kMinElements, true);
-          add(l.ssm_out, kMinElements, true);
-          add(l.attn_qkv, kMinElements, true);
-          add(l.attn_out, kMinElements, true);
-          return;
-        }
-        if (wants("ssm_in")) {
-          add(l.ssm_in, kMinElements);
-        }
-        if (wants("ssm_out")) {
-          add(l.ssm_out, kMinElements);
-        }
-        if (wants("attn_qkv")) {
-          add(l.attn_qkv, kMinElements);
-        }
-        if (wants("attn_out")) {
-          add(l.attn_out, kMinElements);
-        }
+        // Full 2-bit on all four projections is additive noise that loops
+        // greedy output; classes outside GUFO_Q2_CLASSES fall back to Q4_1.
+        const auto q2_or_default = [&](DeviceTensor& t, const char* cls) {
+          if (q2_on && wants_q2(cls)) {
+            add(t, kMinElements, true);
+          } else if (wants(cls)) {
+            add(t, kMinElements);
+          }
+        };
+        q2_or_default(l.ssm_in, "ssm_in");
+        q2_or_default(l.ssm_out, "ssm_out");
+        q2_or_default(l.attn_qkv, "attn_qkv");
+        q2_or_default(l.attn_out, "attn_out");
         if (wants("hc")) {
           for (DeviceMixer* mx : {&l.hc_attn, &l.hc_ffn}) {
             add(mx->down, kHcElements);

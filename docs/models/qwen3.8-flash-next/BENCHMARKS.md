@@ -348,3 +348,17 @@ dense stack:
 
 +17.9% / +13.3% over balanced. This combined setting is what the
 engine_console launchers now set.
+
+Quality follow-up (same day): the full four-class Q2_K set (attn_out
+included) eventually collapses greedy decode into repetition loops — the
+2-bit noise is additive across projections and crosses a cliff only with
+all four. Dropping `attn_out` (it falls back to its original Q8_0 weights;
+`GUFO_Q2_CLASSES=ssm_in,ssm_out,attn_qkv` is the new default) removes the
+loops on repeated 400-token greedy probes while keeping most of the speed
+(1.13 GiB copies):
+
+| q2 class set | tg128 @ d0 | tg128 @ d16384 | greedy quality |
+|------|-----------|----------------|----------------|
+| ssm_in,ssm_out,attn_qkv,attn_out | 42.45 | 37.83 | loops |
+| ssm_in,ssm_out,attn_qkv (default) | 41.71 | 36.64 | coherent |
+| ssm_in,ssm_out only | 39.49 | 33.40 | coherent |
