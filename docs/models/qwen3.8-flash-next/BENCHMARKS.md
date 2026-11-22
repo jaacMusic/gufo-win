@@ -394,3 +394,22 @@ The raw re-measurement over-drafts (marginal acceptance falls to 63%); the
 stale table under-drafts and forfeits the faster kernels. Shipped the x0.80
 scale (+15% MTP tok/s over stale); comment in mtp_costs.hpp records the
 rationale and probe command.
+
+## V Q8 KV cache (November 22, 2026) - dead end
+
+Per-(token, kv_head) scaled-int8 V cache (K stays fp16), dequantized in the
+AttentionKernel PV load and the WMMA tile load, stores fused into
+PrepareAttentionKernel plus a StoreVQ8 path; the fused F16 prefill projection
+was bypassed (it writes fp16 V directly). Bench (bench 2048/128, d0 and d16k,
+temperature 0, same-process A/B):
+
+| V | tg128 d0 | tg128 @16k | pp2048 d0 | pp2048 @16k |
+|---|----------|-----------|-----------|-------------|
+| fp16 | 35.84 | 33.28 | 1676.9 | 1482.3 |
+| Q8 | 35.89 | 33.32 | 1666.8 | 1449.4 |
+
+Decode is noise-level: only 11 of 47 layers are full attention (36 GDN, no KV
+cache), so V read traffic is too small a slice of decode for halving it to
+show. Prefill regresses (unfused projection plus quantize work). Greedy output
+stays coherent. Reverted; memory-constrained builds can revisit the same
+design for footprint, not speed.
