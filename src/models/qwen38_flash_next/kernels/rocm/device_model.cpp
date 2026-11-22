@@ -808,7 +808,8 @@ std::unique_ptr<DeviceModel> DeviceModel::Upload(
       // Q8_0, 16% of an AR token at d0); a Q4_1 copy halves it. Numerics
       // change, so it is its own class and off in the default set.
       // In q2 mode the LM head keeps its Q4_1 copy: logits are the most
-      // quality-sensitive read and 2-bit logits measurably degrade them.
+      // quality-sensitive read — a Q2_K LM head (GUFO_LM_HEAD_Q2 probe,
+      // Nov 2026) collapses greedy decode into loops immediately.
       if (wants("lm_head")) {
         add(m->output_, kMinElements);
       }
