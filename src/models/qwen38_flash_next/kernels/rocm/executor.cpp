@@ -1463,7 +1463,7 @@ bool Executor::Dense(const DeviceTensor& w, const Q8Input& q, float* out,
     return true;
   }
   if (w.decode_data != nullptr && w.decode_type == GgmlType::kQ2_K &&
-      q.data != nullptr) {
+      q.data != nullptr && q.n == 1) {
     if (w.cols != q.k) {
       AssignError(error_msg, "quantized input width mismatch");
       return false;
