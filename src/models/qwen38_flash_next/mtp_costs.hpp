@@ -10,6 +10,9 @@ namespace gufo::models::qwen38_flash_next {
 
 // gfx1151, pinned Flash-Next Q4 target/Q8 MTP, 2026-09-20. Milliseconds per
 // cohort, including catch-up, recursive proposals and target verification.
+// 2026-11-22 re-measurement is ~2-3 ms cheaper per cycle (faster kernels),
+// but the controller then over-drafts and nets ~3% fewer tok/s; the
+// conservative table is kept deliberately. See benchmarks.
 // Rows are widths 1..8 (width 1 is headless MTP catch-up plus ordinary decode).
 // Reproduce with qwen38_flash_next_gpu_probe --cost-audit 0. Allocation and C1
 // graph capture are warmed outside the measurement; each row is the median

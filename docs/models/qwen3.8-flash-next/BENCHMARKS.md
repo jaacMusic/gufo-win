@@ -362,3 +362,18 @@ loops on repeated 400-token greedy probes while keeping most of the speed
 | ssm_in,ssm_out,attn_qkv,attn_out | 42.45 | 37.83 | loops |
 | ssm_in,ssm_out,attn_qkv (default) | 41.71 | 36.64 | coherent |
 | ssm_in,ssm_out only | 39.49 | 33.40 | coherent |
+
+## MTP cost recalibration (November 22, 2026)
+
+Fresh `--cost-audit 0` sweep (default decode-copy settings, 120 rows) shows
+`kMtpCycleMilliseconds` from 2026-09-20 is now ~2-3 ms/cycle conservative
+(C1@0 width1: 38.4 -> 28.5 ms) after this session's kernel wins. Swapping in
+the fresh table, however, made the controller draft longer chains whose
+marginal acceptance fell (98/155 = 63% vs 66%), netting 44.6-45.3 tok/s on
+the greedy chat probe vs 46.8 with the stale table. The conservative table is
+kept deliberately; a note in `mtp_costs.hpp` records this.
+
+Also measured: Q2_K decode copies hurt MTP (~45.4 vs 46.8 tok/s) - q2 noise
+lowers draft acceptance and MTP verify is multi-token (Q8_0 path), so q2 only
+helps width-1 slices. Keep `GUFO_DECODE_COPY=q2` for AR-only engines, default
+(balanced) for MTP-serving engines.
