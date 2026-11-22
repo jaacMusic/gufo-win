@@ -950,19 +950,21 @@ void mul_mat_vec_moe_gated(const void* gate, const void* up, ggml_type type,
     return;
   }
   const int row_stride = k / ggml_blck_size(type);
-  const dim3 grid((rows + 1) / 2, experts_used);
+  // shortcut: 4 rows per 64-thread block measured faster than 2 at tokens=1;
+  // revisit if the expert width (rows) changes
+  const dim3 grid((rows + 3) / 4, experts_used);
   const dim3 block(32, 2);
   if (type == GGML_TYPE_Q4_K) {
-    mul_mat_vec_q_moe<GGML_TYPE_Q4_K, 2, true><<<grid, block, 0, stream>>>(
+    mul_mat_vec_q_moe<GGML_TYPE_Q4_K, 4, true><<<grid, block, 0, stream>>>(
         gate, input, ids, output, k, rows, row_stride, input_stride,
         rows * experts_used, rows * row_stride, rows, 1, experts_used, up);
   } else if (type == GGML_TYPE_Q8_0) {
-    mul_mat_vec_q_moe<GGML_TYPE_Q8_0, 2, true><<<grid, block, 0, stream>>>(
+    mul_mat_vec_q_moe<GGML_TYPE_Q8_0, 4, true><<<grid, block, 0, stream>>>(
         gate, input, ids, output, k, rows, row_stride, input_stride,
         rows * experts_used, rows * row_stride, rows, 1, experts_used, up);
   } else {
     GGML_ASSERT(type == GGML_TYPE_Q5_K);
-    mul_mat_vec_q_moe<GGML_TYPE_Q5_K, 2, true><<<grid, block, 0, stream>>>(
+    mul_mat_vec_q_moe<GGML_TYPE_Q5_K, 4, true><<<grid, block, 0, stream>>>(
         gate, input, ids, output, k, rows, row_stride, input_stride,
         rows * experts_used, rows * row_stride, rows, 1, experts_used, up);
   }

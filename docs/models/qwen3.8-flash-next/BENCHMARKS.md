@@ -302,3 +302,22 @@ C1, context capacity 133121, AR. Peak memory reported by HIP.
 <!-- /bench -->
 
 ![Memory occupation](artifacts/charts/memory.svg)
+
+## Routed gated GEMV rows per block (November 22, 2026)
+
+mul_mat_vec_moe_gated at 	okens == 1 ran mul_mat_vec_q_moe<type, 2, true>
+(two rows per 64-thread block). Widening the tile to four rows halves the block
+count (3200 to 1600 per layer) and doubles the dot-product ILP per warp, which
+frees bandwidth the 16K KV reads compete for. outed_wmma_ops passes unchanged.
+pp2048, --temperature 0, single repetitions.
+
+<!-- bench:moe-vec-rows -->
+| Tile | tg128 d0 (tok/s) | tg128 d16384 (tok/s) |
+| ---: | ---: | ---: |
+| 2 rows (before) | 36.01 | 30.38 |
+| 4 rows | 36.17 | 33.50 +/- 0.06 (2 reps) |
+| 8 rows | 35.87 | 33.30 |
+<!-- /bench -->
+
+Four rows is kept: +0.4% at depth 0 (noise), +10.3% at depth 16384, and the
+8-row tile gives the gain back.
