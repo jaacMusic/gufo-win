@@ -8309,6 +8309,48 @@ void ExpertCounts(const std::int32_t* ids, std::uint32_t* counts,
                      stream, ids, counts, slots);
 }
 
+/// One block: the busiest expert's count also picks the assignment target, so
+/// the moved rows land in a bucket that is already resident.
+__global__ void MoeSkipTailKernel(std::int32_t* ids, float* weights,
+                                  const std::uint32_t* counts,
+                                  std::uint32_t slots,
+                                  std::uint32_t n_experts) {
+  __shared__ std::uint32_t threshold;
+  __shared__ std::int32_t busiest;
+  if (threadIdx.x == 0) {
+    std::uint32_t top = 0;
+    std::int32_t expert = 0;
+    for (std::uint32_t e = 0; e < n_experts; ++e) {
+      if (counts[e] > top) {
+        top = counts[e];
+        expert = static_cast<std::int32_t>(e);
+      }
+    }
+    threshold = top / 10;
+    busiest = expert;
+  }
+  __syncthreads();
+  for (std::uint32_t i = threadIdx.x; i < slots; i += blockDim.x) {
+    const std::int32_t e = ids[i];
+    if (e >= 0 && static_cast<std::uint32_t>(e) < n_experts &&
+        counts[e] < threshold) {
+      ids[i] = busiest;
+      weights[i] = 0.0F;
+    }
+  }
+}
+
+void MoeSkipTail(std::int32_t* ids, float* weights, const std::uint32_t* counts,
+                 std::uint32_t n_tokens, std::uint32_t n_experts,
+                 std::uint32_t k, hipStream_t stream) {
+  const std::uint32_t slots = n_tokens * k;
+  if (slots == 0 || n_experts == 0) {
+    return;
+  }
+  hipLaunchKernelGGL(MoeSkipTailKernel, dim3(1), dim3(kThreads), 0, stream, ids,
+                     weights, counts, slots, n_experts);
+}
+
 void MoeEpilogue(const float* expert_out, const float* weights,
                  const float* shared, const float* gate,
                  std::uint32_t gate_stride, float* out, std::uint32_t n_tokens,
@@ -8447,6 +8489,19 @@ void GatherDraftLogits(float* logits, const std::int32_t* table,
                        hipStream_t stream) {
   hipLaunchKernelGGL(GatherDraftLogitsKernel, dim3(1), dim3(n), 0, stream,
                      logits, table, prefix, n);
+}
+
+__global__ void ScatterLogitsKernel(float* logits, const std::uint32_t* ids,
+                                    const float* scores, std::uint32_t n) {
+  const std::uint32_t i = threadIdx.x;
+  if (i < n)
+    logits[ids[i]] = scores[i];
+}
+
+void ScatterLogits(float* logits, const std::uint32_t* ids, const float* scores,
+                   std::uint32_t n, hipStream_t stream) {
+  hipLaunchKernelGGL(ScatterLogitsKernel, dim3(1), dim3(n), 0, stream, logits,
+                     ids, scores, n);
 }
 
 __global__ void RemapDraftIdsKernel(std::uint32_t* ids, std::uint32_t n,

@@ -50,8 +50,11 @@ int main() {
   Expect(all.copy_kernels && all.flag_waits && all.flush_before_wait &&
              all.recorded_rollback && all.keep_rollback_rows &&
              all.fused_hc_down && all.fast_sampling &&
-             all.verify_graph_candidates && all.hot_first_upload,
+             all.verify_graph_candidates && all.hot_first_upload &&
+             all.tail_skip,
          "all reaches every switch");
+  Expect(!Parse(nullptr).tail_skip,
+         "tail_skip trades quality, so it stays off unless asked for");
   if (failures == 0) {
     std::cout << "platform_tuning_test: ok\n";
   }

@@ -3,10 +3,11 @@
 
 // Behaviour changes validated on Windows only.
 //
-// Each switch is on by default on Windows and off elsewhere, so a Linux build
-// runs the code it ran before the Windows port. The decode switches change
-// timing and memory placement only: outputs are bit-identical either way
-// (`gufo bench --logit-eval` dumps and fixed-seed sampled texts match).
+// Each switch is on by default on Windows and off elsewhere, except a switch
+// that trades output quality, which stays off until asked for. So a Linux
+// build runs the code it ran before the Windows port. The decode switches
+// change timing and memory placement only: outputs are bit-identical either
+// way (`gufo bench --logit-eval` dumps and fixed-seed sampled texts match).
 // GUFO_PLATFORM_TUNING overrides the defaults on any platform, which is
 // how a switch is tried on Linux or the Linux path is exercised on Windows:
 //
@@ -52,6 +53,11 @@ struct Tuning {
   /// Upload the weights read in full on every token before the routed
   /// experts, so they get the dedicated carve-out when memory runs short.
   bool hot_first_upload;
+  /// Qwen3.8-Flash-Next prefill: move routed assignments of experts whose count
+  /// is under a tenth of the batch's busiest expert to that expert with zero
+  /// weight, so their weights are never fetched from system RAM.
+  /// Not bit-identical: quality for speed. Default: false.
+  bool tail_skip;
 };
 
 namespace detail {
@@ -65,24 +71,28 @@ inline constexpr bool kWindowsDefault = false;
 struct TuningField {
   std::string_view name;
   bool Tuning::* member;
+  /// A switch that trades output quality is off unless asked for.
+  bool on_by_default;
 };
 
 inline constexpr TuningField kTuningFields[] = {
-    {"copy_kernels", &Tuning::copy_kernels},
-    {"flag_waits", &Tuning::flag_waits},
-    {"flush_before_wait", &Tuning::flush_before_wait},
-    {"recorded_rollback", &Tuning::recorded_rollback},
-    {"keep_rollback_rows", &Tuning::keep_rollback_rows},
-    {"fused_hc_down", &Tuning::fused_hc_down},
-    {"fast_sampling", &Tuning::fast_sampling},
-    {"verify_graph_candidates", &Tuning::verify_graph_candidates},
-    {"hot_first_upload", &Tuning::hot_first_upload},
+    {"copy_kernels", &Tuning::copy_kernels, kWindowsDefault},
+    {"flag_waits", &Tuning::flag_waits, kWindowsDefault},
+    {"flush_before_wait", &Tuning::flush_before_wait, kWindowsDefault},
+    {"recorded_rollback", &Tuning::recorded_rollback, kWindowsDefault},
+    {"keep_rollback_rows", &Tuning::keep_rollback_rows, kWindowsDefault},
+    {"fused_hc_down", &Tuning::fused_hc_down, kWindowsDefault},
+    {"fast_sampling", &Tuning::fast_sampling, kWindowsDefault},
+    {"verify_graph_candidates", &Tuning::verify_graph_candidates,
+     kWindowsDefault},
+    {"hot_first_upload", &Tuning::hot_first_upload, kWindowsDefault},
+    {"tail_skip", &Tuning::tail_skip, false},
 };
 
 inline Tuning ParseTuning() {
   Tuning tuning{};
   for (const auto& field : kTuningFields)
-    tuning.*field.member = kWindowsDefault;
+    tuning.*field.member = field.on_by_default;
   const char* env = std::getenv("GUFO_PLATFORM_TUNING");
   std::string_view spec = env != nullptr ? env : "";
   while (!spec.empty()) {

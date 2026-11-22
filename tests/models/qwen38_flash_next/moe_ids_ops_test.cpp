@@ -286,6 +286,99 @@ void CheckRouter(int tokens, int experts, int used, int pattern) {
   (void)hipFree(d_ids);
 }
 
+// Tail skip: the busiest expert's count sets the cut, assignments below it
+// move to that expert with weight 0, guards and negative ids stay untouched,
+// and a second pass over the recomputed counts changes nothing.
+void CheckTailSkip() {
+  namespace q = gufo::models::qwen38_flash_next::rocm;
+  constexpr int kTokens = 64;
+  constexpr std::int32_t kIdGuard = -771;
+  constexpr float kWeightGuard = -71.0F;
+  const int slots = kTokens * kUsed;
+  std::vector<std::int32_t> ids(static_cast<std::size_t>(slots));
+  std::vector<float> weights(static_cast<std::size_t>(slots));
+  for (int s = 0; s < slots; ++s) {
+    // Expert 0 takes every tenth slot (64 rows); experts 1..200 get a few.
+    ids[static_cast<std::size_t>(s)] = s % kUsed == 0 ? 0 : 1 + s % 200;
+    weights[static_cast<std::size_t>(s)] = 0.5F + static_cast<float>(s);
+  }
+  ids[7] = -1;
+
+  std::int32_t* d_ids = nullptr;
+  float* d_weights = nullptr;
+  std::uint32_t* d_counts = nullptr;
+  CheckHip(hipMalloc(&d_ids, (slots + 2) * sizeof(std::int32_t)), "tail ids");
+  CheckHip(hipMalloc(&d_weights, (slots + 2) * sizeof(float)), "tail weights");
+  CheckHip(hipMalloc(&d_counts, kExperts * sizeof(std::uint32_t)),
+           "tail counts");
+  std::vector<std::int32_t> guarded_ids(slots + 2, kIdGuard);
+  std::vector<float> guarded_weights(slots + 2, kWeightGuard);
+  std::copy(ids.begin(), ids.end(), guarded_ids.begin() + 1);
+  std::copy(weights.begin(), weights.end(), guarded_weights.begin() + 1);
+  CheckHip(hipMemcpy(d_ids, guarded_ids.data(),
+                     guarded_ids.size() * sizeof(std::int32_t),
+                     hipMemcpyHostToDevice),
+           "upload tail ids");
+  CheckHip(
+      hipMemcpy(d_weights, guarded_weights.data(),
+                guarded_weights.size() * sizeof(float), hipMemcpyHostToDevice),
+      "upload tail weights");
+
+  std::vector<std::int32_t> last_ids;
+  std::vector<float> last_weights;
+  for (int pass = 0; pass < 2; ++pass) {
+    q::ExpertCounts(d_ids + 1, d_counts, kTokens, kExperts, kUsed, nullptr);
+    q::MoeSkipTail(d_ids + 1, d_weights + 1, d_counts, kTokens, kExperts, kUsed,
+                   nullptr);
+    CheckHip(hipDeviceSynchronize(), "tail skip");
+    std::vector<std::int32_t> out_ids(slots + 2);
+    std::vector<float> out_weights(slots + 2);
+    CheckHip(
+        hipMemcpy(out_ids.data(), d_ids, out_ids.size() * sizeof(std::int32_t),
+                  hipMemcpyDeviceToHost),
+        "download tail ids");
+    CheckHip(
+        hipMemcpy(out_weights.data(), d_weights,
+                  out_weights.size() * sizeof(float), hipMemcpyDeviceToHost),
+        "download tail weights");
+    if (out_ids.front() != kIdGuard || out_ids.back() != kIdGuard ||
+        out_weights.front() != kWeightGuard ||
+        out_weights.back() != kWeightGuard) {
+      throw std::runtime_error("tail skip overwrote output guards");
+    }
+    out_ids.erase(out_ids.begin());
+    out_ids.pop_back();
+    out_weights.erase(out_weights.begin());
+    out_weights.pop_back();
+    if (pass != 0) {
+      if (out_ids != last_ids ||
+          !std::equal(out_weights.begin(), out_weights.end(),
+                      last_weights.begin())) {
+        throw std::runtime_error("tail skip is not idempotent");
+      }
+      continue;
+    }
+    for (int s = 0; s < slots; ++s) {
+      const auto at = static_cast<std::size_t>(s);
+      const bool skipped = ids[at] > 0;
+      const std::int32_t expected_id = skipped ? 0 : ids[at];
+      const bool id_ok = out_ids[at] == expected_id;
+      const bool weight_ok =
+          skipped ? out_weights[at] == 0.0F : out_weights[at] == weights[at];
+      if (!id_ok || !weight_ok) {
+        throw std::runtime_error("tail skip moved the wrong assignments");
+      }
+    }
+    last_ids = out_ids;
+    last_weights = out_weights;
+  }
+  (void)hipFree(d_ids);
+  (void)hipFree(d_weights);
+  (void)hipFree(d_counts);
+  std::cout
+      << "Tail skip: cut, target expert, guards and idempotence: passed\n";
+}
+
 }  // namespace
 
 int main() {
@@ -300,6 +393,7 @@ int main() {
     CheckRouter(17, 1024, 32, 1);
     CheckRouter(17, 1024, 1, 3);
     std::cout << "Router softmax, ties, guards and replay: passed\n";
+    CheckTailSkip();
     bool ok = true;
     for (int n_tokens : {37, 512, 2048}) {
       const auto ids = MakeIds(n_tokens, 0x1234ABCDU + n_tokens);

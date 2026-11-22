@@ -713,6 +713,11 @@ std::unique_ptr<Executor> Executor::Create(const DeviceModel& model,
     // Final selection consumes intermediate IDs before writing its scores.
     // Pack those scores behind the 64 returned IDs for one host transfer.
     s.mtp_scores = reinterpret_cast<float*>(s.mtp_ids + kMtpCandidates);
+    // The screened head's exact rescores (see Executor::ScreenHead).
+    s.mtp_rescore = Alloc<float>(a, kMtpCandidates, error_msg);
+    s.mtp_rescore_rows = Alloc<std::uint8_t>(
+        a, std::size_t{kMtpCandidates} * model.output_row_bytes() + 4096,
+        error_msg);
     // Options::draft_vocab (optional): the draft head proposes only from
     // these tokens, reading that fraction of the output head per draft
     // step. Verification still uses the full head, so the output
@@ -760,6 +765,27 @@ std::unique_ptr<Executor> Executor::Create(const DeviceModel& model,
                    "(%.0f MB)\n",
                    ids.size(), out.rows,
                    static_cast<double>(ids.size() * row_bytes) / 1e6);
+    }
+    // The 2-bit proxy of whichever head the draft positions score: the
+    // screened rows are rescored exactly, so only the ranking is lossy.
+    const DeviceTensor& draft_src =
+        e->draft_head_.empty() ? model.output() : e->draft_head_;
+    if (draft_src.type == GgmlType::kQ8_0 && draft_src.cols % 256 == 0) {
+      auto* proxy = Alloc<std::uint8_t>(
+          a, std::size_t{draft_src.rows} * (draft_src.cols / 256) * 84 + 256,
+          error_msg);
+      if (proxy == nullptr) {
+        return nullptr;
+      }
+      QuantizeHeadQ2K(draft_src.data, proxy, draft_src.rows, draft_src.cols,
+                      e->stream_);
+      if (!Check(hipStreamSynchronize(e->stream_), "draft head proxy",
+                 error_msg)) {
+        return nullptr;
+      }
+      e->draft_proxy_ = draft_src;
+      e->draft_proxy_.data = proxy;
+      e->draft_proxy_.type = GgmlType::kQ2_K;
     }
     if (!Check(hipHostMalloc(&e->mtp_token_host_, 2 * sizeof(std::int32_t),
                              ResultHostFlags()),
@@ -1048,6 +1074,29 @@ bool Executor::DraftLogits(const Session& session, const float* x,
     return false;
   MaskDraftLogits(logits + prefix.rows, session.mtp_.draft_ids,
                   kMtpDraftExtraRows, stream_);
+  return true;
+}
+
+bool Executor::ScreenHead(const DeviceTensor& output, const float* x,
+                          std::uint32_t rows, std::string* error_msg) const {
+  // Rank every row from the 2-bit proxy, then read and score the near-best
+  // rows exactly: the picks and the confidence come from the rows the Q8_0
+  // head would have won with, for a third of the bytes per draft position.
+  const auto count = std::min<std::uint32_t>(rows, kMtpCandidates);
+  if (!Dense(draft_proxy_, x, s_.logits, 1, error_msg)) {
+    return false;
+  }
+  MtpTopCandidates(s_.logits, s_.mtp_ids, s_.mtp_scratch_ids, s_.mtp_scores,
+                   rows, stream_);
+  GatherRows(output.data, s_.mtp_rescore_rows,
+             reinterpret_cast<const std::int32_t*>(s_.mtp_ids), count,
+             model_->output_row_bytes(), stream_);
+  const DeviceTensor picked{s_.mtp_rescore_rows, output.type, output.cols,
+                            count, 1};
+  if (!Dense(picked, x, s_.mtp_rescore, 1, error_msg)) {
+    return false;
+  }
+  ScatterLogits(s_.logits, s_.mtp_ids, s_.mtp_rescore, count, stream_);
   return true;
 }
 
@@ -1524,15 +1573,16 @@ bool Executor::DenseF16Route(const DeviceTensor& w,
 
 bool Executor::Dense(const DeviceTensor& w, const float* x, float* out,
                      std::uint32_t n_tokens, std::string* error_msg) const {
-  if (w.type == GgmlType::kQ4_K) {
+  if (w.type == GgmlType::kQ4_K || w.type == GgmlType::kQ2_K) {
     // The draft head (DeviceModel::SetDraftVocab) as one routed expert:
-    // every row's logits are the same at any batch width.
+    // every row's logits are the same at any batch width. The Q2_K copy is
+    // the screening proxy (Executor::ScreenHead).
     if (n_tokens > kDraftHeadRows || s_.draft_head_ids == nullptr ||
-        qfn_mmq_moe_vec(static_cast<int>(GgmlType::kQ4_K), w.data, x,
+        qfn_mmq_moe_vec(static_cast<int>(w.type), w.data, x,
                         s_.draft_head_ids, out, static_cast<int>(w.rows),
                         static_cast<int>(w.cols), static_cast<int>(n_tokens), 1,
                         1, stream_) != 0) {
-      AssignError(error_msg, "Q4_K draft head projection failed");
+      AssignError(error_msg, "draft head projection failed");
       return false;
     }
     return true;
@@ -2780,6 +2830,16 @@ bool Executor::Moe(const DeviceLayer& l, const float* x, float* out,
   if (ExpertMatrixRows(n_tokens)) {
     ExpertCounts(s_.ids, s_.expert_counts, n_tokens, c.num_experts, used,
                  stream_);
+    if (Tune().tail_skip) {
+      // The skip moves ids, so the counts every later stage reads (the tile
+      // map, the compaction, the epilogue weights) are taken again after it.
+      // shortcut: MoeBatch's own router keeps every expert; add the skip there
+      // if batched serving wants it.
+      MoeSkipTail(s_.ids, s_.weights, s_.expert_counts, n_tokens, c.num_experts,
+                  used, stream_);
+      ExpertCounts(s_.ids, s_.expert_counts, n_tokens, c.num_experts, used,
+                   stream_);
+    }
     if (!Check(hipMemcpyAsync(counts_host_, s_.expert_counts,
                               c.num_experts * sizeof(std::uint32_t),
                               hipMemcpyDeviceToHost, stream_),
@@ -3152,9 +3212,15 @@ bool Executor::MtpHead(const DeviceMixer& head, const float* res, bool token,
       draft != nullptr ? model_->draft_output().rows : output.rows;
   const std::uint32_t rows =
       draft != nullptr ? prefix + kMtpDraftExtraRows : output.rows;
+  // The draft positions score their head through its 2-bit proxy and rescore
+  // the rows it ranks best; a request table (draft != nullptr) keeps its own
+  // two-part head.
+  const bool screen = draft == nullptr && !draft_proxy_.empty();
   if (!HcMix(head, res, false, s_.mixed, nullptr, 1, error_msg) ||
-      !(draft != nullptr ? DraftLogits(*draft, s_.mixed, s_.logits, error_msg)
-                         : Dense(output, s_.mixed, s_.logits, 1, error_msg))) {
+      !(draft != nullptr
+            ? DraftLogits(*draft, s_.mixed, s_.logits, error_msg)
+            : (screen ? ScreenHead(output, s_.mixed, rows, error_msg)
+                      : Dense(output, s_.mixed, s_.logits, 1, error_msg)))) {
     return false;
   }
   const auto count = std::min<std::uint32_t>(rows, kMtpCandidates);

@@ -477,12 +477,58 @@ void CheckFusedDecodeMixer(std::uint32_t tokens, bool with_inject) {
             << (with_inject ? " with" : " without") << " inject\n";
 }
 
+// The batched decode mixer writes the same Q8_1 rows its separate
+// quantization would, so the next projections can consume them as-is.
+void CheckBatchedReadyQ8(std::uint32_t rows) {
+  const std::size_t dim = static_cast<std::size_t>(kStreams) * kHidden;
+  const std::size_t xn_count = std::size_t{rows} * dim;
+  const std::size_t mixed_count = std::size_t{rows} * kHidden;
+  const std::size_t inject_count =
+      std::size_t{rows} * kStreams * q::HcInjectParts(kHidden);
+  const std::size_t q8_bytes = qfn_mmq_q8_1_bytes(rows, kHidden);
+  HipBuffer<float> xn(xn_count), gate(xn_count), weight(kStreams * dim);
+  HipBuffer<float> ref_mixed(mixed_count), out_mixed(mixed_count);
+  HipBuffer<float> ref_inject(inject_count), out_inject(inject_count);
+  HipBuffer<std::uint8_t> ref_q8(q8_bytes), out_q8(q8_bytes);
+  Upload(&xn, MakeValues(xn_count, 0x572100U + rows, 0.5F));
+  Upload(&gate, MakeValues(xn_count, 0x781900U + rows, 2.0F));
+  Upload(&weight, MakeValues(kStreams * dim, 0x124003U, 0.01F));
+  q::HcMixEpilogue(xn.get(), gate.get(), weight.get(), ref_mixed.get(),
+                   ref_inject.get(), rows, kHidden, kStreams, nullptr);
+  if (qfn_mmq_quantize_q8_1(ref_mixed.get(), ref_q8.get(), rows, kHidden,
+                            nullptr) != 0) {
+    throw std::runtime_error("ready-Q8 reference quantization failed");
+  }
+  q::HcMixEpilogue(xn.get(), gate.get(), weight.get(), out_mixed.get(),
+                   out_inject.get(), rows, kHidden, kStreams, nullptr,
+                   out_q8.get());
+  CheckHip(hipDeviceSynchronize(), "ready-Q8 completion");
+  const auto reference = Download(&ref_mixed, mixed_count);
+  const auto producer = Download(&out_mixed, mixed_count);
+  if (reference != producer) {
+    throw std::runtime_error("ready-Q8 mixer output changed");
+  }
+  std::vector<std::uint8_t> expected(q8_bytes), actual(q8_bytes);
+  CheckHip(
+      hipMemcpy(expected.data(), ref_q8.get(), q8_bytes, hipMemcpyDeviceToHost),
+      "ready-Q8 reference");
+  CheckHip(
+      hipMemcpy(actual.data(), out_q8.get(), q8_bytes, hipMemcpyDeviceToHost),
+      "ready-Q8 producer");
+  if (expected != actual) {
+    throw std::runtime_error("ready-Q8 producer differs from separate path");
+  }
+}
+
 }  // namespace
 
 int main() {
   try {
     for (std::uint32_t n = 1; n <= 8; ++n) {
       CheckFusedDecodeMixer(n, true);
+    }
+    for (std::uint32_t rows = 1; rows <= 8; ++rows) {
+      CheckBatchedReadyQ8(rows);
     }
     CheckFusedDecodeMixer(1, false);
     CheckFusedDecodeMixer(5, false);

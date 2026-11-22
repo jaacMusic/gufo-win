@@ -51,6 +51,8 @@ struct TextSpeculativeConfig {
   /// default.
   bool mtp_survival{false};
   bool mtp_latin_draft_vocabulary{false};
+  /// Lossy sampled verification threshold; 0 keeps exact acceptance.
+  float mtp_relaxed{0.0F};
   bool prompt_lookup{false};
 };
 

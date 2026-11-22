@@ -565,6 +565,11 @@ private:
   /// slots at -infinity.
   bool DraftLogits(const Session& session, const float* x, float* logits,
                    std::string* error_msg) const;
+  /// Draft logits of `output` through the 2-bit proxy: every row is ranked
+  /// from the proxy copy, then the best kMtpCandidates rows are scored exactly
+  /// and written back into `logits`.
+  bool ScreenHead(const DeviceTensor& output, const float* x,
+                  std::uint32_t rows, std::string* error_msg) const;
   /// Selects the greedy token or compact candidates from MTP draft logits.
   /// With `draft`, the logits come from that session's small head and the
   /// returned IDs are remapped to token IDs.
@@ -729,6 +734,10 @@ private:
     std::uint32_t* mtp_ids;
     std::uint32_t* mtp_scratch_ids;
     float* mtp_scores;
+    /// The screened head's exact rescores: kMtpCandidates gathered rows and
+    /// their scores.
+    float* mtp_rescore;
+    std::uint8_t* mtp_rescore_rows;
   };
   mutable Scratch s_{};
   [[nodiscard]] Scratch RowScratch(const Scratch& base,
@@ -840,6 +849,9 @@ private:
   /// back to its token id. Empty = the full vocabulary.
   DeviceTensor draft_head_{};
   std::int32_t* draft_ids_{nullptr};
+  /// A Q2_K copy of whichever head the draft positions score (draft_head_ or
+  /// the output head): a third of the bytes per position, used to rank rows.
+  DeviceTensor draft_proxy_{};
   std::int32_t* mtp_token_host_{nullptr};
   MtpCandidateLogits* mtp_candidates_host_{nullptr};
   /// max_logit_rows candidate lists for VerifyCandidates.

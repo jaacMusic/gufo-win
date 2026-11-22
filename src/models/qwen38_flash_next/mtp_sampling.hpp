@@ -77,9 +77,13 @@ struct MtpVerification {
 /// and residual correction. Only proposal q uses the compact F32 masses.
 /// `target` is sampler.Distribution(logits) for the verified row, however
 /// it was computed (the full row or an exact candidate list).
+/// `relaxed` is the lossy opt-in: a draft the exact test would reject is kept
+/// when the target gives it at least this probability (0 keeps exact
+/// verification). It consumes no RNG, so it is not replayable against AR.
 inline MtpVerification VerifyMtpProposal(
     const sampling::SamplingDistribution& target, std::size_t vocab,
-    const MtpProposal& proposal, sampling::SamplerState& sampler) {
+    const MtpProposal& proposal, sampling::SamplerState& sampler,
+    float relaxed = 0.0F) {
   if (proposal.size == 0 || proposal.size > kMtpCandidates ||
       proposal.token >= vocab || !std::isfinite(proposal.probability) ||
       proposal.probability <= 0 || proposal.probability > 1)
@@ -96,6 +100,8 @@ inline MtpVerification VerifyMtpProposal(
   }
   if (total != 1 || selected != proposal.probability)
     throw std::invalid_argument("MTP proposal masses do not match the draw");
+  if (relaxed > 0.0F && target.probability(proposal.token) >= relaxed)
+    return {proposal.token, true};
   if (sampler.Uniform() * proposal.probability <
       target.probability(proposal.token))
     return {proposal.token, true};
@@ -108,9 +114,10 @@ inline MtpVerification VerifyMtpProposal(
 
 inline MtpVerification VerifyMtpProposal(std::span<const float> logits,
                                          const MtpProposal& proposal,
-                                         sampling::SamplerState& sampler) {
+                                         sampling::SamplerState& sampler,
+                                         float relaxed = 0.0F) {
   return VerifyMtpProposal(sampler.Distribution(logits), logits.size(),
-                           proposal, sampler);
+                           proposal, sampler, relaxed);
 }
 
 /// The draft is deterministic, so an exact target sample decides acceptance.

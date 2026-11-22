@@ -155,8 +155,16 @@ bool Executor::HcMixBatch(const DeviceMixer& m, const float* res, bool normed,
   half_src_ = nullptr;
   // Every request contains at most eight decode rows. Keep its scalar
   // epilogue/reduction even when the concatenated batch exceeds eight.
+  // Decode-sized projections can consume the epilogue's exact Q8_1 rows;
+  // wider batches retain their existing tiled/padded quantization route.
+  const bool q8 = rows <= kDecodeRows && c.hidden_size % 32 == 0 &&
+                  qfn_mmq_q8_1_bytes(1, static_cast<int>(c.hidden_size)) ==
+                      c.hidden_size / 32 * 36;
   HcMixEpilogue(s_.xn, s_.hc_gate, fused_inject ? m.inject.f32() : nullptr,
-                mixed, inject, rows, c.hidden_size, c.hc_count, stream_);
+                mixed, inject, rows, c.hidden_size, c.hc_count, stream_,
+                q8 ? s_.mixed_q8_1 : nullptr);
+  if (q8)
+    mixed_q8_ready_ = {mixed, s_.mixed_q8_1, rows, c.hidden_size};
   inject_parts_ = fused_inject ? HcInjectParts(c.hidden_size) : 1;
   if (inject != nullptr && !m.inject.empty() && !fused_inject) {
     if (!DenseBatch(m.inject, s_.xn, inject, rows, error))

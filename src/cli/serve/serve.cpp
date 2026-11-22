@@ -740,6 +740,7 @@ void PrintServeHelp(std::string_view program_name,
     std::size_t min_draft_tokens = 1;
     std::string mtp_policy = "length";
     std::string mtp_draft_vocab = "full";
+    std::string mtp_relaxed = "0";
     bool prompt_lookup = true;
     std::uint32_t prefill_batch_tokens = 0;
     std::size_t max_pending_requests = 16;
@@ -832,6 +833,13 @@ void PrintServeHelp(std::string_view program_name,
         "ASCII/Latin-script text tokens; half the output head per draft step) "
         "(default: full)",
         "Speculative", &mtp_draft_vocab);
+    parser.AddOption(
+        "", "--mtp-relaxed", "P",
+        "Qwen3.8-Flash-Next sampled verification (LOSSY): keep a draft the "
+        "exact test would reject when the target gives it probability >= P; "
+        "greedy, penalty and logit_bias requests stay exact (default: 0, "
+        "exact)",
+        "Speculative", &mtp_relaxed);
     parser.AddFlag(
         "", "--prompt-lookup",
         "Qwen3.8-Flash-Next: after an MTP draft, propose the tokens that "
@@ -1224,6 +1232,7 @@ int RunServe(std::span<const char* const> args) {
     std::size_t min_draft_tokens = 1;
     std::string mtp_policy = "length";
     std::string mtp_draft_vocab = "full";
+    std::string mtp_relaxed = "0";
     bool prompt_lookup = true;
     std::uint32_t prefill_batch_tokens = 0;
     std::size_t max_pending_requests = 16;
@@ -1310,6 +1319,13 @@ int RunServe(std::span<const char* const> args) {
         "ASCII/Latin-script text tokens; half the output head per draft step) "
         "(default: full)",
         "Speculative", &mtp_draft_vocab);
+    llm_parser.AddOption(
+        "", "--mtp-relaxed", "P",
+        "Qwen3.8-Flash-Next sampled verification (LOSSY): keep a draft the "
+        "exact test would reject when the target gives it probability >= P; "
+        "greedy, penalty and logit_bias requests stay exact (default: 0, "
+        "exact)",
+        "Speculative", &mtp_relaxed);
     llm_parser.AddFlag(
         "", "--prompt-lookup",
         "Qwen3.8-Flash-Next: after an MTP draft, propose the tokens that "
@@ -1469,6 +1485,17 @@ int RunServe(std::span<const char* const> args) {
     }
     speculative_config.mtp_survival = mtp_policy == "survival";
     speculative_config.mtp_latin_draft_vocabulary = mtp_draft_vocab == "latin";
+    float mtp_relaxed_probability = 0.0F;
+    const auto [relaxed_end, relaxed_error] = std::from_chars(
+        mtp_relaxed.data(), mtp_relaxed.data() + mtp_relaxed.size(),
+        mtp_relaxed_probability);
+    if (relaxed_error != std::errc{} ||
+        relaxed_end != mtp_relaxed.data() + mtp_relaxed.size() ||
+        !(mtp_relaxed_probability >= 0.0F && mtp_relaxed_probability <= 1.0F)) {
+      std::cerr << "Error: --mtp-relaxed is a probability in [0, 1]\n";
+      return 2;
+    }
+    speculative_config.mtp_relaxed = mtp_relaxed_probability;
     speculative_config.prompt_lookup = prompt_lookup;
     std::string err;
     ModelLoadLog load_log("text", model);

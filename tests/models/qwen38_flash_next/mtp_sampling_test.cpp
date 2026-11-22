@@ -469,9 +469,44 @@ void CheckVerificationBoundaries() {
   }
 }
 
+void CheckRelaxedAcceptance() {
+  const std::array<float, 4> logits{std::log(0.1F), std::log(0.5F),
+                                    std::log(0.3F), std::log(0.1F)};
+  sampling::SamplerState sampler({.temperature = 1.0F, .seed = 11});
+  const auto target = sampler.Distribution(logits);
+  Require(std::abs(target.probability(2) - 0.3) < 1e-4F,
+          "test row does not have the expected target mass");
+  qfn::MtpProposal proposal;
+  proposal.size = 1;
+  proposal.ids[0] = proposal.token = 2;
+  proposal.probabilities[0] = proposal.probability = 1.0F;
+  // The exact test rejects this draft about 70% of the time; the relaxed floor
+  // keeps it every time and must not consume the sampler's draw.
+  const auto before = sampler.rng_state();
+  const auto relaxed = qfn::VerifyMtpProposal(logits, proposal, sampler, 0.2F);
+  Require(relaxed.accepted && relaxed.token == 2,
+          "relaxed acceptance dropped a draft above its floor");
+  Require(sampler.rng_state() == before,
+          "relaxed acceptance consumed the exact verification draw");
+  // Below the floor the exact test still decides: zero target mass never wins.
+  const std::array<float, 2> zero{0.0F,
+                                  -std::numeric_limits<float>::infinity()};
+  qfn::MtpProposal unreachable;
+  unreachable.size = 1;
+  unreachable.ids[0] = unreachable.token = 1;
+  unreachable.probabilities[0] = unreachable.probability = 1.0F;
+  for (unsigned draw = 0; draw < 8; ++draw) {
+    const auto verified =
+        qfn::VerifyMtpProposal(zero, unreachable, sampler, 0.2F);
+    Require(!verified.accepted,
+            "relaxed acceptance kept a draft the target cannot produce");
+  }
+}
+
 int main() {
   try {
     CheckVerificationBoundaries();
+    CheckRelaxedAcceptance();
     CheckLengthController();
     CheckOccupancyOverride();
     CheckPolicyConcurrency();

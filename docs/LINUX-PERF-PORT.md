@@ -3246,7 +3246,7 @@ tuning, expert file tiers and Windows packaging: none of it applies to one die
 on unified memory. Basalt's work since 11-19 is mostly console statistics and
 its own MTP stack; three items are new to us.
 
-### [ ] 2-bit proxy screen on the draft head (`a718471`, `51a299b`, `1e08dcd`)
+### [x] 2-bit proxy screen on the draft head (`a718471`, `51a299b`, `1e08dcd`)
 
 A draft step scores `kMtpDraftVocab` = 98,304 head rows plus
 `kMtpDraftExtraRows` = 1,024 gathered rows (`MtpHead`/`DraftLogits`,
@@ -3381,11 +3381,11 @@ Upstream `f6346864..origin/main` (36 commits), strata `3142b66b9..6e38f588`
 - strata's 11-21 batch is Hy4-Flash (Tencent) enablement — runners, codecs,
   vision, DFly2 drafter for that family. Nothing portable to flash-next.
 - basalt's new work is Inkling 2 Mini and CUDA micro-opts, plus a cluster that
-  implements open item 2 from several sides: `4404f68` (screen head candidates
-  from a resident 2-bit copy of the head in decode), `0743c47` (exact row
-  scores in a 2-bit proxy search), `8b0b104` (screen draft logits with a 2-bit
-  copy), `eaf5ca1` (2-bit fold + screened top-k), `16864b4` (two-stage output
-  head: candidate screen + narrow rescore). Reference implementations for the
+  implements open item 2 from several sides: `a718471` (2-bit proxy head screen
+  from a resident Q2_K copy in decode), `51a299b` (exact row rescoring of the
+  screened proxy picks), `1e1461c9` (screen draft logits with a 2-bit copy),
+  `81acb504` (2-bit fold + screened top-k), `bf33f45e` (two-stage output head:
+  candidate screen + narrow rescore). Reference implementations for the
   head screen; the port to our head stays ours to write.
 
 Open list unchanged.
