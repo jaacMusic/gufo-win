@@ -30,6 +30,9 @@ param(
   # Confidence-stop MTP policy (gufo --mtp-policy survival).
   [switch]$Survival,
   [switch]$Lookup,
+  # 2-bit draft-head screening proxy (gufo --mtp-head-proxy). Engine default on;
+  # "off" scores every draft position against the full head instead of the proxy.
+  [ValidateSet("on", "off")] [string]$HeadProxy = "on",
   # 131072 = what fits comfortably in the 96 GB carve with Q4_K_XL + MTP + mmproj
   # (256K was ~89 GiB and got reverted in the launcher); 8888 = the engine port
   # this box's firewall rule and clients use - 8080 is the user's Open WebUI,
@@ -153,6 +156,7 @@ if ($Draft -ne "off" -and $Mode -eq "serve") {
   if ($DraftVocab) { $speculative += @("--mtp-draft-vocab", "latin") }
   if ($Survival) { $speculative += @("--mtp-policy", "survival") }
   if ($Lookup) { $speculative += "--prompt-lookup" }
+  if ($HeadProxy -eq "off") { $speculative += @("--mtp-head-proxy", "off") }
 }
 
 if ($Mode -eq "serve") {

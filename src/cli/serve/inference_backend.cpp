@@ -3112,6 +3112,7 @@ bool InferenceBackend::load(const std::string& model_path, std::string* error,
             speculative_config.mtp_latin_draft_vocabulary
                 ? models::qwen38_flash_next::DraftVocabulary::kLatinText
                 : models::qwen38_flash_next::DraftVocabulary::kFull,
+        .mtp_head_proxy = speculative_config.mtp_head_proxy,
     };
     if (prefill_policy.prefill_chunk_tokens != 0) {
       flash_options.prefill_chunk_tokens = prefill_policy.prefill_chunk_tokens;

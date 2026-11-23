@@ -86,6 +86,7 @@ sampled, thinking on, 3 seeds per prompt, against the default):
 | `--mtp-draft-vocab latin` | The draft head scores only special and ASCII/Latin-script text tokens (130K of 248K), reading half of the output head per draft step; ids map back on the GPU | +4.9% decode, identical texts and acceptance |
 | `--mtp-policy survival` | Sampled drafting stops when the product of per-proposal acceptance estimates (from the draft head's top probability, by depth) falls below 0.40, instead of the per-cycle length controller | With the draft vocabulary: +8.7% over the default (prose +7%, code +7%, reasoning +13%) |
 | `--prompt-lookup` | After each kept MTP draft, a match of 12+ tokens in the conversation proposes the tokens that followed it (point-mass proposals, exact under rejection sampling). Shorter matches propose nothing: an ungated 3-token rule lost 6-8% at temperature 1 | File-editing replies +10% sampled; log quoting +23% greedy; prose unchanged. Timings report `lookup_n` / `lookup_n_accepted` |
+| `--mtp-relaxed P` | LOSSY, sampled only: a draft the exact test would reject is kept when the target gives it probability >= P, so acceptance rises and the text leaves the target distribution. Greedy, penalty and logit_bias requests stay exact | Not measured in this fork; the source review reported +10.3% sampled at P=0.5 and +5% at temperature 0.6 with P=0.2 |
 
 The official template defaults to thinking on, `xhigh` effort and preserving
 prior reasoning. Use the [reasoning controls](../../SERVER.md#reasoning-controls)

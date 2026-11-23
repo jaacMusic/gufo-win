@@ -329,6 +329,7 @@ Text LLM server (`/v1/chat/completions`, `/v1/completions`, `/v1/responses`).
 | `--min-draft-tokens <N>` | 1 | Adaptive draft floor |
 | `--mtp-policy <POLICY>` | length | Qwen3.8-Flash-Next sampled draft length: length (acceptance-history controller) or survival (stop on the draft head's confidence) |
 | `--mtp-draft-vocab <VOCAB>` | full | Qwen3.8-Flash-Next draft head vocabulary: full, or latin (special and ASCII/Latin-script text tokens; half the output head per draft step) |
+| `--mtp-relaxed <P>` | 0 (exact) | Qwen3.8-Flash-Next sampled verification (LOSSY): keep a draft the exact test would reject when the target gives it probability >= P; greedy, penalty and logit_bias requests stay exact |
 | `--prompt-lookup` | on | Qwen3.8-Flash-Next: after an MTP draft, propose the tokens that followed a 12+ token match earlier in the conversation |
 | `--prefill-chunk <N>` | none | Deprecated and ignored: prompts beside decoders are split by layers |
 | `--max-pending <N>` | 16 | Maximum queued generation requests |
@@ -440,6 +441,7 @@ Qwen-Image-2.1 (`/v1/images/generations`, `/v1/images/edits`).
 | `--min-draft-tokens <N>` | 1 | Adaptive draft floor |
 | `--mtp-policy <POLICY>` | length | Qwen3.8-Flash-Next sampled draft length: length (acceptance-history controller) or survival (stop on the draft head's confidence) |
 | `--mtp-draft-vocab <VOCAB>` | full | Qwen3.8-Flash-Next draft head vocabulary: full, or latin (special and ASCII/Latin-script text tokens; half the output head per draft step) |
+| `--mtp-relaxed <P>` | 0 (exact) | Qwen3.8-Flash-Next sampled verification (LOSSY): keep a draft the exact test would reject when the target gives it probability >= P; greedy, penalty and logit_bias requests stay exact |
 | `--prompt-lookup` | on | Qwen3.8-Flash-Next: after an MTP draft, propose the tokens that followed a 12+ token match earlier in the conversation |
 | `--prefill-chunk <N>` | none | Deprecated and ignored: prompts beside decoders are split by layers |
 | `--max-pending <N>` | 16 | Maximum queued generation requests |

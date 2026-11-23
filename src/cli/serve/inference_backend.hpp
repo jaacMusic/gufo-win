@@ -54,6 +54,8 @@ struct TextSpeculativeConfig {
   /// Lossy sampled verification threshold; 0 keeps exact acceptance.
   float mtp_relaxed{0.0F};
   bool prompt_lookup{false};
+  /// Draft head 2-bit screening proxy (Qwen3.8-Flash-Next); on by default.
+  bool mtp_head_proxy{true};
 };
 
 struct TextDiskCacheConfig {

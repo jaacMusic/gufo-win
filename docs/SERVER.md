@@ -272,6 +272,16 @@ ten-turn tool-calling session instead, echoing each generated tool call back
 like a coding client, and prints per-turn cached versus re-read prompt tokens,
 first-token time and decode rate. Use it to check prompt reuse across turns;
 see [the agent-session comparison](AGENT-SESSION.md).
+
+For sustained concurrent load, `python3 tools/serving/serve-soak.py
+http://127.0.0.1:5815 topics --secs 300 --streams 4` holds streaming
+conversations and reports steady-state total tokens/s, and `... soak --secs
+1800 --out soak.jsonl [--images]` adds random traffic with mid-stream
+cancels, near-limit and over-long prompts and optional images while sampling
+memory and flagging stuck streams. It exits 1 on any unexpected request
+outcome. It reads per-session context from `/props`; `OPENAI_API_KEY` is sent
+as the bearer when a server requires one. Adapted from basalt's
+`tools/serve_soak.py` (MIT).
 Each case continues for a third turn; repeat `--case NAME` to select only the
 cases needed for a change.
 The check requires exact snapshot and matched-history replay. It separately

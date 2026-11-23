@@ -76,10 +76,18 @@ struct ModelOptions {
   /// Sampled single-session drafting stops on a chain-survival estimate
   /// from the draft head's own confidence instead of the length controller.
   bool mtp_survival = false;
+  /// Lossy opt-in: under sampling, a draft the exact test would reject is
+  /// kept when the target gives it at least this probability (0 = exact).
+  /// Greedy, penalty and logit_bias requests stay exact.
+  float mtp_relaxed = 0.0F;
   /// Single-session prompt lookup: after an MTP draft, a match of 12+ tokens
   /// in the conversation proposes the tokens that followed it (PromptLookup).
   bool prompt_lookup = true;
   DraftVocabulary draft_vocabulary = DraftVocabulary::kFull;
+  /// Draft positions rank the output head through a resident Q2_K copy and
+  /// rescore the near-best rows exactly (head read ~3.2x smaller). On by
+  /// default; off reads the full Q8_0 head every draft step.
+  bool mtp_head_proxy = true;
 };
 
 class Session;

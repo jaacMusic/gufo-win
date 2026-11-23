@@ -42,3 +42,22 @@ Sized against Gufo code, not against the upstream diff.
 Nothing else in the August–October upstream window beats what Gufo already
 does; the remaining headroom is local (prefill chunk decision, NTFS load time).
 
+## Forward rescan (2026-11-18)
+
+Scan: master `6f311d7ad` (2026-11-18) against the previous sweep point
+`8956c769e` (2026-10-31). 58 commits touch `ggml/src/ggml-cuda` or
+`ggml/src/ggml-hip`; nothing is portable to gfx1151.
+
+| Upstream | Verdict here |
+| --- | --- |
+| `c7518db` MMVQ `ne11` gate for RDNA3.5 (#32308) | N/A: no ggml MMVQ here; dense matvec is `W8A8BlockedWmmaGEMM` / `SmallGemm`. |
+| `8fc0376` Q8_1 correction sum (#31247) | Already covered: the fork's `quantize_mmq_q8_1` stores `d*sum(q)` after rounding (Q8_1 contract fix, checked by `routed_wmma_ops_test`). |
+| `05db09a` MoE row-innermost grid on HIP (#32344) | N/A: our MoE grid is `qfn_mmq`'s own `mmid` map plus `GroupedRasterTile`, not `launch_mul_mat_q`. |
+| `f477c1b` odd `src0` columns abort in MMVF (#32385) | N/A: no MMVF path. |
+| `2e53a0b`, `b79696f` GCN MMQ configs / stream-k | N/A: gfx9 configs; `qfn_mmq.hip.cpp` sets `use_stream_k = false`. |
+| `5d4c8ee` skip empty stream-k MoE tiles | N/A: stream-k off. |
+| `8777c0c`, `0fb8f15` few-row MMQ | N/A: the fork has its own masked 16-row prefill GEMM. |
+| `69ee2ec`, `5ce06fc`, `47fe133`, `9982004`, `e964175`, `054a1ba`, `03ec5b4`, `57d0482`, `a49db73`, `2d8a325`, `9e9619d`, `740251a`, `4324336` | Not portable: NVIDIA-only, Vulkan, model features, or already measured and rejected here (the fixed BLAS workspace is the `4324336` case). |
+
+Next sweep from `6f311d7ad`.
+

@@ -741,6 +741,7 @@ void PrintServeHelp(std::string_view program_name,
     std::string mtp_policy = "length";
     std::string mtp_draft_vocab = "full";
     std::string mtp_relaxed = "0";
+    std::string mtp_head_proxy = "on";
     bool prompt_lookup = true;
     std::uint32_t prefill_batch_tokens = 0;
     std::size_t max_pending_requests = 16;
@@ -840,6 +841,13 @@ void PrintServeHelp(std::string_view program_name,
         "greedy, penalty and logit_bias requests stay exact (default: 0, "
         "exact)",
         "Speculative", &mtp_relaxed);
+    parser.AddOption(
+        "", "--mtp-head-proxy", "MODE",
+        "Qwen3.8-Flash-Next draft head screening: on ranks the output head "
+        "from a resident Q2_K copy and rescores the near-best rows exactly "
+        "(~3x smaller head read per draft step); off reads the full Q8_0 head "
+        "(default: on)",
+        "Speculative", &mtp_head_proxy);
     parser.AddFlag(
         "", "--prompt-lookup",
         "Qwen3.8-Flash-Next: after an MTP draft, propose the tokens that "
@@ -1233,6 +1241,7 @@ int RunServe(std::span<const char* const> args) {
     std::string mtp_policy = "length";
     std::string mtp_draft_vocab = "full";
     std::string mtp_relaxed = "0";
+    std::string mtp_head_proxy = "on";
     bool prompt_lookup = true;
     std::uint32_t prefill_batch_tokens = 0;
     std::size_t max_pending_requests = 16;
@@ -1326,6 +1335,13 @@ int RunServe(std::span<const char* const> args) {
         "greedy, penalty and logit_bias requests stay exact (default: 0, "
         "exact)",
         "Speculative", &mtp_relaxed);
+    llm_parser.AddOption(
+        "", "--mtp-head-proxy", "MODE",
+        "Qwen3.8-Flash-Next draft head screening: on ranks the output head "
+        "from a resident Q2_K copy and rescores the near-best rows exactly "
+        "(~3x smaller head read per draft step); off reads the full Q8_0 head "
+        "(default: on)",
+        "Speculative", &mtp_head_proxy);
     llm_parser.AddFlag(
         "", "--prompt-lookup",
         "Qwen3.8-Flash-Next: after an MTP draft, propose the tokens that "
@@ -1478,13 +1494,16 @@ int RunServe(std::span<const char* const> args) {
       return 2;
     }
     if ((mtp_policy != "length" && mtp_policy != "survival") ||
-        (mtp_draft_vocab != "full" && mtp_draft_vocab != "latin")) {
+        (mtp_draft_vocab != "full" && mtp_draft_vocab != "latin") ||
+        (mtp_head_proxy != "on" && mtp_head_proxy != "off")) {
       std::cerr << "Error: --mtp-policy is length or survival, "
-                   "--mtp-draft-vocab is full or latin\n";
+                   "--mtp-draft-vocab is full or latin, --mtp-head-proxy is "
+                   "on or off\n";
       return 2;
     }
     speculative_config.mtp_survival = mtp_policy == "survival";
     speculative_config.mtp_latin_draft_vocabulary = mtp_draft_vocab == "latin";
+    speculative_config.mtp_head_proxy = mtp_head_proxy != "off";
     float mtp_relaxed_probability = 0.0F;
     const auto [relaxed_end, relaxed_error] = std::from_chars(
         mtp_relaxed.data(), mtp_relaxed.data() + mtp_relaxed.size(),

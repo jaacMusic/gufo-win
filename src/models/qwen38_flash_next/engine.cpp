@@ -319,6 +319,7 @@ std::shared_ptr<Model> Model::Load(const std::string& model_path,
       options.draft_vocabulary == DraftVocabulary::kLatinText) {
     exec.draft_vocab = LatinTextVocabulary(*m->tokenizer_);
   }
+  exec.head_proxy = options.mtp_head_proxy;
   m->executor_ =
       rocm::Executor::Create(*m->device_, m->ngram_.get(), exec, error_msg);
   if (!m->executor_) {
@@ -1477,6 +1478,12 @@ bool Session::FinishDecode(const DecodeRequest& request,
   const auto base = pending.base;
   const bool sampled = pending.sampled;
   const bool gpu_greedy = pending.gpu_greedy;
+  // ModelOptions::mtp_relaxed: lossy sampled acceptance. Penalty and
+  // logit_bias requests keep the exact test.
+  const float relaxed = sampled && !sampler.config().penalties_enabled() &&
+                                sampler.config().logit_bias.empty()
+                            ? model_->options_.mtp_relaxed
+                            : 0.0F;
   const bool gpu_verification = pending.gpu_verification;
   const auto anchor = chain.front();
   const auto k = static_cast<std::uint32_t>(chain.size());
@@ -1553,8 +1560,9 @@ bool Session::FinishDecode(const DecodeRequest& request,
       }
       const auto verified =
           target
-              ? VerifyMtpProposal(*target, vocab, proposals[keep - 1], sampler)
-              : VerifyMtpProposal(row, proposals[keep - 1], sampler);
+              ? VerifyMtpProposal(*target, vocab, proposals[keep - 1], sampler,
+                                  relaxed)
+              : VerifyMtpProposal(row, proposals[keep - 1], sampler, relaxed);
       const auto token = static_cast<std::int32_t>(verified.token);
       const bool accepted = verified.accepted;
       if (is_stop(token)) {

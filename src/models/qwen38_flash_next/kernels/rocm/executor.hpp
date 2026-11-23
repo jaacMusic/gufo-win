@@ -158,6 +158,9 @@ public:
     /// Optional draft vocabulary: token ids the MTP draft head may propose
     /// (it scores only these rows of the output head). Empty = every token.
     std::vector<std::int32_t> draft_vocab;
+    /// Build the Q2_K head proxy the draft positions screen with (off = the
+    /// draft reads the full Q8_0 head every step).
+    bool head_proxy{true};
   };
 
   ~Executor();
