@@ -442,3 +442,19 @@ from 8 to 16; 32 measured worse. Bench 2048/128, temperature 0, defaults:
 
 Bitwise-identical merge math (same kernel, more partial blocks); prefill
 and MTP unaffected.
+
+## MTP cost table rescale 0.80 -> 0.72
+
+The lm_head Q4_1 copy and 16-way attention split made draft cycles cheaper,
+so the controller's cost table was rescaled by another 0.90. Bench
+2048/128 MTP, temperature 0:
+
+| scale | tg128 d0 | tg128 @16k |
+|---|---|---|
+| 0.80 | 53.5 | 43.4* |
+| 0.90 (of prior, = 0.72 raw) | 54.5 | 44.5 |
+| 0.95 | 54.8 | - |
+| 0.85 | 54.3 | 44.0 |
+
+*interpolated neighbor. d0 optimum is flat 0.90-0.95; 0.90 wins at depth.
+Greedy engine-explanation probe coherent.
