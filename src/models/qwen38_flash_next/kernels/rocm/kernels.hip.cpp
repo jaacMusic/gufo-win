@@ -8605,6 +8605,47 @@ void ScatterLogits(float* logits, const std::uint32_t* ids, const float* scores,
                      ids, scores, n);
 }
 
+// ScreenHead seals its rescored rows: every other row still holds its 2-bit
+// proxy value, which must not outrank an exact score downstream. The cap sits
+// one below the smallest rescore, so no tie can displace a screened row.
+__global__ void ScreenCapKernel(const float* __restrict__ scores,
+                                std::uint32_t n, float* __restrict__ cap) {
+  __shared__ float shared[kThreads];
+  float v = threadIdx.x < n ? scores[threadIdx.x] : INFINITY;
+  for (unsigned s = kThreads / 2; s > 0; s >>= 1) {
+    shared[threadIdx.x] = v;
+    __syncthreads();
+    if (threadIdx.x < s) {
+      v = fminf(v, shared[threadIdx.x + s]);
+    }
+    __syncthreads();
+  }
+  if (threadIdx.x == 0) {
+    *cap = v - 1.0F;
+  }
+}
+
+__global__ void CapLogitsKernel(float* __restrict__ logits,
+                                const float* __restrict__ cap,
+                                std::uint32_t n) {
+  const std::uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i < n && logits[i] > *cap) {
+    logits[i] = *cap;
+  }
+}
+
+void ScreenCap(const float* scores, std::uint32_t n, float* cap,
+               hipStream_t stream) {
+  hipLaunchKernelGGL(ScreenCapKernel, dim3(1), dim3(kThreads), 0, stream,
+                     scores, n, cap);
+}
+
+void CapLogits(float* logits, std::uint32_t n, const float* cap,
+               hipStream_t stream) {
+  hipLaunchKernelGGL(CapLogitsKernel, dim3(Blocks(n)), dim3(kThreads), 0,
+                     stream, logits, cap, n);
+}
+
 __global__ void RemapDraftIdsKernel(std::uint32_t* ids, std::uint32_t n,
                                     std::uint32_t prefix,
                                     const std::int32_t* table,

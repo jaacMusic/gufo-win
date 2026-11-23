@@ -315,6 +315,49 @@ void CheckRemapDraftIds() {
                "table passed\n";
 }
 
+void CheckScreenSeal() {
+  // Proxy logits above every exact rescore must be capped below the worst
+  // rescore, so the post-screen argmax and candidate pass pick only rows the
+  // rescore scored exactly (Executor::ScreenHead).
+  const std::uint32_t rows = 1000;
+  constexpr std::uint32_t count = 64;
+  auto logits = Allocate<float>(rows);
+  auto scores = Allocate<float>(count);
+  auto cap = Allocate<float>(1);
+  std::vector<float> proxy(rows);
+  std::vector<float> rescore(count);
+  for (std::uint32_t i = 0; i < rows; ++i) {
+    proxy[i] = static_cast<float>((i * 7919U) % 2000U) / 7.0F;  // 0..285
+  }
+  for (std::uint32_t i = 0; i < count; ++i) {
+    rescore[i] = -10.0F + static_cast<float>(i % 17);
+  }
+  const float floor = *std::min_element(rescore.begin(), rescore.end());
+  hipStream_t stream = nullptr;
+  CheckHip(hipStreamCreate(&stream), "screen seal stream");
+  CheckHip(hipMemcpy(logits.get(), proxy.data(), rows * sizeof(float),
+                     hipMemcpyHostToDevice),
+           "screen seal logits");
+  CheckHip(hipMemcpy(scores.get(), rescore.data(), count * sizeof(float),
+                     hipMemcpyHostToDevice),
+           "screen seal scores");
+  q::ScreenCap(scores.get(), count, cap.get(), stream);
+  q::CapLogits(logits.get(), rows, cap.get(), stream);
+  CheckHip(hipStreamSynchronize(stream), "screen seal run");
+  std::vector<float> sealed(rows);
+  CheckHip(hipMemcpy(sealed.data(), logits.get(), rows * sizeof(float),
+                     hipMemcpyDeviceToHost),
+           "screen seal download");
+  for (std::uint32_t i = 0; i < rows; ++i) {
+    if (std::bit_cast<std::uint32_t>(sealed[i]) !=
+        std::bit_cast<std::uint32_t>(std::min(proxy[i], floor - 1.0F))) {
+      throw std::runtime_error("screen cap disagreeed with the CPU oracle");
+    }
+  }
+  CheckHip(hipStreamDestroy(stream), "screen seal stream destroy");
+  std::cout << "MTP screen seal: cap below worst rescore passed\n";
+}
+
 }  // namespace
 
 int main() {
@@ -323,6 +366,7 @@ int main() {
     CheckArgmax(257);
     CheckArgmax(248320);
     CheckRemapDraftIds();
+    CheckScreenSeal();
     for (const unsigned vocab :
          {1, 63, 64, 65, 255, 256, 257, 1024, 1025, 16385, 248320}) {
       CheckCandidates(vocab);

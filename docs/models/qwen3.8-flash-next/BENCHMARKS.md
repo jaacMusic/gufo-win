@@ -458,3 +458,36 @@ so the controller's cost table was rescaled by another 0.90. Bench
 
 *interpolated neighbor. d0 optimum is flat 0.90-0.95; 0.90 wins at depth.
 Greedy engine-explanation probe coherent.
+
+## Draft-head Q2_K proxy built with the canonical requant kernel
+
+The screening proxy was quantized by a one-off kernel (former
+`draft_head.hip.cpp`) that fit each group by min/max without refit; the
+canonical `RequantQ8_0ToQ2_K` (same byte layout) refits the group scale by
+least squares, as llama.cpp `make_q2_k_quants` does. The duplicate kernel is
+deleted; `Executor::Create` now calls the canonical one (one-shot at load).
+
+Better proxy ranking -> the exact rescore sees more of the rows the Q8 head
+would have won with -> higher MTP acceptance. `tools/serving/agent-session.py`
+4 turns x 64 tokens, port 8888 production command, 2 reps each:
+
+| proxy quantizer | median tok/s (rep1/rep2) | weakest turn |
+|---|---|---|
+| one-off min/max | 49.5 / 50.1 | 35.4 / 35.9 |
+| canonical LS refit | 52.3 / 53.5 | 40.9 / 39.2 |
+
+~+6 % median, +14 % on the lowest-acceptance turn. Screened picks are still
+rescored exactly, so output values are unchanged; only which rows get scored.
+
+## Screened logits sealed below the worst exact rescore (November 22, 2026)
+
+After `Executor::ScreenHead` scattered the 64 exact rescoring results,
+`Argmax` and the second `MtpTopCandidates` pass still read ~130k rows holding
+raw 2-bit proxy values; a row the screen missed could outrank every exact
+score and win the argmax or enter the candidate list with a proxy logit.
+`ScreenCap`/`CapLogits` now cap all unscreened rows one below the smallest
+rescored value before the scatter, so only exactly-scored rows can be picked.
+
+Correctness fix, no measurable cost (two ~0.5 us kernels per draft position):
+same harness, seal on vs off: 51.0 / 53.3 vs 52.3 / 53.5 median tok/s (within
+run-to-run noise). Covered by `qwen38_flash_next_mtp_ops_test` CheckScreenSeal.

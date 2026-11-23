@@ -778,8 +778,9 @@ std::unique_ptr<Executor> Executor::Create(const DeviceModel& model,
       if (proxy == nullptr) {
         return nullptr;
       }
-      QuantizeHeadQ2K(draft_src.data, proxy, draft_src.rows, draft_src.cols,
-                      e->stream_);
+      RequantQ8_0ToQ2_K(draft_src.data, proxy,
+                        std::size_t{draft_src.rows} * (draft_src.cols / 256),
+                        e->stream_);
       if (!Check(hipStreamSynchronize(e->stream_), "draft head proxy",
                  error_msg)) {
         return nullptr;
@@ -1097,6 +1098,11 @@ bool Executor::ScreenHead(const DeviceTensor& output, const float* x,
   if (!Dense(picked, x, s_.mtp_rescore, 1, error_msg)) {
     return false;
   }
+  // The argmax and candidate ranking below read every row; cap the unscreened
+  // rows' proxy values one below the worst exact rescore so only the picks the
+  // Q8_0 head would have won with can be selected.
+  ScreenCap(s_.mtp_rescore, count, s_.mtp_scores, stream_);
+  CapLogits(s_.logits, rows, s_.mtp_scores, stream_);
   ScatterLogits(s_.logits, s_.mtp_ids, s_.mtp_rescore, count, stream_);
   return true;
 }

@@ -662,15 +662,19 @@ void GatherArgmaxCandidates(const float* logits, const std::uint32_t* ids,
                             ArgmaxCandidate* out, std::uint32_t rows,
                             std::uint32_t vocab, hipStream_t stream);
 
-/// Rewrites a Q8_0 head into a Q2_K copy of the same rows and columns
-/// (cols a multiple of 256), the 2-bit proxy the draft screens with.
-void QuantizeHeadQ2K(const void* q8, void* q2k, std::uint32_t rows,
-                     std::uint32_t cols, hipStream_t stream);
-
 /// logits[ids[i]] = scores[i] for i < n: the exact rescores of the screened
 /// picks land in the row the selection and confidence kernels read.
 void ScatterLogits(float* logits, const std::uint32_t* ids, const float* scores,
                    std::uint32_t n, hipStream_t stream);
+
+/// cap[0] = min(scores[0..n)) - 1: the highest value an unscreened proxy
+/// logit may hold without outranking a screened row's exact rescore.
+void ScreenCap(const float* scores, std::uint32_t n, float* cap,
+               hipStream_t stream);
+
+/// logits[i] = min(logits[i], cap[0]) for i < n.
+void CapLogits(float* logits, std::uint32_t n, const float* cap,
+               hipStream_t stream);
 
 /// Draft logits of empty table slots (table[i] < 0) become -infinity.
 void MaskDraftLogits(float* logits, const std::int32_t* table, std::uint32_t n,
