@@ -478,6 +478,9 @@ would have won with -> higher MTP acceptance. `tools/serving/agent-session.py`
 
 ~+6 % median, +14 % on the lowest-acceptance turn. Screened picks are still
 rescored exactly, so output values are unchanged; only which rows get scored.
+Depth check, greedy MTP `-p 1 -n 128 -d 16384 -r 2`: 95.75 ± 3.36 tok/s with
+the canonical proxy vs 96.89 ± 2.25 with the one-off kernel, i.e. no depth
+regression from the better fit.
 
 ## Screened logits sealed below the worst exact rescore (November 22, 2026)
 
