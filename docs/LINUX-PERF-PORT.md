@@ -3279,8 +3279,53 @@ file is the `kAll`/any loop, which is the form gfx1151 would take. The proxy is
 a second resident buffer (~80 MB at our row count): fine in unified memory, but
 it has to be rebuilt for `Options::draft_vocab` subsets or the subset head stays
 unscreened. The device quantizer left over from `#1209`
-(`kernels/rocm/draft_head.hip.cpp`, built, no caller) is the same idea in its
-worse form and should go when this lands.
+(`kernels/rocm/draft_head.hip.cpp`) was the same idea in its worse form and is
+now deleted (see below).
+
+Landed 2026-11-22. `Executor::ScreenHead` (`kernels/rocm/executor.cpp:1081`)
+quantizes the draft rows once at `Executor::Create` into a Q2_K proxy
+(`rows × 840 B`), scores the proxy through the routed-expert GEMV
+(`Executor::Dense` → `qfn_mmq_moe_vec`, one expert), takes the top 64, and
+rescores exactly those rows through the Q8_0 head (`GatherRows` → `Dense` →
+`ScatterLogits`). Runs only for the token pass (`draft == nullptr`) with
+`Options::head_proxy`; the verify path and every scored value stay exact.
+`--mtp-head-proxy` exposes it in `gufo serve` (default on).
+
+What the measurements settled (all on the 8888 served command, sampled, latin
+draft vocab; `tools/serving/agent-session.py`, 4 turns × 64 tokens, median
+decode tok/s):
+
+| change | result |
+|---|---|
+| proxy fit: one-off min/max kernel → canonical `RequantQ8_0ToQ2_K` (least-squares group refit, same byte layout) | **+6 %** (49.5/50.1 → 52.3/53.5), weakest turn +14 %; kept |
+| `ScreenCap`/`CapLogits`: cap unscreened proxy logits one below the worst exact rescore before the scatter | correctness fix (argmax and the candidate pass could pick a proxy-valued row), 0 cost; kept |
+| rescore the proxy top 128 instead of 64 | flat (52.8/52.0 vs 51.0/53.3); not kept — the refit already puts the true best rows inside 64 |
+| survival gate `kMtpSurvivalFloor` 0.40 → 0.25 | flat (52.1/53.5/52.3); not kept |
+| `--mtp-relaxed 0.1` | noise (52.1/53.6); not kept |
+| cost-table recanonicalization post-proxy | already recorded as a loss at 366-396 of the model benchmarks (deeper chains, 66 % → 63 % marginal acceptance); not retried |
+| depth check, greedy `-p 1 -n 128 -d 16384 -r 2` | 95.75 ± 3.36 (canonical fit) vs 96.89 ± 2.25 (one-off) — no depth regression |
+
+Engineering notes for the next change here:
+
+- `MtpCandidateLogits` packs the 64 scores immediately after the 64 ids, so the
+  selection result is one contiguous copy from `s_.mtp_ids`. Any rescore set
+  wider than `kMtpCandidates` needs its own id/scratch buffers or the scores
+  overwrite the ids; the 128-row attempt did that and still measured flat.
+- Never shrink the rescore set below the proxy top 64: a missed top-1 costs more
+  acceptance than the rescore pass costs time (basalt measured 4.2 → 1.4).
+- `GUFO_TRACE=1` has no head phase: head work sits inside the `draft` and
+  `verify` phases, so the head-vs-rest split cannot be read from the trace. The
+  evidence that the head is on the critical path is the latin draft-vocab A/B
+  (+4.9 % for roughly halving the head read), not the trace.
+- The proxy GEMV is bandwidth-bound at the 273 GB/s ceiling; the served cycle is
+  93.9 % GPU-busy, so the remaining slack is host submission, not kernels.
+  `prefix-end->body` idles 1.04 ms of GPU per cycle behind 1.54 ms of host work
+  (1000+-node `hipGraphLaunch` plus the n-gram `StartRead` on Windows), and a
+  submission thread is the only fix: ≤2.5 % ceiling, threading risk across the
+  whole submit path, not taken.
+- Do not trust `hipStreamSynchronize` timings for many-node graphs on Windows;
+  it returns up to ~0.7 ms late after the launch (comment at
+  `executor.cpp:2271`), which is why the flag-wait mechanism exists.
 
 Paper check (2026-11-20, no run): the draft head is 2560 wide
 (`config.hpp:24`), 98,304 prefix + 1,024 gathered rows, Q8_0 ≈ 1.0625 B/weight
