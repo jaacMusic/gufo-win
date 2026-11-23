@@ -492,6 +492,14 @@ Correctness fix, no measurable cost (two ~0.5 us kernels per draft position):
 same harness, seal on vs off: 51.0 / 53.3 vs 52.3 / 53.5 median tok/s (within
 run-to-run noise). Covered by `qwen38_flash_next_mtp_ops_test` CheckScreenSeal.
 
+## Screen rescore 64 -> 128 rows (November 22, 2026) - no keep
+
+Rescoring 128 proxy-ranked rows instead of 64 costs ~1 MB per draft position
+and can only add rows a 2-bit proxy misranks. Measured flat: 52.8 / 52.0 vs
+51.0 / 53.3 / 52.2 median tok/s, and a cold first rep read 41.4. The canonical
+requant refit already puts the true best rows inside the proxy top 64, so the
+extra rows recover nothing. Reverted; the screen keeps 64.
+
 ## --mtp-relaxed 0.1 acceptance loosening (November 22, 2026) - no keep
 
 Sampled acceptance kept a draft the exact test would reject when the target
