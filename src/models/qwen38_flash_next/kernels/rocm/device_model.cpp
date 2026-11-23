@@ -708,8 +708,11 @@ std::unique_ptr<DeviceModel> DeviceModel::Upload(
   // Q4_1 decode copies: requantize hot decode matrices so the decode GEMV
   // reads 20 instead of 34 bytes per 32 elements. Opt-in "off"; default
   // "balanced" copies the small dense stack + shared expert;
-  // GUFO_DECODE_COPY=q4 also covers hyper-connections and attention output;
-  // =q2 uses 2-bit copies for the dense stack (lm_head stays Q4_1). The
+  // GUFO_DECODE_COPY=q2 uses 2-bit copies for the dense stack (lm_head
+  // stays Q4_1). attn_out and the hyper-connection mixers are on by
+  // default too: +0.5 GiB, +1% AR, and the changed trunk numerics double
+  // MTP acceptance at depth (bench 2048/128 d16k, 44 -> 95 tok/s,
+  // Nov 2026).
   // Q8_0 weights stay resident and serve prefill and wide batches, so copies
   // only add memory.
   {
@@ -721,7 +724,8 @@ std::unique_ptr<DeviceModel> DeviceModel::Upload(
     } else {
       std::string classes = getenv("GUFO_DECODE_COPY_CLASSES") != nullptr
                                 ? getenv("GUFO_DECODE_COPY_CLASSES")
-                                : "ssm_in,ssm_out,attn_qkv,shexp,lm_head";
+                                : "ssm_in,ssm_out,attn_qkv,shexp,lm_head,"
+                                   "attn_out,hc";
       // shortcut: q2 covers only plain dense projections; gated/HC decode
       // paths have no Q2_K route, so they stay on their original weights
       const bool q2_on = mode == "q2";
