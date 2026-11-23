@@ -142,7 +142,7 @@ bool UnpaddedQ8(std::uint32_t k) {
 }
 
 /// Key-tile splits per row of a narrow attention batch (decode at depth).
-constexpr std::uint32_t kAttnSplits = 8;
+constexpr std::uint32_t kAttnSplits = 16;
 /// Wide dense Q8_0 projections take the F16 WMMA GEMM (F16 activation
 /// rows, weights dequantized as they are staged, no per-block scaling) when
 /// its 256-row tiles fill the device and the K sweep is short enough that
@@ -770,7 +770,8 @@ std::unique_ptr<Executor> Executor::Create(const DeviceModel& model,
     // screened rows are rescored exactly, so only the ranking is lossy.
     const DeviceTensor& draft_src =
         e->draft_head_.empty() ? model.output() : e->draft_head_;
-    if (draft_src.type == GgmlType::kQ8_0 && draft_src.cols % 256 == 0) {
+    if (options.head_proxy && draft_src.type == GgmlType::kQ8_0 &&
+        draft_src.cols % 256 == 0) {
       auto* proxy = Alloc<std::uint8_t>(
           a, std::size_t{draft_src.rows} * (draft_src.cols / 256) * 84 + 256,
           error_msg);

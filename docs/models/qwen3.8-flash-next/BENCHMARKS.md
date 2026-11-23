@@ -428,3 +428,17 @@ still overrides). Previously launcher-only. Measured 2026-11-22, bench
 Greedy probes coherent on story and engine prompts; MTP acceptance unharmed
 (lm_head is a one-shot read, not recurrent). Logits numerics do change; opt
 out with `GUFO_DECODE_COPY_CLASSES=ssm_in,ssm_out,attn_qkv,shexp`.
+
+## Attention decode splits 8 -> 16
+
+`kAttnSplits` (narrow-batch key-tile split blocks per attention row) raised
+from 8 to 16; 32 measured worse. Bench 2048/128, temperature 0, defaults:
+
+| splits | tg128 d0 | tg128 @16k | MTP tg128 d0 |
+|---|---|---|---|
+| 8 | 37.2 | 34.0 | 53.6 |
+| 16 | 37.9 | 34.9 | 53.5 |
+| 32 | 37.7 | 34.6 | - |
+
+Bitwise-identical merge math (same kernel, more partial blocks); prefill
+and MTP unaffected.
