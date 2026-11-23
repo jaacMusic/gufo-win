@@ -52,7 +52,9 @@ std::atomic<std::uint64_t> next_session_id{1};
 // own top probability, and drafting ends when the product falls below
 // kMtpSurvivalFloor (the dropped proposal is not verified). The decision
 // uses only draft-side probabilities, so rejection-sampling verification
-// keeps the target distribution exact. Prior table: P(accept | reached) by
+// keeps the target distribution exact. 0.25 drafts deeper, but the added
+// rows are mostly rejected and throughput is flat (measured 2026-11-22);
+// 0.40 stays. Prior table: P(accept | reached) by
 // draft depth (first, later) and top-probability bin, measured over 2130
 // full 7-draft cycles on Windows (2026-09-25); replayed offline it beat the
 // per-cycle length controller by ~7.7% on held-out cycles. The runtime

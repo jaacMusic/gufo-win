@@ -499,3 +499,12 @@ gives it >= 0.1 probability. Same harness, relaxed vs exact:
 52.1 / 53.6 vs 51.0 / 53.3 median tok/s - within run-to-run noise. The
 survival policy already trims the chain where acceptance decays, so loosening
 the per-token test buys almost nothing here. Default stays 0 (exact).
+
+## Survival draft gate 0.40 -> 0.25 (November 22, 2026) - no keep
+
+The sampled survival gate stops drafting when the cumulative acceptance
+estimate falls below `kMtpSurvivalFloor`. A verified row costs ~5 ms against
+~17 ms for a decode step, so a lower gate looked profitable on paper. Same
+harness, 0.25 vs 0.40, three reps each: 52.1 / 53.5 / 52.3 vs 51.0 / 53.3 /
+52.2 median tok/s - flat. The extra proposals below 0.40 are mostly rejected,
+so they only add verifier rows. Gate stays 0.40.
