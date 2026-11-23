@@ -491,3 +491,11 @@ rescored value before the scatter, so only exactly-scored rows can be picked.
 Correctness fix, no measurable cost (two ~0.5 us kernels per draft position):
 same harness, seal on vs off: 51.0 / 53.3 vs 52.3 / 53.5 median tok/s (within
 run-to-run noise). Covered by `qwen38_flash_next_mtp_ops_test` CheckScreenSeal.
+
+## --mtp-relaxed 0.1 acceptance loosening (November 22, 2026) - no keep
+
+Sampled acceptance kept a draft the exact test would reject when the target
+gives it >= 0.1 probability. Same harness, relaxed vs exact:
+52.1 / 53.6 vs 51.0 / 53.3 median tok/s - within run-to-run noise. The
+survival policy already trims the chain where acceptance decays, so loosening
+the per-token test buys almost nothing here. Default stays 0 (exact).
